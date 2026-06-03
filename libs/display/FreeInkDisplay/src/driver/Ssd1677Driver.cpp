@@ -363,8 +363,20 @@ void Ssd1677Driver::deepSleep(EpdBus& bus) {
   bus.data(0x01);
 }
 
+// Per-board waveform/LUT injection: a board supplies its own SSD1677 config
+// (booster, scan, grayscale LUTs) without editing this driver — define
+// `const Ssd1677Config& yourConfig();` in namespace freeink and build with
+// -DFREEINK_SSD1677_CONFIG=yourConfig. Resolution is orthogonal: every driver,
+// including X3, takes its geometry from the active BoardProfile.
+#ifdef FREEINK_SSD1677_CONFIG
+const Ssd1677Config& FREEINK_SSD1677_CONFIG();
+static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFIG(); }
+#else
+static const Ssd1677Config& ssd1677ActiveConfig() { return ssd1677DefaultConfig(); }
+#endif
+
 PanelDriver& ssd1677Driver() {
-  static Ssd1677Driver instance;
+  static Ssd1677Driver instance(ssd1677ActiveConfig());
   return instance;
 }
 

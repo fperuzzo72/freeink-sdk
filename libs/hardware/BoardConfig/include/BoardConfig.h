@@ -11,9 +11,9 @@
 //   * CAPABILITIES (-DFREEINK_CAP_<NAME>) — which feature code is compiled in.
 //
 // Devices that share a binary must share an MCU and (to be runtime-selected)
-// supply their own detection in the consumer. X3/X4 share the ESP32-C3 profile
-// and are picked at runtime via EInkDisplay::setDisplayX3(); ACTIVE defaults to
-// a compile-time default and only changes if the consumer calls selectDevice().
+// supply their own detection in the consumer. X3 and X4 are two profiles in one
+// ESP32-C3 binary, picked at runtime via EInkDisplay::setDisplayX3() (which calls
+// selectDevice); ACTIVE defaults to a compile-time default until then.
 
 #include <Arduino.h>
 
@@ -113,9 +113,10 @@
 
 namespace BoardConfig {
 
-// Physical device family. X3 is deliberately absent: it shares XTEINK_X4's
-// profile and is selected at runtime, not via a distinct board macro.
-enum class Board : uint8_t { XteinkX4, M5StackPaperColor, MurphyM3, DeLink };
+// Physical device family. X3 and X4 are sibling devices on the same ESP32-C3
+// board (identical pinout, different panel/size): both profiles compile into the
+// C3 binary and one is chosen at runtime (setDisplayX3() -> selectDevice).
+enum class Board : uint8_t { XteinkX4, XteinkX3, M5StackPaperColor, MurphyM3, DeLink };
 
 // How the board reports button presses.
 enum class InputStyle : uint8_t {
@@ -231,7 +232,7 @@ constexpr TouchConfig LILYGO_T5_PRO_GT911 = {
 constexpr FrontlightConfig NO_FRONTLIGHT = {PIN_UNASSIGNED, 0, 0, true};
 constexpr AudioConfig NO_AUDIO = {AudioOutput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true};
 
-// --- Xteink X4 (and X3, runtime-selected) — ESP32-C3, SSD1677 ----------------
+// --- Xteink X4 — ESP32-C3, SSD1677 (800x480) ---------------------------------
 constexpr BoardProfile XTEINK_X4 = {
     Board::XteinkX4,
     "xteink_x4",
@@ -240,7 +241,29 @@ constexpr BoardProfile XTEINK_X4 = {
     800,
     480,
     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-    0,  // displaySpiHz: 0 -> SSD1677 driver default (40 MHz); X3 uses UC8253 default (16 MHz)
+    0,  // displaySpiHz: 0 -> SSD1677 driver default (40 MHz)
+    {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
+    {0, 1, 2, 3, 4, 5, 3, false},
+    0,
+    20,
+    NO_TOUCH,
+    NO_FRONTLIGHT,
+    NO_AUDIO};
+
+// --- Xteink X3 — ESP32-C3, UC8253 (792x528) ----------------------------------
+// Same board/pinout as X4; differs only in panel controller + size. Selected at
+// runtime (setDisplayX3) so one C3 binary drives both. Keeping it a real sibling
+// profile means resolution comes from BoardProfile for X3 just like every other
+// device — the panel driver never special-cases its own geometry.
+constexpr BoardProfile XTEINK_X3 = {
+    Board::XteinkX3,
+    "xteink_x3",
+    InputStyle::XteinkAdcLadder,
+    DisplayController::UC8253,
+    792,
+    528,
+    {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
+    0,  // displaySpiHz: 0 -> UC8253 driver default (16 MHz)
     {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
     {0, 1, 2, 3, 4, 5, 3, false},
     0,
@@ -319,8 +342,11 @@ constexpr BoardProfile DEFAULT_DEVICE = M5STACK_PAPER_COLOR;
 constexpr BoardProfile DEFAULT_DEVICE = MURPHY_M3;
 #elif FREEINK_DEVICE_DELINK
 constexpr BoardProfile DEFAULT_DEVICE = DE_LINK;
+#elif FREEINK_DEVICE_X3 && !FREEINK_DEVICE_X4
+constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X3;  // X3-only binary
 #else
-constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X4;  // X3 and X4 share this profile
+// X4-only or the dual X3+X4 C3 binary: boot as X4, runtime-swap to X3 on detect.
+constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X4;
 #endif
 
 // Runtime-active profile. Defaults to DEFAULT_DEVICE — identical to the old
@@ -333,8 +359,11 @@ inline BoardProfile ACTIVE = DEFAULT_DEVICE;
 // leaves ACTIVE unchanged) if `which` was not included via -DFREEINK_DEVICE_*.
 inline bool selectDevice(Board which) {
   switch (which) {
-#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3
+#if FREEINK_DEVICE_X4
     case Board::XteinkX4: ACTIVE = XTEINK_X4; return true;
+#endif
+#if FREEINK_DEVICE_X3
+    case Board::XteinkX3: ACTIVE = XTEINK_X3; return true;
 #endif
 #if FREEINK_DEVICE_M5
     case Board::M5StackPaperColor: ACTIVE = M5STACK_PAPER_COLOR; return true;

@@ -53,6 +53,10 @@ FreeInkDisplay::FreeInkDisplay(int8_t sclk, int8_t mosi, int8_t cs, int8_t dc, i
 
 void FreeInkDisplay::setDisplayX3() {
   _panelSel = PanelSel::X3;
+  // Swap the active profile to X3's sibling so resolution (and any board-level
+  // reads, e.g. touch mapping) come from BoardProfile, like every other device.
+  // Called before begin(), so the X3 driver singleton sees 792x528 at construction.
+  BoardConfig::selectDevice(BoardConfig::Board::XteinkX3);
   displayWidth = X3_DISPLAY_WIDTH;
   displayHeight = X3_DISPLAY_HEIGHT;
   displayWidthBytes = X3_DISPLAY_WIDTH_BYTES;

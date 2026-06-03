@@ -81,9 +81,10 @@ new device fills in values; the generic driver consumes them.
 | **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 color | 🟡 display driver stub |
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 B/W, CHSC6x touch, PWM frontlight | 🟡 display stub; **touch + frontlight implemented** |
 
-X3 and X4 share the ESP32-C3 and one pin profile, so **a single firmware binary
-drives both** — the panel is chosen at runtime via `setDisplayX3()`. Distinct-MCU
-boards (S3) build their own binary, selected with a board macro.
+X3 and X4 share the ESP32-C3 and a pinout, so **a single firmware binary drives
+both** — it carries *both* board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks
+one at runtime via `setDisplayX3()`, which swaps the active profile and driver.
+Distinct-MCU boards (S3) build their own binary, selected with a board macro.
 
 ### M5Stack PaperColor refresh behavior
 
@@ -200,15 +201,26 @@ automatically as a dependency of `SDCardManager`.
 
 1. Add a `BoardProfile` to `BoardConfig.h` (pins, geometry, controller, input
    style, optional touch/frontlight/audio) and a board macro for `ACTIVE`.
-2. If it uses an existing controller, reuse that driver — supply a tuned config
-   struct (its own LUTs/voltages) if the panel differs. If it's a new
-   controller, add a `PanelDriver` in its own file + a `FREEINK_DRIVER_*` flag.
+2. If it uses an existing controller, reuse that driver — inject a tuned **config
+   struct** (its own LUTs/waveforms) without editing the driver: define
+   `const Uc8253X3Config& yourConfig();` (or `Ssd1677Config`) in `namespace
+   freeink` and build with `-DFREEINK_UC8253_X3_CONFIG=yourConfig` (or
+   `-DFREEINK_SSD1677_CONFIG=...`). If it's a new controller, add a `PanelDriver`
+   in its own file + `FREEINK_DRIVER_*` flag.
+
+   **Resolution is always a `BoardProfile` field** — `displayWidth/Height`. Every
+   driver reads its geometry from the active profile (and `getDisplayWidth()/
+   Height()` pass it to firmware); no driver special-cases its own size. The
+   config struct is purely waveforms/LUTs. These are orthogonal: a different-size
+   UC8253 panel sets its size in its profile and its waveforms in a config.
 3. **Each device gets its own profile, board macro, and build env.** Two devices
-   may share one binary *only* when they have an identical pinout and are
-   distinguishable at runtime — that is the sole reason Xteink X3 and X4 share
-   the default ESP32-C3 env (they're the same board, told apart by I2C
-   fingerprinting + `setDisplayX3()`). Same MCU but different GPIOs, screen, or
-   controller ⇒ a separate profile and a separate env, never an auto-shared bin.
+   may share one binary when they're distinguishable at runtime — that is how
+   Xteink X3 and X4 ride one ESP32-C3 env: **two full profiles** (`XTEINK_X4`
+   800×480/SSD1677 and `XTEINK_X3` 792×528/UC8253) compile into the same bin, and
+   `setDisplayX3()` swaps the active profile + driver after I2C fingerprinting.
+   They happen to share a pinout, but each is a real profile — not one profile
+   doing double duty. Same MCU but different GPIOs, screen, or controller ⇒ a
+   separate profile and a separate env, never an auto-shared bin.
 
 ### Devices backed by external libraries
 

@@ -6,11 +6,6 @@
 
 namespace freeink {
 namespace {
-constexpr uint16_t X3_WIDTH = 792;
-constexpr uint16_t X3_HEIGHT = 528;
-constexpr uint16_t X3_WIDTH_BYTES = X3_WIDTH / 8;  // 99
-constexpr uint32_t X3_BUFFER_SIZE = static_cast<uint32_t>(X3_WIDTH_BYTES) * X3_HEIGHT;
-
 // UC8253 command set.
 constexpr uint8_t CMD_PANEL_SETTING = 0x00;
 constexpr uint8_t CMD_POWER_SETTING = 0x01;
@@ -52,8 +47,15 @@ const Uc8253X3Config& uc8253X3DefaultConfig() {
   return cfg;
 }
 
+// Resolution comes from the active BoardProfile (XTEINK_X3), exactly like every
+// other driver — the X3 profile is selected at runtime by setDisplayX3() before
+// begin() constructs this singleton, so ACTIVE already holds 792x528 here.
 Uc8253X3Driver::Uc8253X3Driver(const Uc8253X3Config& cfg)
-    : _cfg(cfg), _w(X3_WIDTH), _h(X3_HEIGHT), _wb(X3_WIDTH_BYTES), _bufferSize(X3_BUFFER_SIZE) {}
+    : _cfg(cfg),
+      _w(BoardConfig::ACTIVE.displayWidth),
+      _h(BoardConfig::ACTIVE.displayHeight),
+      _wb(BoardConfig::ACTIVE.displayWidth / 8),
+      _bufferSize(static_cast<uint32_t>(BoardConfig::ACTIVE.displayWidth / 8) * BoardConfig::ACTIVE.displayHeight) {}
 
 uint32_t Uc8253X3Driver::spiHz() const {
   // X3 (UC8253) runs the SPI bus at 16 MHz, matching the upstream main lineage.
@@ -354,8 +356,21 @@ void Uc8253X3Driver::deepSleep(EpdBus& bus) {
   bus.data(0xA5);
 }
 
+// Per-board waveform/LUT injection: a board that drives a different UC8253 panel
+// (different LUTs) supplies its own config without editing this driver — define
+// `const Uc8253X3Config& yourConfig();` in namespace freeink and build with
+// -DFREEINK_UC8253_X3_CONFIG=yourConfig. Resolution is orthogonal: it always
+// comes from that board's BoardProfile. A panel that also differs in init or
+// rotation should be its own sibling driver instead.
+#ifdef FREEINK_UC8253_X3_CONFIG
+const Uc8253X3Config& FREEINK_UC8253_X3_CONFIG();
+static const Uc8253X3Config& uc8253X3ActiveConfig() { return FREEINK_UC8253_X3_CONFIG(); }
+#else
+static const Uc8253X3Config& uc8253X3ActiveConfig() { return uc8253X3DefaultConfig(); }
+#endif
+
 PanelDriver& uc8253X3Driver() {
-  static Uc8253X3Driver instance;
+  static Uc8253X3Driver instance(uc8253X3ActiveConfig());
   return instance;
 }
 
