@@ -197,6 +197,50 @@ libs/
   network/SecureNet/        wolfSSL TLS 1.3 client + HTTP shim (opt-in)
 ```
 
+## Upstream contributors
+
+FreeInk's e-paper driver and hardware libraries stand on the work of the OpenX4
+E-Paper Community SDK and its forks. Thank you to everyone who built what this is
+based on:
+
+- **[CidVonHighwind](https://github.com/CidVonHighwind)** — the original
+  `EInkDisplay` driver that everything here descends from.
+- **[Dave Allie](https://github.com/daveallie)** — core maintainer of the upstream
+  SDK: SdFat/exFAT storage, `displayWindow` partial updates, single- and
+  dual-buffer modes, the `deepSleep` power-off fix, and bringing the original
+  driver into the SDK.
+- **[zgredex](https://github.com/zgredex)** — factory-LUT grayscale, the
+  VCOM-restore fix on `setCustomLUT(false)`, and making `grayscaleRevert`
+  idempotent with a documented contract.
+- **[Justinian](https://github.com/juicecultus)** — X3 grayscale LUTs and fast-diff
+  BB reinforcement (plus a build fix).
+- **[Jeremy Klein](https://github.com/jeremydk)** — `skipInitialResync()`, row-band
+  streaming of grayscale planes to controller RAM (the strip-grayscale path), and
+  the X3 post-full ghosting fix.
+- **[Chun Ming Lee](https://github.com/leecming82)** — the X3 "turbo" LUTs (from
+  papyrix) and an X4 smearing fix.
+- **[Maik Allgöwer](https://github.com/allgoewer)** — the sunlight-fading fix
+  (power the panel down after a refresh).
+- **[Alasdair MacLeod](https://github.com/v1amacl7)** &
+  **[LSTAR](https://github.com/LSTAR1900)** — grayscale cleanup after
+  anti-aliased refreshes.
+- **[CaptainFrito](https://github.com/CaptainFrito)** — transparent image drawing
+  for icons, plus early InputManager and SD-card work.
+- **[Dexif](https://github.com/dexif)** — BatteryMonitor support for Arduino-ESP32
+  Core 3.x.
+- **[marcinoktawian](https://github.com/marcinoktawian)** — separate power-button
+  hold timing in InputManager.
+- **[Jonas Diemer](https://github.com/jonasdiemer)** — guard serial output on a
+  valid `Serial`.
+- **[Yaroslav Nychkalo](https://github.com/gebeto)** — the `SDCardManager`
+  `rename` method.
+- **[Ian Chasse](https://github.com/iandchasse)** — the ESP32-S3 port and the
+  warm/cool PWM frontlight in [`community-sdk-de-link`](https://github.com/iandchasse/community-sdk-de-link),
+  which the de-link board support is based on.
+
+If your work is here and you'd like your credit corrected or a link added, open
+an issue or email hello@freeink.org.
+
 ## License
 
 **MIT License** (`LICENSE`) — open source and permissive: use, modify, and ship
