@@ -71,6 +71,13 @@ controller default and a board override. Waveforms/LUTs, booster values, scan
 direction, and refresh temperatures are injected via the driver config struct. A
 new device fills in values; the generic driver consumes them.
 
+Device *names* and `FREEINK_DEVICE_*` flags live **only** in `BoardConfig` (the
+registry), which derives `FREEINK_DRIVER_*` / `FREEINK_CAP_*` from them. Feature
+files — facade, drivers, input, SD — key only off those derived flags and injected
+config/hooks, never a device name. Board quirks that aren't plain config (e.g. an
+SD rail behind an I²C PMIC) come in through hooks like `SDCardManager::setPowerHook()`,
+so the SD manager itself stays device-agnostic.
+
 ## Supported devices
 
 | Device | MCU | Controller | Panel | Status |
@@ -80,11 +87,12 @@ new device fills in values; the generic driver consumes them.
 | **de-link** | ESP32-S3 | SSD1677 | 800×480 B/W + gray, frontlight | ✅ display + frontlight + native 4-bit SDMMC SD |
 | **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 color | 🟡 display driver stub |
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 B/W, CHSC6x touch, PWM frontlight | 🟡 display stub; **touch + frontlight implemented** |
+| **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray, GT911 touch | 🟡 EPD driver via LovyanGFX + GT911; board supplies power hooks; I²C battery/expander are board-support |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **a single firmware binary drives
 both** — it carries *both* board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks
 one at runtime via `setDisplayX3()`, which swaps the active profile and driver.
-Distinct-MCU boards (S3) build their own binary, selected with a board macro.
+Distinct-MCU boards (S3) build their own binary, selected with a `-DFREEINK_DEVICE_*` flag.
 
 Every SDK library compiles cleanly on both ESP32-C3 and ESP32-S3. A consumer can
 still block a multi-MCU build by hardcoding chip-specific code in *its own* layer
@@ -114,9 +122,9 @@ Two backends are selectable for this device:
 driver) and **GT911** (LilyGo — polled, raw register reads + the reset/address
 dance). The InputManager exposes `hasTouch/isTouchPressed/wasTouchPressed/
 wasTouchReleased/getTouchPoint`; coordinates are delivered raw-panel-oriented and
-the app owns rotation. A LilyGo T5 S3 Pro Lite GT911 touch config
-(`BoardConfig::LILYGO_T5_PRO_GT911`) is ready to drop into a LilyGo profile once
-that board's display driver lands.
+the app owns rotation. The LilyGo T5 S3 profile uses the GT911 config
+(`BoardConfig::LILYGO_T5_PRO_GT911`) alongside its raw-parallel EPD driver
+(`LgfxEpdDriver`, see below).
 
 ## Build composition — devices × capabilities
 
@@ -134,7 +142,8 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_DELINK` | de-link (S3, SSD1677 + frontlight) |
 | `-DFREEINK_DEVICE_M5` | M5 PaperColor (S3, ED2208 + color) |
 | `-DFREEINK_DEVICE_MURPHY` | Murphy M3 (S3, UC8253 + touch + frontlight) |
-| *(none)* | defaults from the legacy `-DBOARD_*` macro, else **X3 + X4** |
+| `-DFREEINK_DEVICE_LILYGO` | LilyGo T5 S3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX) |
+| *(none)* | **compile error** — a build must select at least one device |
 
 Multiple **different-pinout** devices on one MCU are runtime-selected: `ACTIVE`
 defaults to a compile-time default and the consumer calls
@@ -156,7 +165,6 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 
 | Flag | Effect |
 |---|---|
-| `-DBOARD_DELINK` / `_M5STACK_PAPERCOLOR` / `_MURPHY_M3` | legacy single-device selection (maps to the matching `FREEINK_DEVICE_*`) |
 | `-DFREEINK_DISPLAY_FLIPPED` (or `-DFLIPPED`) | back-compat alias for `BoardProfile.orientation = MIRROR_Y` on SSD1677 |
 | `-DFREEINK_SD_SDMMC=1` | use the native 4-bit SDMMC backend (needs `-DUSE_BLOCK_DEVICE_INTERFACE=1`); auto-on for de-link |
 | `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | single framebuffer (uses controller RAM as previous frame) |
@@ -219,7 +227,8 @@ automatically as a dependency of `SDCardManager`.
 ## Adding a new device
 
 1. Add a `BoardProfile` to `BoardConfig.h` (pins, geometry, controller, input
-   style, optional touch/frontlight/audio) and a board macro for `ACTIVE`.
+   style, optional touch/frontlight/audio) and a `FREEINK_DEVICE_*` flag + a
+   `selectDevice` case that points `ACTIVE` at it.
 2. If it uses an existing controller, reuse that driver — inject a tuned **config
    struct** (its own LUTs/waveforms) without editing the driver: define
    `const Uc8253X3Config& yourConfig();` (or `Ssd1677Config`) in `namespace
@@ -232,7 +241,7 @@ automatically as a dependency of `SDCardManager`.
    Height()` pass it to firmware); no driver special-cases its own size. The
    config struct is purely waveforms/LUTs. These are orthogonal: a different-size
    UC8253 panel sets its size in its profile and its waveforms in a config.
-3. **Each device gets its own profile, board macro, and build env.** Two devices
+3. **Each device gets its own profile, `FREEINK_DEVICE_*` flag, and build env.** Two devices
    may share one binary when they're distinguishable at runtime — that is how
    Xteink X3 and X4 ride one ESP32-C3 env: **two full profiles** (`XTEINK_X4`
    800×480/SSD1677 and `XTEINK_X3` 792×528/UC8253) compile into the same bin, and
@@ -244,16 +253,18 @@ automatically as a dependency of `SDCardManager`.
 ### Devices backed by external libraries
 
 A `PanelDriver` doesn't have to emit raw SPI — it can wrap a third-party display
-library. Some panels are best driven by an existing library rather than a
-hand-rolled controller sequence (e.g. the LilyGo T5 S3 Pro and M5 Paper S3 use
-[`EPD_Painter`](https://github.com/tonywestonuk/EPD_Painter); GT911 touch boards
-use `SensorLib`). FreeInk pulls these in **per device**, so builds that don't use
-them stay lean:
+library. Some panels need this: a raw-parallel EPD with no on-glass controller
+(e.g. the LilyGo T5 S3's ED047TC1) is driven by **LovyanGFX's `Panel_EPD`**
+(bundled in `m5stack/M5GFX`). FreeInk ships exactly that as **`LgfxEpdDriver`**
+(`usesExternalBus()`), and the M5 PaperColor's optional `M5OfficialDriver` wraps
+M5GFX the same way. FreeInk pulls these libraries in **per device**, so builds
+that don't use them stay lean:
 
-1. Put the external `#include` and the driver code **inside the device's
-   `#if FREEINK_DEVICE_<NAME>` guard.** PlatformIO's LDF (chain mode) only links
-   the external library when that device's code actually compiles — other devices
-   (X4/X3/M5) are unaffected.
+1. Put the external `#include` and the driver code **inside the driver's
+   `#if FREEINK_DRIVER_<NAME>` guard** (the flag the registry derives from the
+   device — e.g. `FREEINK_DRIVER_LGFX_EPD`). PlatformIO's LDF (chain mode) only
+   links the external library when that driver actually compiles, so other
+   devices are unaffected.
 2. Add the external library to **that device's env `lib_deps`** in your
    `platformio.ini` (see `platformio.sample.ini`). It's installed for that env
    only.
@@ -262,7 +273,11 @@ them stay lean:
    tell the difference.
 
 This keeps the SDK's display surface uniform (`EInkDisplay` everywhere) while
-letting each device bring whatever rendering stack it needs.
+letting each device bring whatever rendering stack it needs. The LilyGo T5 S3 is
+the worked example — see
+[`docs/lilygo-t5s3-support.md`](docs/lilygo-t5s3-support.md) for its bring-up
+(board-injected `LgfxEpdConfig` + power hooks) and the remaining board-support
+gaps (I²C battery gauge, expander button).
 
 ## Repository layout
 

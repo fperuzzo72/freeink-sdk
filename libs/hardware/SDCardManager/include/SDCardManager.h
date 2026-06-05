@@ -1,13 +1,15 @@
 #pragma once
 
-// FreeInk SDK — SD card manager (singleton). Two interchangeable backends behind
-// one FsVolume& seam, so every op returns ordinary FsFile objects:
-//   * SPI / SdFat (default) — SD power sequencing for PMIC-gated boards (e.g.
-//     M5Stack PaperColor) is handled in begin().
+// FreeInk SDK — SD card manager (singleton). Device-agnostic: it knows no board
+// names. Two interchangeable backends behind one FsVolume& seam, so every op
+// returns ordinary FsFile objects:
+//   * SPI / SdFat (default).
 //   * Native 4-bit SDMMC (FREEINK_SD_SDMMC, e.g. de-link) — SdFat can't drive
 //     SDIO, so a plain FsVolume is mounted on an esp-idf SDMMC block device
 //     (src/SdmmcBlockDevice). Requires the build to set USE_BLOCK_DEVICE_INTERFACE=1.
-// The public API below is identical for both, so consumers are unchanged.
+// Boards whose SD rail needs more than a GPIO (e.g. an I2C PMIC) register their
+// power-up via setPowerHook(); the manager calls it but stays device-agnostic.
+// The public API is identical for both backends, so consumers are unchanged.
 
 #include <WString.h>
 #include <vector>
@@ -56,12 +58,20 @@ class SDCardManager {
   bool openFileForWrite(const char* moduleName, const String& path, FsFile& file);
   bool removeDir(const char* path);
 
+  // Optional board hook to bring up SD-card power before the card is mounted, for
+  // boards whose SD rail isn't a plain GPIO (e.g. behind an I2C PMIC). Called once
+  // at the start of begin(). The board registers it from its own board-support
+  // layer; the SD manager itself stays device-agnostic. Default: none.
+  using PowerHook = void (*)();
+  void setPowerHook(PowerHook hook) { _powerHook = hook; }
+
  static SDCardManager& getInstance() { return instance; }
 
  private:
   static SDCardManager instance;
 
   bool initialized = false;
+  PowerHook _powerHook = nullptr;
 
   // All filesystem ops route through one FsVolume& so the backend is swappable.
   // SPI boards: `sd` (SdFs is-a FsVolume). SDMMC boards: a bare FsVolume mounted

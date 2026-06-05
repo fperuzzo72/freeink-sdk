@@ -30,6 +30,9 @@
 #if FREEINK_DRIVER_UC8253_MURPHY
 #include "driver/Uc8253MurphyDriver.h"
 #endif
+#if FREEINK_DRIVER_LGFX_EPD
+#include "driver/LgfxEpdDriver.h"
+#endif
 
 namespace freeink {
 namespace {
@@ -73,10 +76,9 @@ void FreeInkDisplay::setDisplayM5PaperColor() {
 }
 
 void FreeInkDisplay::selectDriver() {
-  if (BoardConfig::isM5StackPaperColor()) {
-    _panelSel = PanelSel::M5;
-  }
-
+  // Selection is purely _panelSel + the linked FREEINK_DRIVER_* set — no device
+  // names. Multi-driver C3 builds pick X3 vs X4 via setDisplayX3(); single-driver
+  // builds (M5/Murphy/de-link/LilyGo) fall through to the one linked driver below.
   switch (_panelSel) {
 #if FREEINK_DRIVER_M5_OFFICIAL || FREEINK_DRIVER_ED2208
     case PanelSel::M5:
@@ -102,6 +104,8 @@ void FreeInkDisplay::selectDriver() {
       _driver = &ed2208M5Driver();
 #elif FREEINK_DRIVER_UC8253_X3
       _driver = &uc8253X3Driver();
+#elif FREEINK_DRIVER_LGFX_EPD
+      _driver = &lgfxEpdDriver();
 #endif
       break;
   }
