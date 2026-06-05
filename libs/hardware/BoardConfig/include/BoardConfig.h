@@ -98,7 +98,16 @@
 #define FREEINK_CAP_TOUCH (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO)
 #endif
 #ifndef FREEINK_CAP_FRONTLIGHT
-#define FREEINK_CAP_FRONTLIGHT (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY)
+#define FREEINK_CAP_FRONTLIGHT (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO)
+#endif
+
+// I2C fuel-gauge battery backend. Compiled in when a build contains a gauge
+// device (X3's BQ27220, or LilyGo's BQ27220+BQ25896). Selection is then *runtime*
+// per active profile (BatteryMonitor uses the gauge only when
+// ACTIVE.batteryGauge.gaugeAddr != 0) — required because X3 (gauge) and X4 (ADC)
+// share one C3 binary.
+#ifndef FREEINK_BATTERY_I2C_GAUGE
+#define FREEINK_BATTERY_I2C_GAUGE (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO)
 #endif
 #ifndef FREEINK_CAP_COLOR
 #define FREEINK_CAP_COLOR (FREEINK_DEVICE_M5)
@@ -182,6 +191,18 @@ struct SdmmcPins {
   uint8_t busWidth;  // 0 = not an SDMMC board (use SdPins/SPI), 1 or 4 = SDMMC
 };
 
+// I2C fuel-gauge / charger wiring (e.g. BQ27220 + BQ25896 on LilyGo T5 S3). When
+// gaugeAddr != 0 (and FREEINK_BATTERY_I2C_GAUGE is set), BatteryMonitor reads the
+// gauge over I2C instead of an ADC pin. chargerAddr is optional (0 = none) and
+// only used for charge status.
+struct BatteryGaugeConfig {
+  int8_t i2cSda;
+  int8_t i2cScl;
+  uint32_t i2cHz;
+  uint8_t gaugeAddr;    // BQ27220 = 0x55; 0 = no I2C gauge (use ADC)
+  uint8_t chargerAddr;  // BQ25896 = 0x6B; 0 = none
+};
+
 struct InputPins {
   int8_t back;
   int8_t confirm;
@@ -254,6 +275,7 @@ struct BoardProfile {
   AudioConfig audio;
   DisplayOrientation orientation;  // panel mount transform (mirrorX/mirrorY)
   SdmmcPins sdmmc;                 // 4-bit SDMMC wiring (busWidth 0 = use SPI/SdFat)
+  BatteryGaugeConfig batteryGauge;  // I2C fuel gauge (gaugeAddr 0 = use ADC pin)
 };
 
 constexpr TouchConfig NO_TOUCH = {
@@ -272,6 +294,7 @@ constexpr DisplayOrientation MIRROR_X = {true, false};            // horizontal 
 constexpr DisplayOrientation MIRROR_Y = {false, true};            // vertical mirror
 constexpr SdmmcPins NO_SDMMC = {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED,
                                 PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0};
+constexpr BatteryGaugeConfig NO_GAUGE = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0};  // ADC battery
 
 // --- Xteink X4 — ESP32-C3, SSD1677 (800x480) ---------------------------------
 constexpr BoardProfile XTEINK_X4 = {
@@ -291,7 +314,8 @@ constexpr BoardProfile XTEINK_X4 = {
     NO_FRONTLIGHT,
     NO_AUDIO,
     NO_FLIP,
-    NO_SDMMC};
+    NO_SDMMC,
+    NO_GAUGE};
 
 // --- Xteink X3 — ESP32-C3, UC8253 (792x528) ----------------------------------
 // Same board/pinout as X4; differs only in panel controller + size. Selected at
@@ -315,7 +339,8 @@ constexpr BoardProfile XTEINK_X3 = {
     NO_FRONTLIGHT,
     NO_AUDIO,
     NO_FLIP,
-    NO_SDMMC};
+    NO_SDMMC,
+    {20, 0, 400000, 0x55, 0}};  // BQ27220 fuel gauge (0x55) on SDA20/SCL0; no charger IC
 
 // --- M5Stack PaperColor — ESP32-S3, ED2208 color panel, M5PM1 PMIC -----------
 constexpr BoardProfile M5STACK_PAPER_COLOR = {
@@ -335,7 +360,8 @@ constexpr BoardProfile M5STACK_PAPER_COLOR = {
     NO_FRONTLIGHT,
     NO_AUDIO,
     NO_FLIP,
-    NO_SDMMC};
+    NO_SDMMC,
+    NO_GAUGE};
 
 // --- Murphy M3 (CrowPanel 3.7") — UC8253, CHSC6x touch, PWM frontlight --------
 constexpr BoardProfile MURPHY_M3 = {
@@ -355,7 +381,8 @@ constexpr BoardProfile MURPHY_M3 = {
     {48, 25000, 10, true},
     NO_AUDIO,
     NO_FLIP,
-    NO_SDMMC};
+    NO_SDMMC,
+    NO_GAUGE};
 
 // --- de-link (X4-class GDEQ0426T82 panel on ESP32-S3) — SSD1677 + frontlight ---
 // Reuses the SSD1677 driver (same controller/panel as X4); differs at the board
@@ -390,16 +417,17 @@ constexpr BoardProfile DE_LINK = {
     {5, 20000, 8, true},
     NO_AUDIO,
     NO_FLIP,
-    {39, 40, 38, 48, 42, 41, 4}};  // SDMMC 4-bit: CLK39 CMD40 D0=38 D1=48 D2=42 D3=41
+    {39, 40, 38, 48, 42, 41, 4},  // SDMMC 4-bit: CLK39 CMD40 D0=38 D1=48 D2=42 D3=41
+    NO_GAUGE};
 
 // --- LilyGo T5 S3 4.7" (ED047TC1 raw-parallel EPD) — ESP32-S3 -----------------
 // 960x540 16-gray raw parallel panel driven via LovyanGFX (FREEINK_DRIVER_LGFX_EPD);
 // the panel can't power up without the board's PMIC (TPS65185) + PCA9535 expander
 // sequence, which the board injects through LgfxEpdConfig::power (see the LilyGo
 // support doc). Geometry is the physical scan size; the driver's rotation puts the
-// reader UI in portrait. Several board peripherals (PCA9535, BQ27220/BQ25896 I2C
-// battery, PCF85063 RTC, backlight) are board-support, not in the SDK yet — see
-// docs/lilygo-t5s3-support.md.
+// reader UI in portrait. Display + GT911 touch + PWM backlight + the I2C fuel gauge
+// (BQ27220/BQ25896) are wired here. The user button (behind the PCA9535 expander),
+// PCF85063 RTC, and LoRa/GPS remain board-support — see docs/lilygo-t5s3-support.md.
 constexpr BoardProfile LILYGO_T5S3 = {
     Board::LilyGoT5S3,
     "lilygo_t5s3",
@@ -413,13 +441,14 @@ constexpr BoardProfile LILYGO_T5S3 = {
     0,                                  // displaySpiHz n/a (external bus)
     {14, 21, 13, 12, PIN_UNASSIGNED, false, 0},  // SD over SPI: SCLK14 MISO21 MOSI13 CS12
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, false},  // power=BOOT (GPIO0), active-low
-    PIN_UNASSIGNED,  // batteryAdc: none — BQ27220 fuel gauge over I2C (board-support)
+    PIN_UNASSIGNED,  // batteryAdc: none — uses the I2C fuel gauge below
     PIN_UNASSIGNED,
     LILYGO_T5_PRO_GT911,  // GT911 touch (SDA39 SCL40 INT3 RST9, 0x5D, 540x960)
-    NO_FRONTLIGHT,        // backlight (BL_EN GPIO11) is board-support for now
+    {11, 5000, 8, true},  // backlight: BL_EN GPIO11, PWM 5 kHz / 8-bit, active-high
     NO_AUDIO,
     NO_FLIP,
-    NO_SDMMC};
+    NO_SDMMC,
+    {39, 40, 400000, 0x55, 0x6B}};  // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40
 
 // Compile-time default device — the profile ACTIVE starts as. With a single
 // device in the build this is the only device; with several same-MCU devices it

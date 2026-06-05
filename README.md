@@ -87,7 +87,7 @@ so the SD manager itself stays device-agnostic.
 | **de-link** | ESP32-S3 | SSD1677 | 800×480 B/W + gray, frontlight | ✅ display + frontlight + native 4-bit SDMMC SD |
 | **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 color | 🟡 display driver stub |
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 B/W, CHSC6x touch, PWM frontlight | 🟡 display stub; **touch + frontlight implemented** |
-| **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray, GT911 touch | 🟡 EPD driver via LovyanGFX + GT911; board supplies power hooks; I²C battery/expander are board-support |
+| **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray, GT911 touch | 🟡 EPD (LovyanGFX) + GT911 + PWM backlight + I²C battery (BQ27220/BQ25896); board supplies EPD power hooks + expander button |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **a single firmware binary drives
 both** — it carries *both* board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks
@@ -167,6 +167,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 |---|---|
 | `-DFREEINK_DISPLAY_FLIPPED` (or `-DFLIPPED`) | back-compat alias for `BoardProfile.orientation = MIRROR_Y` on SSD1677 |
 | `-DFREEINK_SD_SDMMC=1` | use the native 4-bit SDMMC backend (needs `-DUSE_BLOCK_DEVICE_INTERFACE=1`); auto-on for de-link |
+| `-DFREEINK_BATTERY_I2C_GAUGE=1` | compile the I²C fuel-gauge backend (BQ27220/BQ25896); auto-on for X3 and LilyGo. Gauge-vs-ADC is then runtime per profile, so X3 (gauge) + X4 (ADC) coexist in one binary |
 | `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | single framebuffer (uses controller RAM as previous frame) |
 | `-DFREEINK_NET_WOLFSSL=1` | enable the wolfSSL TLS 1.3 transport in `SecureNet` |
 

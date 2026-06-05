@@ -117,7 +117,16 @@ class InputManager {
   // True if a touch ended between the last two #update() calls.
   bool wasTouchReleased() const;
 
+  // Optional board hook for buttons that aren't direct GPIOs — e.g. a key behind
+  // an I2C IO-expander (the LilyGo T5 S3 user button on its PCA9535). It returns
+  // a (1<<BTN_*) bitmask that is OR'd into every update(); the board reads its
+  // expander, so InputManager itself stays device-agnostic. Default: none.
+  using ButtonHook = uint8_t (*)();
+  static void setButtonHook(ButtonHook hook) { s_buttonHook = hook; }
+
  private:
+  static ButtonHook s_buttonHook;
+
   int getButtonFromADC(int adcValue, const int ranges[], int numButtons);
   bool isDigitalPressed(int8_t pin) const;
   uint8_t getDigitalState() const;

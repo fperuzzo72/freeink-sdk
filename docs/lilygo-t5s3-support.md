@@ -47,13 +47,27 @@ and add `m5stack/M5GFX` to that env's `lib_deps` (see `platformio.sample.ini`). 
 power-hook bodies (PCA9535 expander + TPS65185 PMIC register writes) live in the
 board-support layer, not the SDK.
 
-## Remaining gaps (board-support, not core SDK)
+## What the SDK now wires (vs. the reference fork)
 
-- **Battery** — the board uses a **BQ27220 fuel gauge + BQ25896 charger over I²C**,
-  not an ADC divider. `BatteryMonitor` is ADC-only; an I²C-gauge backend (same
-  pluggable shape as `SDCardManager`'s SPI-vs-SDMMC seam) would be the SDK-side fix.
-- **Input** — the user button is behind the **PCA9535 expander**; `InputManager`
-  reads direct GPIOs, and `PowerManager`'s deep-sleep wake assumes a direct GPIO
-  pin. Expander-based buttons are handled by the board for now.
-- **PCA9535 / TPS65185 / PCF85063 RTC / backlight / LoRa / GPS** — board-support
-  peripherals; the SDK intentionally doesn't absorb them.
+- **Battery** — `BatteryMonitor` now has an **I²C fuel-gauge backend**
+  (`FREEINK_BATTERY_I2C_GAUGE`, auto-on for LilyGo): reads SoC/voltage from the
+  **BQ27220** and charge status from the **BQ25896**, addresses/pins from
+  `BoardProfile.batteryGauge`. Same public API as the ADC path — drop-in. Minimal
+  raw-register read, no external lib.
+- **Backlight** — wired in the profile as a PWM `FrontlightConfig` (BL_EN GPIO11,
+  driven by `FrontlightManager`); `CAP_FRONTLIGHT` auto-on.
+- **Expander button** — `InputManager::setButtonHook()` lets the board feed
+  buttons that aren't direct GPIOs; the board reads the **PCA9535** and returns a
+  `BTN_*` bitmask, so InputManager stays device-agnostic. (The board supplies the
+  PCA9535 read itself — that part is board-support.)
+
+## Remaining board-support (not core SDK)
+
+- **PCA9535 expander, TPS65185 PMIC** — the EPD power sequence (injected via
+  `LgfxEpdConfig::power`) and the expander-button read (via `setButtonHook`) live
+  in the board layer.
+- **`PowerManager` deep-sleep wake** assumes a direct GPIO; a button only reachable
+  through the expander INT isn't a wake source yet.
+- **PCF85063 RTC / LoRa / GPS** — board-support; the SDK doesn't absorb them.
+- **GT911 home key** — our GT911 backend polls the touch status but doesn't yet
+  surface the capacitive home-key bit (minor; map it via `setButtonHook` for now).

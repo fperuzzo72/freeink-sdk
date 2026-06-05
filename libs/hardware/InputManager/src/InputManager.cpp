@@ -75,6 +75,7 @@ uint8_t InputManager::getState() {
   if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
     state = getDigitalState();
     state |= serviceTouch();  // run the touch machine; OR any synthesized button
+    if (s_buttonHook) state |= s_buttonHook();  // board buttons (e.g. I2C expander)
     return state;
   }
 
@@ -99,8 +100,11 @@ uint8_t InputManager::getState() {
   }
 
   state |= serviceTouch();
+  if (s_buttonHook) state |= s_buttonHook();  // board buttons (e.g. I2C expander)
   return state;
 }
+
+InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
 
 bool InputManager::isDigitalPressed(const int8_t pin) const {
   return pin >= 0 && digitalRead(pin) == LOW;

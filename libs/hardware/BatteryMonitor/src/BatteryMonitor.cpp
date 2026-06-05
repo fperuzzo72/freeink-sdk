@@ -1,6 +1,7 @@
 #include "BatteryMonitor.h"
 
 #include <Arduino.h>
+#include <BoardConfig.h>
 #include <esp_idf_version.h>
 #if ESP_IDF_VERSION_MAJOR < 5
 #include <esp_adc_cal.h>
@@ -8,6 +9,52 @@
 
 #include <algorithm>
 #include <cmath>
+
+#if FREEINK_BATTERY_I2C_GAUGE
+#include <Wire.h>
+
+// Minimal, dependency-free I2C fuel-gauge read for boards that carry one (e.g.
+// LilyGo T5 S3: BQ27220 gauge + BQ25896 charger). Standard TI command registers;
+// the gauge reports true battery state, so no ADC pin or divider is involved.
+// Addresses/pins come from BoardConfig::ACTIVE.batteryGauge.
+namespace {
+constexpr uint8_t BQ27220_VOLTAGE = 0x08;          // battery voltage, mV (u16 LE)
+constexpr uint8_t BQ27220_STATE_OF_CHARGE = 0x2C;  // SoC, percent (u16 LE)
+constexpr uint8_t BQ25896_REG_STATUS = 0x0B;       // CHRG_STAT in bits [4:3]
+
+bool g_wireReady = false;
+void ensureWire() {
+  if (g_wireReady) return;
+  const auto& g = BoardConfig::ACTIVE.batteryGauge;
+  Wire.begin(g.i2cSda, g.i2cScl, g.i2cHz);
+  g_wireReady = true;
+}
+
+bool readReg16(uint8_t addr, uint8_t reg, uint16_t& out) {
+  if (addr == 0) return false;
+  ensureWire();
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(addr, static_cast<uint8_t>(2), static_cast<uint8_t>(true)) < 2) return false;
+  const uint8_t lo = Wire.read();
+  const uint8_t hi = Wire.read();
+  out = static_cast<uint16_t>(lo) | (static_cast<uint16_t>(hi) << 8);
+  return true;
+}
+
+bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
+  if (addr == 0) return false;
+  ensureWire();
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(addr, static_cast<uint8_t>(1), static_cast<uint8_t>(true)) < 1) return false;
+  out = Wire.read();
+  return true;
+}
+}  // namespace
+#endif  // FREEINK_BATTERY_I2C_GAUGE
 
 BatteryMonitor::BatteryMonitor(uint8_t adcPin, float dividerMultiplier, int8_t chargeStatusPin)
     : _adcPin(adcPin), _dividerMultiplier(dividerMultiplier), _chargeStatusPin(chargeStatusPin) {
@@ -17,10 +64,26 @@ BatteryMonitor::BatteryMonitor(uint8_t adcPin, float dividerMultiplier, int8_t c
 }
 
 uint16_t BatteryMonitor::readPercentage() const {
+#if FREEINK_BATTERY_I2C_GAUGE
+  // Runtime, per active profile: gauge boards (X3, LilyGo) read SoC over I2C; ADC
+  // boards (X4) in the same binary fall through to the divider path below.
+  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+    uint16_t soc = 0;
+    if (!readReg16(BoardConfig::ACTIVE.batteryGauge.gaugeAddr, BQ27220_STATE_OF_CHARGE, soc)) return 0;
+    return soc > 100 ? 100 : soc;
+  }
+#endif
   return percentageFromMillivolts(readMillivolts());
 }
 
 uint16_t BatteryMonitor::readMillivolts() const {
+#if FREEINK_BATTERY_I2C_GAUGE
+  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+    uint16_t gaugeMv = 0;
+    readReg16(BoardConfig::ACTIVE.batteryGauge.gaugeAddr, BQ27220_VOLTAGE, gaugeMv);
+    return gaugeMv;  // gauge reports true battery mV (no divider)
+  }
+#endif
 #if ESP_IDF_VERSION_MAJOR < 5
   // ESP-IDF 4.x doesn't have analogReadMilliVolts, so calibrate manually.
   const uint16_t raw = analogRead(_adcPin);
@@ -40,6 +103,17 @@ double BatteryMonitor::readVolts() const {
 }
 
 bool BatteryMonitor::isCharging() const {
+#if FREEINK_BATTERY_I2C_GAUGE
+  // Gauge boards with a charger IC: BQ25896 REG0B CHRG_STAT[4:3] = 01 pre-charge,
+  // 10 fast charge. chargerAddr 0 (e.g. X3 has no charger IC) -> not reported.
+  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+    const uint8_t chargerAddr = BoardConfig::ACTIVE.batteryGauge.chargerAddr;
+    uint8_t status = 0;
+    if (!readReg8(chargerAddr, BQ25896_REG_STATUS, status)) return false;
+    const uint8_t chrg = (status >> 3) & 0x03;
+    return chrg == 0x01 || chrg == 0x02;
+  }
+#endif
   if (_chargeStatusPin < 0) {
     return false;
   }
