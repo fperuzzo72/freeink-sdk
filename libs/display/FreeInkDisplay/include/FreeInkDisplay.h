@@ -13,6 +13,7 @@
 // so existing firmware builds unchanged via the EInkDisplay.h compat alias.
 
 #include <Arduino.h>
+#include <BoardConfig.h>  // device flags (sizes the framebuffer for the largest panel)
 #include <SPI.h>
 
 #include "../src/bus/EpdBus.h"
@@ -47,7 +48,10 @@ class FreeInkDisplay {
   static constexpr uint16_t X3_DISPLAY_HEIGHT = 528;
   static constexpr uint16_t X3_DISPLAY_WIDTH_BYTES = X3_DISPLAY_WIDTH / 8;
   static constexpr uint32_t X3_BUFFER_SIZE = X3_DISPLAY_WIDTH_BYTES * X3_DISPLAY_HEIGHT;
-  static constexpr uint32_t MAX_BUFFER_SIZE = 52272;  // max(800x480, 792x528) / 8
+  // Sized to the largest panel in the build — derived from the device set in the
+  // registry (no device names here). One binary holds whichever panel is
+  // runtime-selected; a single-device build gets exactly that panel's size.
+  static constexpr uint32_t MAX_BUFFER_SIZE = BoardConfig::MAX_FRAMEBUFFER_BYTES;
 
   // Runtime dimensions
   uint16_t getDisplayWidth() const { return displayWidth; }

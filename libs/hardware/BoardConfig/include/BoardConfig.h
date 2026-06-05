@@ -450,6 +450,23 @@ constexpr BoardProfile LILYGO_T5S3 = {
     NO_SDMMC,
     {39, 40, 400000, 0x55, 0x6B}};  // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40
 
+// Largest framebuffer (bytes) over the devices compiled into this build, derived
+// from the profiles above. The display facade sizes its static framebuffer to
+// this so one binary holds whichever panel is runtime-selected; a single-device
+// build gets exactly that panel's size. Adding a device adds one term here — no
+// device names leak into the display code.
+constexpr uint32_t cmax(uint32_t a, uint32_t b) { return a > b ? a : b; }
+constexpr uint32_t panelBytes(const BoardProfile& p) {
+  return static_cast<uint32_t>(p.displayWidth / 8) * p.displayHeight;
+}
+constexpr uint32_t MAX_FRAMEBUFFER_BYTES =
+    cmax(cmax(cmax(FREEINK_DEVICE_X4 ? panelBytes(XTEINK_X4) : 0u,
+                   FREEINK_DEVICE_X3 ? panelBytes(XTEINK_X3) : 0u),
+              cmax(FREEINK_DEVICE_M5 ? panelBytes(M5STACK_PAPER_COLOR) : 0u,
+                   FREEINK_DEVICE_MURPHY ? panelBytes(MURPHY_M3) : 0u)),
+         cmax(FREEINK_DEVICE_DELINK ? panelBytes(DE_LINK) : 0u,
+              FREEINK_DEVICE_LILYGO ? panelBytes(LILYGO_T5S3) : 0u));
+
 // Compile-time default device — the profile ACTIVE starts as. With a single
 // device in the build this is the only device; with several same-MCU devices it
 // is the boot default until the consumer calls selectDevice().
