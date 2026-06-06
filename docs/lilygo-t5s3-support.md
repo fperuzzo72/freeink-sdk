@@ -80,6 +80,6 @@ reference port at **`lib/Board_T5S3/FreeInkLgfxConfig.cpp`**.
 - **PCA9535 expander and TPS65185 PMIC** — the EPD power sequence (via
   `LgfxEpdConfig::power`) and the user-button read (via `setButtonHook`) both drive
   the same PCA9535, so the board owns the expander and feeds both seams.
-- **GT911 home key** — the GT911 backend reads touch points but does not surface
-  the capacitive home-key bit; a board maps it through `setButtonHook`.
+- **GT911 home key** — the GT911 backend surfaces the capacitive home-key bit
+  (status `0x10`) directly via `InputManager::wasHomeKeyPressed()`.
 - **PCF85063 RTC, LoRa, GPS** — board peripherals the SDK does not cover.
