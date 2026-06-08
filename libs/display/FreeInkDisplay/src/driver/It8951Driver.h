@@ -31,14 +31,16 @@ struct It8951Config {
   uint32_t spiHz;     // SPI clock
   uint16_t rotation;  // LD_IMG rotation 0/1/2/3 = 0/90/180/270°, or IT8951_ROTATE_AUTO
   uint16_t vcomMv;    // VCOM magnitude in mV (e.g. 2300 = -2.30 V); 0 = keep panel OTP
-  uint8_t fullMode;   // waveform mode for RefreshMode::Full (GC16 = 2)
-  uint8_t halfMode;   // waveform mode for RefreshMode::Half (GL16 = 3)
-  uint8_t fastMode;   // waveform mode for RefreshMode::Fast (DU = 1)
-  uint8_t grayMode;   // waveform mode for anti-aliased grayscale pages. DU4 (6) is a
-                      // 4-level DIRECT update: differential, so only changed pixels
-                      // (the AA glyph edges) move — no full-area flash. GL16 (3) and
-                      // GC16 (2) drive every pixel in the region (whole-area flash);
-                      // DU4 ghosts faster, cleared by the periodic full refresh.
+  uint8_t fullMode;   // clearing refresh (GC16 = 2). Used for Full/Half, wake from
+                      // standby, and the periodic ghost-clear below.
+  uint8_t fastMode;   // B/W page turns (DU = 1, 2-level differential).
+  uint8_t grayMode;   // anti-aliased grayscale pages. DU4 (6) is a 4-level DIRECT
+                      // update: differential, so only changed pixels (the AA glyph
+                      // edges) move — no flash. GC16 (2) would drive every pixel.
+  uint16_t ghostClearInterval;  // promote a differential (DU/DU4) refresh to a GC16
+                                // ghost-clear every N partials (0 = never). Keeps
+                                // DU/DU4 residue from accumulating across menu and
+                                // activity navigation, with no firmware involvement.
   uint32_t imgBufFallbackAddr;  // used only if GET_DEV_INFO returns no buffer address
 };
 
@@ -108,6 +110,12 @@ class It8951Driver : public PanelDriver {
   uint32_t _imgBufAddr = 0;
   uint16_t _rotation = 0;
   bool _running = false;
+
+  // Automatic ghost-clear: count differential (DU/DU4) refreshes and promote to a
+  // GC16 clear every ghostClearInterval. _lastClear lets the gray pass match the
+  // B/W pass on a clearing page.
+  uint16_t _partialsSinceClear = 0;
+  bool _lastClear = true;
 
   // Buffered grayscale planes (PSRAM, _fbWb*_fbH each), combined with the B/W base
   // in displayGray(). Allocated in begin().

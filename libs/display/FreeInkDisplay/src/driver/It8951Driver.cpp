@@ -59,11 +59,11 @@ const It8951Config& it8951DefaultConfig() {
       10000000,             // 10 MHz SPI
       IT8951_ROTATE_AUTO,   // pick 0°/90° from the reported panel orientation
       0,                    // vcomMv: 0 -> keep the panel's factory OTP VCOM
-      2,                    // fullMode  = GC16 (full 16-gray, ghost-clearing)
-      3,                    // halfMode  = GL16
+      2,                    // fullMode  = GC16 (ghost-clearing; Full/Half/wake/periodic)
       1,                    // fastMode  = DU   (2-level B/W, fast)
       6,                    // grayMode  = DU4  (4-level DIRECT update: differential,
                             //                   only changed pixels move -> no flash)
+      8,                    // ghostClearInterval: GC16 clear every 8 differential refreshes
       0x001236E0,           // imgBufFallbackAddr (typical M5Paper IT8951 buffer base)
   };
   return cfg;
@@ -359,14 +359,19 @@ void It8951Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
   (void)bus;
   (void)prev;  // IT8951 holds the previous frame in its own SRAM
 
-  uint16_t dpyMode = _cfg.fastMode;
-  if (mode == RefreshMode::Full) dpyMode = _cfg.fullMode;
-  else if (mode == RefreshMode::Half) dpyMode = _cfg.halfMode;
+  // A refresh clears ghosting when it's a Full/Half (the consumer's stronger
+  // refresh), a wake from standby (fresh image), or the periodic ghost-clear —
+  // otherwise it's a fast DU. DU/DU4 leave residue that accumulates across menu and
+  // activity navigation; promoting to GC16 every ghostClearInterval refreshes wipes
+  // it automatically, like the X3 driver, with no firmware involvement.
+  const bool clear = (mode != RefreshMode::Fast) || !_running ||
+                     (_cfg.ghostClearInterval != 0 && _partialsSinceClear >= _cfg.ghostClearInterval);
+  const uint16_t dpyMode = clear ? _cfg.fullMode : _cfg.fastMode;
 
 #ifdef IT8951_PROBE_DEBUG
   if (Serial)
-    Serial.printf("[it8951] display() mode=%d dpyMode=%u running=%d fb=%p panel=%ux%u turnOff=%d\n", (int)mode, dpyMode,
-                  _running, fb, _panelW, _panelH, turnOff);
+    Serial.printf("[it8951] display() mode=%d dpyMode=%u clear=%d n=%u running=%d turnOff=%d\n", (int)mode, dpyMode,
+                  clear, _partialsSinceClear, _running, turnOff);
 #endif
 
   // Snapshot this B/W frame: the consumer clears the live framebuffer during its
@@ -376,6 +381,9 @@ void It8951Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
   loadImageFull(fb);
   displayArea(0, 0, _panelW, _panelH, dpyMode);
   waitDisplayReady();
+
+  _partialsSinceClear = clear ? 0 : static_cast<uint16_t>(_partialsSinceClear + 1);
+  _lastClear = clear;
 
   if (turnOff) {
     writeCommand(CMD_STANDBY);  // park the controller; next load re-runs SYS_RUN
@@ -430,9 +438,11 @@ void It8951Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   }
 #endif
   loadImageGray(base);  // base = snapshot B/W; LSB/MSB already buffered
-  // DU4 is a differential update: only pixels that changed (the AA glyph edges)
-  // transition, so a full-panel refresh refines the edges without a flash.
-  displayArea(0, 0, _panelW, _panelH, _cfg.grayMode);
+  // DU4 is a differential update: only changed pixels (the AA glyph edges) move, so
+  // a full-panel refresh refines the edges without a flash. On a page the B/W pass
+  // already promoted to a GC16 clear, do the same here so ghosting clears fully.
+  const uint16_t gmode = _lastClear ? _cfg.fullMode : _cfg.grayMode;
+  displayArea(0, 0, _panelW, _panelH, gmode);
   waitDisplayReady();
   if (turnOff) {
     writeCommand(CMD_STANDBY);
