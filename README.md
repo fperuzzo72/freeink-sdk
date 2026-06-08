@@ -207,6 +207,20 @@ mirrors the exact working setup: drop it into the CrossPoint repo as
 `pio run -e default` builds the X3+X4 C3 binary against this SDK with **no source
 changes** (the compat shim preserves every include path and class name).
 
+If a CrossPoint local override hits a final-link error for undefined
+`app_main` and `loopTaskHandle`, add the Arduino startup object to that env's
+`build_flags`:
+
+```ini
+-Wl,.pio/build/default/FrameworkArduino/main.cpp.o
+```
+
+This is a PlatformIO/pioarduino archive-order workaround: Arduino's startup
+symbols live in `FrameworkArduino/main.cpp.o`, and some local env overrides do
+not pull that member from `libFrameworkArduino.a` before ESP-IDF asks for
+`app_main`. Change `default` in the path if the env name differs. The CrossPoint
+sample includes the same note.
+
 The minimum is to add the libraries you need as symlink `lib_deps` (names match
 the original SDK):
 
