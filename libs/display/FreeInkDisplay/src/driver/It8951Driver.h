@@ -52,6 +52,18 @@ class It8951Driver : public PanelDriver {
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
 
+  // --- grayscale (16-gray native; reconstruct base + LSB/MSB planes -> 4bpp) ---
+  // Strip support is advertised so the consumer keeps the B/W frame intact and
+  // hands displayGray() the true base buffer (the no-strip fallback overwrites the
+  // framebuffer with the MSB plane, which would paint a near-black, inverted page).
+  bool supportsStripGrayscale() const override { return true; }
+  void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
+  void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
+  void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
+                                uint16_t numRows) override;
+  void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+  void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+
  private:
   // --- low-level SPI framing ---
   void waitReady();                                    // block until HRDY high
@@ -69,6 +81,7 @@ class It8951Driver : public PanelDriver {
   void setTargetMemoryAddr(uint32_t addr);
   void setVcom(uint16_t mv);
   void loadImageFull(const uint8_t* fb);  // expand 1bpp framebuffer -> 4bpp into controller SRAM
+  void loadImageGray(const uint8_t* base);  // combine base + LSB/MSB planes -> 4bpp into controller SRAM
   void displayArea(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t mode);
   void waitDisplayReady();                // poll LUT-busy register
 
@@ -90,6 +103,17 @@ class It8951Driver : public PanelDriver {
   uint32_t _imgBufAddr = 0;
   uint16_t _rotation = 0;
   bool _running = false;
+
+  // Buffered grayscale planes (PSRAM, _fbWb*_fbH each), combined with the B/W base
+  // in displayGray(). Allocated in begin().
+  uint8_t* _gLsb = nullptr;
+  uint8_t* _gMsb = nullptr;
+
+  // Snapshot of the last B/W frame from display(). The consumer's strip-grayscale
+  // pass clears the live framebuffer to 0x00 while rendering the planes to a
+  // scratch buffer, so by displayGray() the passed buffer is black — we use this
+  // snapshot (captured before the clear) as the true base instead.
+  uint8_t* _base = nullptr;
 };
 
 PanelDriver& it8951Driver();

@@ -6,6 +6,10 @@
 // other classic-ESP32-only symbols, so other MCU builds skip it entirely.
 #if FREEINK_DRIVER_IT8951
 
+#include <cstring>
+
+#include "esp_heap_caps.h"
+
 namespace freeink {
 namespace {
 // SPI preamble words (sent MSB-first before each command/data/read).
@@ -35,6 +39,18 @@ constexpr uint16_t BPP_4 = 0x02;       // 4 bits/pixel (native 16-gray)
 constexpr uint16_t ENDIAN_BIG = 0x01;  // big-endian pixel words
 
 constexpr unsigned long READY_TIMEOUT_MS = 3000;
+
+// One pixel's 4bpp value from CrossPoint's anti-aliasing planes (base B/W + LSB +
+// MSB), matching the LilyGo ED047TC1 mapping: a set base bit is white; otherwise
+// MSB/LSB pick light/dark; clear is black. IT8951 4bpp: 0x0=black .. 0xF=white.
+inline uint8_t gray4(uint8_t base, uint8_t lsb, uint8_t msb, uint8_t mask) {
+  if (base & mask) return 0xF;  // white
+  const bool l = lsb & mask, m = msb & mask;
+  if (m && l) return 0x5;  // dark
+  if (m) return 0xA;       // light
+  if (l) return 0x5;       // dark
+  return 0x0;              // black
+}
 }  // namespace
 
 const It8951Config& it8951DefaultConfig() {
@@ -226,6 +242,54 @@ void It8951Driver::loadImageFull(const uint8_t* fb) {
   writeCommand(CMD_LD_IMG_END);
 }
 
+// Same rotation/streaming path as loadImageFull, but each pixel's nibble is the
+// 4-level gray reconstructed from the B/W base + the buffered LSB/MSB planes.
+void It8951Driver::loadImageGray(const uint8_t* base) {
+  if (!_running) {
+    systemRun();
+    _running = true;
+  }
+  setTargetMemoryAddr(_imgBufAddr);
+
+  const uint16_t arg = static_cast<uint16_t>((ENDIAN_BIG << 8) | (BPP_4 << 4) | (_rotation & 0x03));
+  writeCommand(CMD_LD_IMG_AREA);
+  writeData(arg);
+  writeData(0);     // x
+  writeData(0);     // y
+  writeData(_fbW);  // w (image space)
+  writeData(_fbH);  // h
+
+  const bool haveGray = _gLsb && _gMsb;
+  const uint16_t rowOutBytes = _fbW / 2;
+  static uint8_t rowBuf[960 / 2];
+
+  waitReady();
+  _spi.beginTransaction(SPISettings(_cfg.spiHz, MSBFIRST, SPI_MODE0));
+  digitalWrite(_cs, LOW);
+  _spi.transfer16(PRE_WR);
+  for (uint16_t y = 0; y < _fbH; y++) {
+    const uint32_t rowOff = static_cast<uint32_t>(y) * _fbWb;
+    const uint8_t* brow = base + rowOff;
+    const uint8_t* lrow = haveGray ? _gLsb + rowOff : nullptr;
+    const uint8_t* mrow = haveGray ? _gMsb + rowOff : nullptr;
+    uint16_t o = 0;
+    for (uint16_t xb = 0; xb < _fbWb; xb++) {
+      const uint8_t bb = brow[xb];
+      const uint8_t lb = haveGray ? lrow[xb] : 0;
+      const uint8_t mb = haveGray ? mrow[xb] : 0;
+      rowBuf[o++] = static_cast<uint8_t>((gray4(bb, lb, mb, 0x80) << 4) | gray4(bb, lb, mb, 0x40));
+      rowBuf[o++] = static_cast<uint8_t>((gray4(bb, lb, mb, 0x20) << 4) | gray4(bb, lb, mb, 0x10));
+      rowBuf[o++] = static_cast<uint8_t>((gray4(bb, lb, mb, 0x08) << 4) | gray4(bb, lb, mb, 0x04));
+      rowBuf[o++] = static_cast<uint8_t>((gray4(bb, lb, mb, 0x02) << 4) | gray4(bb, lb, mb, 0x01));
+    }
+    _spi.writeBytes(rowBuf, rowOutBytes);
+  }
+  digitalWrite(_cs, HIGH);
+  _spi.endTransaction();
+
+  writeCommand(CMD_LD_IMG_END);
+}
+
 void It8951Driver::begin(EpdBus& bus) {
   (void)bus;  // external bus: this driver owns SPI
   const auto& d = BoardConfig::ACTIVE.display;
@@ -268,6 +332,12 @@ void It8951Driver::begin(EpdBus& bus) {
 #endif
   _spi.begin(_sclk, _miso, _mosi, -1);  // manual CS toggling
 
+  // Grayscale plane buffers + B/W base snapshot (PSRAM): combined in displayGray().
+  const size_t planeBytes = static_cast<size_t>(_fbWb) * _fbH;
+  if (!_gLsb) _gLsb = static_cast<uint8_t*>(heap_caps_malloc(planeBytes, MALLOC_CAP_SPIRAM));
+  if (!_gMsb) _gMsb = static_cast<uint8_t*>(heap_caps_malloc(planeBytes, MALLOC_CAP_SPIRAM));
+  if (!_base) _base = static_cast<uint8_t*>(heap_caps_malloc(planeBytes, MALLOC_CAP_SPIRAM));
+
   waitReady();
   getDeviceInfo();
   writeReg(REG_I80CPCR, 0x0001);  // enable host packed write
@@ -297,6 +367,10 @@ void It8951Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
                   _running, fb, _panelW, _panelH, turnOff);
 #endif
 
+  // Snapshot this B/W frame: the consumer clears the live framebuffer during its
+  // grayscale strip pass, so displayGray() needs this copy as the true base.
+  if (_base && fb) memcpy(_base, fb, static_cast<size_t>(_fbWb) * _fbH);
+
   loadImageFull(fb);
   displayArea(0, 0, _panelW, _panelH, dpyMode);
   waitDisplayReady();
@@ -312,6 +386,61 @@ void It8951Driver::deepSleep(EpdBus& bus) {
   waitDisplayReady();
   writeCommand(CMD_SLEEP);
   _running = false;
+}
+
+// --- grayscale -------------------------------------------------------------
+// The consumer renders the anti-aliasing LSB/MSB planes and hands them here; we
+// buffer them and reconstruct the 16-gray image against the B/W base in
+// displayGray(). Full-frame (copyGrayscale*) and per-strip (writeGrayscalePlaneStrip)
+// delivery are both supported; the strip path is preferred because it leaves the
+// consumer's B/W framebuffer intact, so displayGray() gets the true base buffer.
+void It8951Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
+  (void)bus;
+  if (_gLsb && lsb) memcpy(_gLsb, lsb, static_cast<size_t>(_fbWb) * _fbH);
+}
+
+void It8951Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+  (void)bus;
+  if (_gMsb && msb) memcpy(_gMsb, msb, static_cast<size_t>(_fbWb) * _fbH);
+}
+
+void It8951Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
+                                            uint16_t numRows) {
+  (void)bus;
+  uint8_t* dst = (plane == GrayPlane::Lsb) ? _gLsb : _gMsb;
+  if (!dst || !rows) return;
+  memcpy(dst + static_cast<uint32_t>(yStart) * _fbWb, rows, static_cast<size_t>(numRows) * _fbWb);
+}
+
+void It8951Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) {
+  (void)bus;
+  (void)lut;
+  (void)factoryMode;
+  // The consumer's strip-grayscale pass clears the live framebuffer (fb) to 0x00,
+  // so use the B/W snapshot captured in display() as the base. Fall back to the
+  // passed buffer only if no snapshot exists yet.
+  const uint8_t* base = _base ? _base : fb;
+#ifdef IT8951_PROBE_DEBUG
+  if (Serial && base) {
+    const uint32_t mid = static_cast<uint32_t>(_fbH / 2) * _fbWb;
+    Serial.printf("[it8951] displayGray() snapBase[0,mid]=%02X %02X fb[0]=%02X gLsb=%p gMsb=%p turnOff=%d\n", base[0],
+                  base[mid], fb ? fb[0] : 0, _gLsb, _gMsb, turnOff);
+  }
+#endif
+  loadImageGray(base);  // base = snapshot B/W; LSB/MSB already buffered
+  displayArea(0, 0, _panelW, _panelH, _cfg.fullMode);  // GC16: clean 16-gray
+  waitDisplayReady();
+  if (turnOff) {
+    writeCommand(CMD_STANDBY);
+    _running = false;
+  }
+}
+
+void It8951Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
+  // Nothing to re-sync: the IT8951 holds its own frame, and the next display()
+  // reloads the framebuffer wholesale. The base B/W frame is left untouched.
+  (void)bus;
+  (void)bw;
 }
 
 // Per-board injection mirrors the other drivers: a board wiring the IT8951
