@@ -175,12 +175,27 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `-DFREEINK_SD_SDMMC=1` | use the native 4-bit SDMMC backend (needs `-DUSE_BLOCK_DEVICE_INTERFACE=1`); auto-on for de-link |
 | `-DFREEINK_BATTERY_I2C_GAUGE=1` | compile the I²C fuel-gauge backend (BQ27220/BQ25896); auto-on for X3 and LilyGo. Gauge-vs-ADC is then runtime per profile, so X3 (gauge) + X4 (ADC) coexist in one binary |
 | `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | single framebuffer (uses controller RAM as previous frame) |
+| `-DFREEINK_FB_PSRAM=1` | place the facade framebuffer(s) in PSRAM heap (`MALLOC_CAP_SPIRAM`, allocated in `begin()`) instead of static DRAM `.bss`; auto-on for M5Paper, off everywhere else |
 | `-DFREEINK_NET_WOLFSSL=1` | enable the wolfSSL TLS 1.3 transport in `SecureNet` |
 
 Panel **orientation/mirroring** is per-board data, not a flag: set `BoardProfile.orientation`
 (`NO_FLIP`, `MIRROR_X`, `MIRROR_Y`, or `ROTATE_180`). The SSD1677 driver applies it in
 hardware (mirrorX via RAM column addressing, mirrorY via gate scan). 90° and 270°
 need a software transpose, which the driver does not do.
+
+### Framebuffer placement (`FREEINK_FB_PSRAM`)
+
+The facade's framebuffer(s) sit in static DRAM `.bss` by default — fastest, and the
+panel sizes fit comfortably on the C3/S3 parts (the largest, 960×540, is ~63 KB).
+M5Paper v1.1 is the exception: the classic ESP32 shares ~300 KB of DRAM with the
+IDF/WiFi stacks and the firmware's own buffers, so that 63 KB framebuffer in `.bss`
+overflows internal RAM. For M5Paper, `FREEINK_FB_PSRAM` defaults on and the
+framebuffer is heap-allocated in PSRAM (`heap_caps_malloc(MALLOC_CAP_SPIRAM)`, once,
+in `begin()`, with a DRAM `malloc` fallback). DRAM is faster than cache-backed PSRAM
+and the framebuffer is touched heavily during composition, so it stays off for every
+other device — but any DRAM-tight build (e.g. a feature-heavy LilyGo T5 S3, same
+63 KB) can opt in with `-DFREEINK_FB_PSRAM=1` without code changes. The build needs
+PSRAM enabled (`-DBOARD_HAS_PSRAM`).
 
 ## Networking — TLS 1.3 (`SecureNet`)
 

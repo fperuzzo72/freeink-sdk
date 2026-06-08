@@ -120,11 +120,21 @@ class FreeInkDisplay {
   uint16_t displayWidthBytes = DISPLAY_WIDTH_BYTES;
   uint32_t bufferSize = BUFFER_SIZE;
 
-  // Frame buffer (statically allocated, facade-owned).
+  // Frame buffer (facade-owned). Static DRAM by default; PSRAM heap on devices
+  // with tight DRAM but PSRAM (see FREEINK_FB_PSRAM in BoardConfig.h), allocated
+  // in begin().
+#if FREEINK_FB_PSRAM
+  uint8_t* frameBuffer0 = nullptr;
+#else
   uint8_t frameBuffer0[MAX_BUFFER_SIZE];
+#endif
   uint8_t* frameBuffer;
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+#if FREEINK_FB_PSRAM
+  uint8_t* frameBuffer1 = nullptr;
+#else
   uint8_t frameBuffer1[MAX_BUFFER_SIZE];
+#endif
   uint8_t* frameBufferActive;
 #endif
 };

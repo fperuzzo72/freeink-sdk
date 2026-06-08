@@ -7,6 +7,11 @@
 #include <fstream>
 #include <vector>
 #endif
+#if FREEINK_FB_PSRAM
+#include <cstdlib>
+
+#include "esp_heap_caps.h"
+#endif
 
 #include "driver/PanelDriver.h"
 
@@ -131,11 +136,33 @@ void FreeInkDisplay::begin() {
   displayWidthBytes = geom.widthBytes;
   bufferSize = geom.bufferSize;
 
+#if FREEINK_FB_PSRAM
+  // PSRAM-backed framebuffer(s) — allocate once. MAX_BUFFER_SIZE covers the
+  // largest panel in this build (one panel for a single-device M5Paper bin).
+  // Fall back to internal RAM if PSRAM is somehow unavailable.
+  if (!frameBuffer0) {
+    frameBuffer0 = static_cast<uint8_t*>(heap_caps_malloc(MAX_BUFFER_SIZE, MALLOC_CAP_SPIRAM));
+    if (!frameBuffer0) frameBuffer0 = static_cast<uint8_t*>(malloc(MAX_BUFFER_SIZE));
+  }
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  if (!frameBuffer1) {
+    frameBuffer1 = static_cast<uint8_t*>(heap_caps_malloc(MAX_BUFFER_SIZE, MALLOC_CAP_SPIRAM));
+    if (!frameBuffer1) frameBuffer1 = static_cast<uint8_t*>(malloc(MAX_BUFFER_SIZE));
+  }
+#endif
+#endif
+
   frameBuffer = frameBuffer0;
-  memset(frameBuffer0, 0xFF, bufferSize);
+#if FREEINK_FB_PSRAM
+  if (frameBuffer0)  // guard against an allocation failure (OOM); the #if keeps the
+#endif               // static-array build free of a -Waddress always-true warning
+    memset(frameBuffer0, 0xFF, bufferSize);
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   frameBufferActive = frameBuffer1;
-  memset(frameBuffer1, 0xFF, bufferSize);
+#if FREEINK_FB_PSRAM
+  if (frameBuffer1)
+#endif
+    memset(frameBuffer1, 0xFF, bufferSize);
 #endif
 
   _driver->begin(_bus);

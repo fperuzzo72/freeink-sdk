@@ -140,6 +140,16 @@
 #endif
 #endif
 
+// Place the facade framebuffer(s) in PSRAM (heap, MALLOC_CAP_SPIRAM) instead of
+// static DRAM .bss. Default on for M5Paper v1.1: the classic ESP32 has tight
+// internal DRAM but 8MB PSRAM, and the 63KB 540x960 framebuffer does not fit in
+// .bss alongside the firmware. Every other device keeps the static DRAM array.
+// (The prebuilt Arduino-ESP32 libs disable BSS-in-PSRAM, so this is a runtime
+// heap allocation, not EXT_RAM_BSS_ATTR.)
+#ifndef FREEINK_FB_PSRAM
+#define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER)
+#endif
+
 // SD transport. de-link is wired for 4-bit SDMMC; SdFat can't drive SDIO, so it
 // gets a native esp-idf SDMMC block device behind SDCardManager. Every other
 // board stays on SdFat-over-SPI. Override with -DFREEINK_SD_SDMMC=0/1.
