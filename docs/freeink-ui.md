@@ -443,9 +443,16 @@ it.
 
 ## Adopting FreeInkUI in an Existing Firmware
 
-1. Pick or write a `DrawTarget`. Firmwares built on `GfxRenderer` use the
-   SDK's `GfxRendererTarget` directly; anything else implements the six
-   `DrawTarget` methods over its own renderer.
+1. Pick or write a `DrawTarget`. There are two paths, and text wrapping is
+   the fork between them:
+   - Firmwares built on the `GfxRenderer` drawing stack use the SDK's
+     `GfxRendererTarget` directly — it wraps and truncates through that
+     renderer's own bidi/kerning-aware text pipeline.
+   - Everything else (lightweight glyph engines, bare framebuffers)
+     implements the `DrawTarget` methods over its own renderer and delegates
+     `text()` to the SDK's `layoutText()` — wrap, ellipsis, alignment, and
+     vertical centering come from the SDK; the target only draws the emitted
+     single-line runs.
 2. Build the per-frame `InputSnapshot` from the firmware's input layer (the
    `FreeInkUIInputManager.h` adapter covers the SDK's own `InputManager`).
 3. Parse the theme format's token/state-style sections into `ThemeTokens`
