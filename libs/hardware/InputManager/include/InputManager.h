@@ -146,8 +146,7 @@ class InputManager {
   // BoardConfig::ACTIVE.touch.controller (CHSC6x IRQ-driven, GT911 polled).
   void beginTouch();
   uint8_t serviceTouch();                                   // runs the machine; returns synthesized button mask
-  bool touchIrqActive(int irqRaw) const;
-  void updateTouchFromIrq(unsigned long now, int irqRaw);   // CHSC6x IRQ state machine
+  void updateTouchFromIrq(unsigned long now, int irqRaw);   // CHSC6x I2C poll + touch-bit gate
   void pollGt911(unsigned long now);                        // GT911 polled read
   bool readChsc6xPoint(TouchPoint& point);
   bool decodeChsc6xFrame(const uint8_t* data, size_t len, TouchPoint& point) const;
@@ -170,13 +169,10 @@ class InputManager {
   bool confirmBackLongPressActive;
 
   // Touch state machine
-  bool touchIrqEnabled = false;       // IRQ pin configured
   bool touchDataEnabled = false;      // I2C up, controller present
   uint8_t gt911Addr = 0;              // resolved GT911 address (0 until probed)
-  int touchIrqLast = 1;
-  unsigned long touchIrqLastChangeTime = 0;
-  unsigned long touchIrqPulseUntil = 0;
-  unsigned long touchReadAt = 0;  // next allowed point read (throttle while active)
+  unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
+  unsigned long touchReadAt = 0;         // next scheduled I2C poll
   unsigned long touchReleaseAt = 0;
   bool touchPressed = false;
   bool touchPressedEvent = false;
@@ -196,9 +192,8 @@ class InputManager {
   static constexpr unsigned long CONFIRM_BACK_HOLD_MS = 650;
 
   // Touch timing / protocol constants (ported from the Murphy M3 CHSC6x driver).
-  static constexpr unsigned long TOUCH_IRQ_DEBOUNCE_MS = 5;
-  static constexpr unsigned long TOUCH_IRQ_PULSE_MS = 120;
-  static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8;
+  static constexpr unsigned long TOUCH_IRQ_PULSE_MS = 120;   // release hold-over after last valid read
+  static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8;  // I2C poll cadence
   static constexpr uint8_t TOUCH_READ_COMMAND = 0x00;
   static constexpr uint8_t TOUCH_FRAME_SIZE = 16;
 

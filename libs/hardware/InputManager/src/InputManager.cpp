@@ -319,14 +319,9 @@ void InputManager::beginTouch() {
     beginGt911();
     return;
   }
-  // CHSC6x: IRQ pin + I2C bus.
-  if (t.irq >= 0) {
-    pinMode(t.irq, INPUT);
-    touchIrqLast = digitalRead(t.irq);
-    touchIrqLastChangeTime = millis();
-    touchIrqPulseUntil = 0;
-    touchIrqEnabled = true;
-  }
+  // CHSC6x: I2C bus only. The IRQ is left unconfigured — it's a brief pulse on
+  // this controller, so detection polls I2C and gates on the frame's touch bit
+  // instead (see decodeChsc6xFrame / updateTouchFromIrq).
   if (t.sda >= 0 && t.scl >= 0 && t.i2cAddress != 0) {
     Wire.begin(t.sda, t.scl, 100000);
     Wire.setTimeOut(4);
@@ -346,15 +341,9 @@ uint8_t InputManager::serviceTouch() {
   if (t.controller == BoardConfig::TouchController::Gt911) {
     pollGt911(now);
   } else {
-    const int raw = touchIrqEnabled ? digitalRead(t.irq) : (t.irqActiveLow ? HIGH : LOW);
-    updateTouchFromIrq(now, raw);
-    if (raw != touchIrqLast && now - touchIrqLastChangeTime >= TOUCH_IRQ_DEBOUNCE_MS) {
-      touchIrqLast = raw;
-      touchIrqLastChangeTime = now;
-      if (touchIrqActive(raw)) {
-        touchIrqPulseUntil = now + TOUCH_IRQ_PULSE_MS;
-      }
-    }
+    updateTouchFromIrq(now, 0);  // detection polls I2C; the IRQ is unused now
+    // Synthesized confirm tracks an actually-detected press, not the IRQ line.
+    if (touchPressedEvent) touchIrqPulseUntil = now + TOUCH_IRQ_PULSE_MS;
   }
 
   return (t.synthesizeConfirm && now < touchIrqPulseUntil) ? (1 << BTN_CONFIRM) : 0;
@@ -365,18 +354,16 @@ uint8_t InputManager::serviceTouch() {
 
 #if FREEINK_CAP_TOUCH
 
-bool InputManager::touchIrqActive(const int irqRaw) const {
-  return BoardConfig::ACTIVE.touch.irqActiveLow ? irqRaw == LOW : irqRaw == HIGH;
-}
-
 void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw) {
-  // Poll the point whenever the controller signals active, throttled to
-  // TOUCH_SAMPLE_DELAY_MS — not just on the IRQ rising edge. A single
-  // edge-gated read missed quick taps and taps that landed in a gap of a
-  // pulsing IRQ, forcing the user to hold until a later edge produced another
-  // read. Reading while active catches the press within one sample interval
-  // and keeps the position fresh for the duration of the contact.
-  if (touchIrqActive(irqRaw) && now >= touchReadAt) {
+  // Poll the controller over I2C on a fixed cadence, independent of the IRQ.
+  // The CHSC6x IRQ is a brief (~24ms) pulse at touch-down, not a level held for
+  // the contact, so edge/level-gated reads missed quick taps. readChsc6xPoint
+  // only returns true for a real touch (data[3] touch bit), so polling can't
+  // latch the idle phantom frame. A valid read sets the press and refreshes the
+  // release deadline; once reads stop coming, the touch releases after a short
+  // hold-over.
+  (void)irqRaw;
+  if (now >= touchReadAt) {
     touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
     TouchPoint point = {false, 0, 0, 0};
     if (readChsc6xPoint(point)) {
@@ -416,7 +403,16 @@ bool InputManager::readChsc6xPoint(TouchPoint& point) {
 }
 
 bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, TouchPoint& point) const {
-  if (len < 7 || (data[0] != 0x00 && data[0] != 0x36)) {
+  if (len < 7) {
+    return false;
+  }
+  // data[3] bit 7 is the touch-present flag: 0x80 while a finger is down, 0x00
+  // when idle. The controller keeps returning a stale coordinate frame between
+  // touches, so without this gate every read looks like a phantom touch (which
+  // is why polling reported a fixed point and IRQ-gated reads were needed to
+  // dodge it). Release transitions briefly show 0x40/0xff — both fail this test
+  // or the coordinate sanity check below.
+  if ((data[3] & 0x80) == 0) {
     return false;
   }
   const uint16_t rawX = data[4];                                          // X: one byte
