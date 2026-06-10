@@ -129,6 +129,9 @@ tied to any application's screen structure:
 - `keyGrid`
 - `metricCard`
 - `batteryIndicator`
+- `coverCarousel` (prev/center/next cover slots with selection chrome and
+  tap/swipe/button routing; the app renders cover art into the returned
+  slot rects, so image decoding and frame caching stay app-owned)
 
 These cover the shared surfaces of a typical e-reader or appliance UI: home
 menus, settings lists, button hints, status/progress bars, popups,

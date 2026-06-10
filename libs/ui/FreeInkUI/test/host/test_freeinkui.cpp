@@ -1118,6 +1118,75 @@ void testCrossInkSleepScreenComposition() {
   CHECK_EQ(interactions.count(), 0u);
 }
 
+
+void testCoverCarousel() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> interactions;
+  Frame<16> frame(draw, device, input, interactions);
+
+  CarouselProps props;
+  props.count = 5;
+  props.selectedIndex = 2;
+  props.action = 90;
+  props.centerSize = Size{200, 300};
+  props.sideSize = Size{100, 150};
+  props.gap = 10;
+  CarouselSlot slots[3];
+  coverCarousel(frame, Rect{0, 100, 480, 400}, props, slots);
+
+  // Geometry: center is centered and larger; sides flank it, vertically
+  // centered, app gets content rects inside the frames.
+  CHECK(slots[1].valid);
+  CHECK(slots[1].isCenter);
+  CHECK_EQ(slots[1].frame.x, 140);
+  CHECK_EQ(slots[1].frame.width, 200);
+  CHECK_EQ(slots[0].frame.right(), 130);
+  CHECK_EQ(slots[2].frame.x, 350);
+  CHECK_EQ(slots[0].itemIndex, 1);
+  CHECK_EQ(slots[2].itemIndex, 3);
+  CHECK_EQ(slots[1].content.width, 192);  // frame inset by contentInset 4
+
+  // Center frame gets the selected (thicker) chrome.
+  bool sawThickCenter = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Stroke && draw.ops[i].rect.x == 140) sawThickCenter = true;
+  }
+  CHECK(sawThickCenter);
+
+  // Tap a side cover -> that item; swipe left -> next item.
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 80;
+  tap.touchY = 300;
+  CHECK_EQ(interactions.route(tap).value, 1);
+  InputSnapshot swipe;
+  swipe.swipeLeft = true;
+  CHECK_EQ(interactions.route(swipe).value, 3);
+  InputSnapshot prev;
+  prev.prev = true;
+  CHECK_EQ(interactions.route(prev).value, 1);
+
+  // Edges without wrap: first item has no previous slot.
+  FakeDrawTarget draw2;
+  InteractionBuffer<16> interactions2;
+  Frame<16> frame2(draw2, device, input, interactions2);
+  props.selectedIndex = 0;
+  coverCarousel(frame2, Rect{0, 100, 480, 400}, props, slots);
+  CHECK(!slots[0].valid);
+  CHECK(slots[2].valid);
+
+  // With wrap, the previous slot comes from the far end.
+  FakeDrawTarget draw3;
+  InteractionBuffer<16> interactions3;
+  Frame<16> frame3(draw3, device, input, interactions3);
+  props.wrap = true;
+  coverCarousel(frame3, Rect{0, 100, 480, 400}, props, slots);
+  CHECK(slots[0].valid);
+  CHECK_EQ(slots[0].itemIndex, 4);
+}
+
 void testInvertedDrawTarget() {
   CHECK(invertedColor(Color::Black) == Color::White);
   CHECK(invertedColor(Color::White) == Color::Black);
@@ -1211,6 +1280,7 @@ int main() {
   testRotationAndBitmapSampling();
   testListSectionHeaders();
   testCrossInkSleepScreenComposition();
+  testCoverCarousel();
   testInvertedDrawTarget();
   testStyleSetUnset();
 
