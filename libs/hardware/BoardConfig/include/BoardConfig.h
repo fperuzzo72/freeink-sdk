@@ -130,7 +130,7 @@
 #define FREEINK_CAP_COLOR (FREEINK_DEVICE_M5)
 #endif
 #ifndef FREEINK_CAP_AUDIO
-#define FREEINK_CAP_AUDIO 0
+#define FREEINK_CAP_AUDIO (FREEINK_DEVICE_MURPHY)
 #endif
 #ifndef FREEINK_CAP_NET_TLS13
 #if defined(FREEINK_NET_WOLFSSL)
@@ -180,9 +180,10 @@ enum class DisplayController : uint8_t { SSD1677, UC8253, ED2208, LgfxEpd, IT895
 // Optional capacitive touch controller.
 enum class TouchController : uint8_t { None, Chsc6x, Gt911 };
 
-// Optional audio output path. No current board ships audio; this is scaffolding
-// so a future device fills in pins and the AudioManager lights up.
-enum class AudioOutput : uint8_t { None, I2sDac, PwmBuzzer };
+// Optional audio output path. Murphy M3 ships an ES8388-compatible stereo
+// codec (I2S slave, control over the shared touch I2C bus) — the contract was
+// recovered from the OEM firmware dump; see the consumer's audio notes.
+enum class AudioOutput : uint8_t { None, I2sDac, I2sEs8388, PwmBuzzer };
 
 constexpr int8_t PIN_UNASSIGNED = -1;
 
@@ -268,15 +269,19 @@ struct FrontlightConfig {
   bool activeHigh;
 };
 
-// Audio output description (AudioOutput::None disables it). Scaffolding only —
-// no current board populates real pins.
+// Audio output description (AudioOutput::None disables it).
 struct AudioConfig {
   AudioOutput output;
-  int8_t bclk;    // I2S bit clock (unused for PWM buzzer)
-  int8_t lrclk;   // I2S word select (unused for PWM buzzer)
-  int8_t dout;    // I2S data out, or the PWM pin for a buzzer
-  int8_t enable;  // amplifier enable / shutdown pin
+  int8_t bclk;     // I2S bit clock (unused for PWM buzzer)
+  int8_t lrclk;    // I2S word select (unused for PWM buzzer)
+  int8_t dout;     // I2S data out, or the PWM pin for a buzzer
+  int8_t mclk;     // I2S master clock (PIN_UNASSIGNED if not wired)
+  int8_t enable;   // amplifier / rail enable pin (PIN_UNASSIGNED if none)
   bool enableActiveHigh;
+  int8_t codecSda;    // codec control I2C — may be a shared bus (e.g. touch)
+  int8_t codecScl;
+  uint8_t codecAddr;  // 7-bit codec address, 0 = no control codec
+  int8_t buzzer;      // separate LEDC tone pin (PIN_UNASSIGNED if none)
 };
 
 // How the panel is mounted relative to the driver's native scan. Any board injects
@@ -319,7 +324,19 @@ constexpr TouchConfig NO_TOUCH = {
 constexpr TouchConfig LILYGO_T5_PRO_GT911 = {
     TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 539, 0, 959, false, 0x14, false, false};
 constexpr FrontlightConfig NO_FRONTLIGHT = {PIN_UNASSIGNED, 0, 0, true};
-constexpr AudioConfig NO_AUDIO = {AudioOutput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true};
+constexpr AudioConfig NO_AUDIO = {AudioOutput::None,  PIN_UNASSIGNED, PIN_UNASSIGNED,
+                                  PIN_UNASSIGNED,     PIN_UNASSIGNED, PIN_UNASSIGNED,
+                                  true,               PIN_UNASSIGNED, PIN_UNASSIGNED,
+                                  0,                  PIN_UNASSIGNED};
+
+// Murphy M3 audio, recovered from the OEM firmware: ES8388-compatible codec at
+// 7-bit I2C 0x10 on the shared touch bus (SDA=13/SCL=12, 100 kHz), I2S master
+// on BCLK=40/WS=39/DOUT=41/MCLK=42 (DIN unused). GPIO43 is driven HIGH by the
+// stock board init and is preserved here as the enable line (not proven to be
+// audio-specific, but the OEM bring-up notes say keep it high). GPIO46 carries
+// a separate LEDC tone/buzzer path.
+constexpr AudioConfig MURPHY_AUDIO = {AudioOutput::I2sEs8388, 40, 39, 41, 42, 43, true,
+                                      13, 12, 0x10, 46};
 constexpr DisplayOrientation NO_FLIP = {false, false};            // native scan
 constexpr DisplayOrientation ROTATE_180 = {true, true};           // upside-down mount
 constexpr DisplayOrientation MIRROR_X = {true, false};            // horizontal mirror
@@ -413,7 +430,10 @@ constexpr BoardProfile MURPHY_M3 = {
     PIN_UNASSIGNED,
     {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 392, false, 0, true, false},
     {48, 25000, 10, true},
-    NO_AUDIO,
+    // NOTE: the SPI SD pin guess above (39/13/40) predates the OEM firmware
+    // audio recovery and conflicts with the proven I2S pins (39/40/41/42) and
+    // shared I2C (13). Audio is the verified owner of those pins.
+    MURPHY_AUDIO,
     NO_FLIP,
     NO_SDMMC,
     NO_GAUGE};

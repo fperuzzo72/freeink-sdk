@@ -218,6 +218,29 @@ source** — which supports TLS 1.3 + PSA and bypasses system mbedTLS entirely:
 Opt-in: `-DFREEINK_NET_WOLFSSL=1` plus a wolfSSL source `lib_dep`. With the flag
 off it compiles to an inert no-op, so the rest of the SDK builds without wolfSSL.
 
+## UI framework (`FreeInkUI`)
+
+`libs/ui/FreeInkUI` is a memory-bounded, immediate-mode UI layer for e-paper:
+
+- fixed row/column layout slots and semantic action routing — touch, GPIO,
+  focus navigation, and gestures all resolve to app-defined action IDs
+- state-aware styling (`StyleSet` per interaction state) with rounded and
+  per-corner-rounded fills, pill selections, dithers, and one-call whole-UI
+  inversion for dark mode (`InvertedDrawTarget`)
+- virtualized lists (only visible rows are laid out and hit-tested), pill tab
+  bars, keyboard grids with glyph art, dialogs, status bars with
+  measured-cluster layouts that double as page overlays, metric cards, bar
+  charts, and battery glyphs
+- borrowed localized strings and host-resolved assets — no heap allocation,
+  no file IO, no JSON in the UI layer
+- freestanding C++17 with no Arduino dependency, covered by host-side unit
+  tests (`libs/ui/FreeInkUI/test/host/run.sh`)
+
+Optional header-only adapters bridge it to a `GfxRenderer`-based drawing
+stack (`FreeInkUIGfxRenderer.h`) and to this SDK's `InputManager`
+(`FreeInkUIInputManager.h`), so existing fonts, bidi, localization, and page
+rendering stay where they are. See [`docs/freeink-ui.md`](docs/freeink-ui.md).
+
 ## Using FreeInk from PlatformIO
 
 See **[`platformio.sample.ini`](platformio.sample.ini)** for a complete, ready-to-copy
@@ -256,6 +279,7 @@ lib_deps =
   BatteryMonitor=symlink://path/to/freeink-sdk/libs/hardware/BatteryMonitor
   SDCardManager=symlink://path/to/freeink-sdk/libs/hardware/SDCardManager
   ; optional:
+  FreeInkUI=symlink://path/to/freeink-sdk/libs/ui/FreeInkUI
   PowerManager=symlink://path/to/freeink-sdk/libs/hardware/PowerManager
   FrontlightManager=symlink://path/to/freeink-sdk/libs/hardware/FrontlightManager
   SecureNet=symlink://path/to/freeink-sdk/libs/network/SecureNet
