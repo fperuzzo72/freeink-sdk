@@ -428,7 +428,7 @@ constexpr BoardProfile MURPHY_M3 = {
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     PIN_UNASSIGNED,
     PIN_UNASSIGNED,
-    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 392, false, 0, true, false},
+    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 398, false, 0, true, false},
     {48, 25000, 10, true},
     // NOTE: the SPI SD pin guess above (39/13/40) predates the OEM firmware
     // audio recovery and conflicts with the proven I2S pins (39/40/41/42) and

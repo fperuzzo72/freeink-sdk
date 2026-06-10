@@ -103,6 +103,13 @@ Rect centeredRect(Rect outer, Size inner) {
 }
 
 Rect ensureMinTouchRect(Rect visual, int16_t minSize, Rect bounds) {
+  // Edge snap: hit rects whose edge lies within EDGE_SNAP_PX of a bounds edge
+  // extend to that boundary. The touch transforms clamp bezel-adjacent taps to
+  // the exact border pixels (touchToLogical / raw-range clamping), so an inset
+  // control near an edge otherwise has a dead gutter its own users tap into —
+  // an edge target should reach the physical edge (the Fitts's-law rule).
+  constexpr int16_t EDGE_SNAP_PX = 12;
+
   Rect rect = visual;
   if (rect.width < minSize) {
     const int16_t delta = static_cast<int16_t>(minSize - rect.width);
@@ -118,6 +125,21 @@ Rect ensureMinTouchRect(Rect visual, int16_t minSize, Rect bounds) {
   if (rect.y < bounds.y) rect.y = bounds.y;
   if (rect.right() > bounds.right()) rect.x = static_cast<int16_t>(bounds.right() - rect.width);
   if (rect.bottom() > bounds.bottom()) rect.y = static_cast<int16_t>(bounds.bottom() - rect.height);
+
+  if (rect.x - bounds.x < EDGE_SNAP_PX) {
+    rect.width = static_cast<int16_t>(rect.width + (rect.x - bounds.x));
+    rect.x = bounds.x;
+  }
+  if (rect.y - bounds.y < EDGE_SNAP_PX) {
+    rect.height = static_cast<int16_t>(rect.height + (rect.y - bounds.y));
+    rect.y = bounds.y;
+  }
+  if (bounds.right() - rect.right() < EDGE_SNAP_PX) {
+    rect.width = static_cast<int16_t>(bounds.right() - rect.x);
+  }
+  if (bounds.bottom() - rect.bottom() < EDGE_SNAP_PX) {
+    rect.height = static_cast<int16_t>(bounds.bottom() - rect.y);
+  }
   return rect;
 }
 
