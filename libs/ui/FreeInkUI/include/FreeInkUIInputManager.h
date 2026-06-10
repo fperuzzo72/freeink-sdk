@@ -51,5 +51,27 @@ inline InputSnapshot snapshotFrom(const InputManager& input, const ButtonBinding
   return snapshot;
 }
 
+// Orientation-aware variant: taps arrive as InputManager's normalized
+// panel-native coordinates and land in the snapshot already mapped to the
+// device's logical frame via touchToLogical(). flipX/flipY compensate for
+// mirrored panel mounting (a board property — set once per device, verified
+// on the bench, not rediscovered per app).
+inline InputSnapshot snapshotFrom(const InputManager& input, const DeviceContext& device,
+                                  const bool touchFlipX = false, const bool touchFlipY = false,
+                                  const ButtonBindings& bindings = ButtonBindings{}) {
+  InputSnapshot snapshot = snapshotFrom(input, bindings);
+  snapshot.touchPressed = false;
+  snapshot.touchReleased = false;
+  float nx = 0.0f;
+  float ny = 0.0f;
+  if (input.hasTouch() && input.wasTouchTap(nx, ny)) {
+    const Point p = touchToLogical(device, nx, ny, touchFlipX, touchFlipY);
+    snapshot.touchReleased = true;
+    snapshot.touchX = p.x;
+    snapshot.touchY = p.y;
+  }
+  return snapshot;
+}
+
 }  // namespace ui
 }  // namespace freeink

@@ -73,6 +73,46 @@ struct DeviceContext {
   Rect safeRect() const { return screen().inset(safeArea); }
 };
 
+// Maps a touch point reported in normalized panel-native portrait
+// coordinates (0..1, as the input layer reports taps) to logical screen
+// coordinates under the device's orientation — the transform every app
+// otherwise re-derives by hand. flipX/flipY compensate for mirrored panel
+// mounting; they are a property of the board, not the app, so feed them from
+// the board profile or a config constant.
+inline Point touchToLogical(const DeviceContext& device, float nx, float ny, const bool flipX = false,
+                            const bool flipY = false) {
+  if (flipX) nx = 1.0f - nx;
+  if (flipY) ny = 1.0f - ny;
+  float lx;
+  float ly;
+  switch (device.orientation) {
+    case Orientation::PortraitInverted:
+      lx = 1.0f - nx;
+      ly = 1.0f - ny;
+      break;
+    case Orientation::LandscapeClockwise:
+      lx = 1.0f - ny;
+      ly = nx;
+      break;
+    case Orientation::LandscapeCounterClockwise:
+      lx = ny;
+      ly = 1.0f - nx;
+      break;
+    case Orientation::Portrait:
+    default:
+      lx = nx;
+      ly = ny;
+      break;
+  }
+  int32_t x = static_cast<int32_t>(lx * device.width);
+  int32_t y = static_cast<int32_t>(ly * device.height);
+  if (x < 0) x = 0;
+  if (x >= device.width) x = device.width - 1;
+  if (y < 0) y = 0;
+  if (y >= device.height) y = device.height - 1;
+  return Point{static_cast<int16_t>(x), static_cast<int16_t>(y)};
+}
+
 enum State : uint8_t {
   StateNormal = 0,
   StateSelected = 1 << 0,

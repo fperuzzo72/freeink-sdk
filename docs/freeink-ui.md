@@ -420,10 +420,22 @@ freeink::ui::InputSnapshot input = freeink::ui::snapshotFrom(inputManager);
 ```
 
 `ButtonBindings` overrides the default UP/DOWN→focus, LEFT/RIGHT→prev/next,
-CONFIRM/BACK mapping per board. Touch coordinates pass through in the input
-manager's mapped panel space; remap them first if the UI renders rotated.
-Long-press and swipe synthesis stay app-owned. Apps with their own input
-layer write the same few lines against it.
+CONFIRM/BACK mapping per board. Long-press and swipe synthesis stay
+app-owned. Apps with their own input layer write the same few lines against
+it.
+
+Touch orientation mapping is SDK-owned: `touchToLogical()` converts
+normalized panel-native portrait coordinates to the logical frame for any
+`DeviceContext.orientation`, with `flipX`/`flipY` for mirrored panel mounting
+(a board property — set it once per device, not per app). The
+orientation-aware `snapshotFrom(input, device, flipX, flipY)` overload
+returns taps already mapped, so hit-testing works without hand-derived
+transforms:
+
+```cpp
+freeink::ui::InputSnapshot input =
+    freeink::ui::snapshotFrom(inputManager, device, TOUCH_FLIP_X, TOUCH_FLIP_Y);
+```
 
 ## Testing
 

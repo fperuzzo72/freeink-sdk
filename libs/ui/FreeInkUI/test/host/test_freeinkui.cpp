@@ -1245,6 +1245,49 @@ void testLayoutTextWrapping() {
   CHECK_EQ(rects[0].x, 44);  // (100 - 12) / 2
 }
 
+
+void testTouchToLogical() {
+  // Panel-native normalized portrait coords -> logical frame, per orientation.
+  DeviceContext portrait = makeDevice(480, 800);
+  Point p = touchToLogical(portrait, 0.5f, 0.25f);
+  CHECK_EQ(p.x, 240);
+  CHECK_EQ(p.y, 200);
+
+  portrait.orientation = Orientation::PortraitInverted;
+  p = touchToLogical(portrait, 0.0f, 0.0f);
+  CHECK_EQ(p.x, 479);
+  CHECK_EQ(p.y, 799);
+
+  // The WakeInk case: 416x240 landscape CCW — fbX = ny*W, fbY = (1-nx)*H.
+  DeviceContext landscape = makeDevice(416, 240);
+  landscape.orientation = Orientation::LandscapeCounterClockwise;
+  p = touchToLogical(landscape, 0.0f, 0.0f);
+  CHECK_EQ(p.x, 0);
+  CHECK_EQ(p.y, 239);
+  p = touchToLogical(landscape, 1.0f, 1.0f);
+  CHECK_EQ(p.x, 415);
+  CHECK_EQ(p.y, 0);
+  p = touchToLogical(landscape, 0.25f, 0.5f);
+  CHECK_EQ(p.x, 208);
+  CHECK_EQ(p.y, 180);
+
+  landscape.orientation = Orientation::LandscapeClockwise;
+  p = touchToLogical(landscape, 0.0f, 0.0f);
+  CHECK_EQ(p.x, 415);
+  CHECK_EQ(p.y, 0);
+
+  // Mounting mirrors apply in panel space, before the rotation.
+  landscape.orientation = Orientation::LandscapeCounterClockwise;
+  p = touchToLogical(landscape, 0.0f, 0.0f, /*flipX=*/true, /*flipY=*/false);
+  CHECK_EQ(p.x, 0);
+  CHECK_EQ(p.y, 0);
+
+  // Out-of-range input clamps inside the screen.
+  p = touchToLogical(landscape, 1.0f, 1.0f);
+  CHECK(p.x <= 415);
+  CHECK(p.y <= 239);
+}
+
 void testInvertedDrawTarget() {
   CHECK(invertedColor(Color::Black) == Color::White);
   CHECK(invertedColor(Color::White) == Color::Black);
@@ -1340,6 +1383,7 @@ int main() {
   testCrossInkSleepScreenComposition();
   testCoverCarousel();
   testLayoutTextWrapping();
+  testTouchToLogical();
   testInvertedDrawTarget();
   testStyleSetUnset();
 
