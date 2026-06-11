@@ -60,7 +60,6 @@ class LedManager {
  private:
   bool enablePower();
   void writePixels(const LedColor* colors, uint8_t count);
-  void writeByte(uint8_t value);
   LedColor scaled(LedColor color) const;
 
   bool begun_ = false;

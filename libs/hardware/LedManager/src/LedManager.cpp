@@ -151,36 +151,44 @@ LedColor LedManager::scaled(LedColor color) const {
                   static_cast<uint8_t>((static_cast<uint16_t>(color.b) * brightness_) / 255)};
 }
 
-void LedManager::writeByte(uint8_t value) {
-  const uint8_t pin = BoardConfig::ACTIVE.leds.data;
-  const uint32_t t0h = nsToCycles(T0H_NS);
-  const uint32_t t1h = nsToCycles(T1H_NS);
-  const uint32_t bit = nsToCycles(BIT_NS);
-
-  for (uint8_t m = 0x80; m != 0; m >>= 1) {
-    const uint32_t start = esp_cpu_get_cycle_count();
-    gpioHigh(pin);
-    waitUntil(start + ((value & m) ? t1h : t0h));
-    gpioLow(pin);
-    waitUntil(start + bit);
+// Tight frame sender. Everything it touches lives in IRAM/DRAM/registers: a
+// flash fetch inside the interrupt-masked window (under WiFi/web/audio load,
+// when the cache is contended) stalls mid-bit, stretches the pulse, and the
+// LEDs latch a corrupted frame — seen as colors sticking after an alarm.
+static void IRAM_ATTR sendFrame(uint8_t pin, const uint8_t* bytes, uint32_t len, uint32_t t0h,
+                         uint32_t t1h, uint32_t bit) {
+  for (uint32_t i = 0; i < len; ++i) {
+    const uint8_t value = bytes[i];
+    for (uint8_t m = 0x80; m != 0; m >>= 1) {
+      const uint32_t start = esp_cpu_get_cycle_count();
+      gpioHigh(pin);
+      waitUntil(start + ((value & m) ? t1h : t0h));
+      gpioLow(pin);
+      waitUntil(start + bit);
+    }
   }
 }
 
 void LedManager::writePixels(const LedColor* colors, uint8_t count) {
   if (!begun_ || !colors || count == 0) return;
-  noInterrupts();
-  for (uint8_t i = 0; i < count; ++i) {
+  // Precompute the byte stream and cycle timings before masking interrupts —
+  // the masked window must not touch flash (see sendFrame). nsToCycles calls
+  // ESP.getCpuFreqMHz(), a flash-resident function.
+  uint8_t bytes[MAX_LEDS * 3];
+  uint32_t len = 0;
+  const bool grb = BoardConfig::ACTIVE.leds.colorOrder == BoardConfig::LedColorOrder::GRB;
+  for (uint8_t i = 0; i < count && i < MAX_LEDS; ++i) {
     const LedColor color = scaled(colors[i]);
-    if (BoardConfig::ACTIVE.leds.colorOrder == BoardConfig::LedColorOrder::GRB) {
-      writeByte(color.g);
-      writeByte(color.r);
-      writeByte(color.b);
-    } else {
-      writeByte(color.r);
-      writeByte(color.g);
-      writeByte(color.b);
-    }
+    bytes[len++] = grb ? color.g : color.r;
+    bytes[len++] = grb ? color.r : color.g;
+    bytes[len++] = color.b;
   }
+  const uint8_t pin = BoardConfig::ACTIVE.leds.data;
+  const uint32_t t0h = nsToCycles(T0H_NS);
+  const uint32_t t1h = nsToCycles(T1H_NS);
+  const uint32_t bit = nsToCycles(BIT_NS);
+  noInterrupts();
+  sendFrame(pin, bytes, len, t0h, t1h, bit);
   interrupts();
   delayMicroseconds(80);
 }

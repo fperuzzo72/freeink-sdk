@@ -296,11 +296,11 @@ bool AudioManager::play(const WavSource& source, bool loop) {
   }
   if (!source.seek(info.dataStart)) return false;
 
-  // Unmute the DAC (stop() mutes it) and raise the speaker amp. Codec writes
-  // stay on the caller's core so the shared I2C bus is never touched from the
-  // audio task.
+  // Unmute the DAC (stop() mutes it). Codec writes stay on the caller's core
+  // so the shared I2C bus is never touched from the audio task. The speaker
+  // amp comes up in the playback task once silence is flowing — enabling it
+  // against an idle I2S line is an audible pop.
   codecMute(false);
-  setAmp(true);
 
   source_ = source;
   wav_ = info;
@@ -357,6 +357,15 @@ void AudioManager::taskLoop() {
   uint8_t inBuf[READ_CHUNK];
   // Mono is duplicated into both slots, so the out buffer is 2x.
   int16_t outBuf[READ_CHUNK];
+
+  // Prime the line with silence, then raise the amp: the AW8737A pops loudly
+  // when enabled against an idle or just-started I2S line.
+  memset(outBuf, 0, sizeof(outBuf));
+  for (int i = 0; i < 2; ++i) {
+    size_t written = 0;
+    if (i2s_channel_write(tx, outBuf, sizeof(outBuf), &written, pdMS_TO_TICKS(200)) != ESP_OK) break;
+  }
+  setAmp(true);
 
   size_t consumed = 0;
   while (!stopRequested_) {
