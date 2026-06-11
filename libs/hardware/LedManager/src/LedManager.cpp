@@ -105,7 +105,16 @@ bool LedManager::begin() {
 
   pinMode(BoardConfig::ACTIVE.leds.data, OUTPUT);
   digitalWrite(BoardConfig::ACTIVE.leds.data, LOW);
+  // Let the LEDs finish their own power-on reset after the rail comes up — a
+  // frame sent too early is mis-latched (typically a stuck green pixel, the
+  // first byte on the wire in GRB order) and nothing rewrites it until the
+  // next show().
+  delay(10);
   begun_ = true;
+  // Double clear: even after the settle delay the first frame can land on
+  // marginal silicon; the second, one latch period later, is reliable.
+  clear();
+  delayMicroseconds(300);
   clear();
   return true;
 }
