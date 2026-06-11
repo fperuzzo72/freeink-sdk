@@ -45,7 +45,7 @@ int8_t Ed2208M5Driver::coCs() const { return BoardConfig::ACTIVE.sd.cs; }
 
 void Ed2208M5Driver::enablePmicPower() {
   // The display is the first M5PM1 caller at boot; it establishes the board power
-  // policy (charge on, boost/RGB rail off — see m5pm1::applyBootPowerPolicy) and
+  // policy (charge+boost on, RGB rail off — see m5pm1::applyBootPowerPolicy) and
   // then routes the EPD rail. LedManager shares the same single PM1 owner.
   m5pm1::beginBus();
   m5pm1::applyBootPowerPolicy();
