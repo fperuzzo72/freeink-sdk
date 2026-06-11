@@ -59,10 +59,12 @@ class LedManager {
 
  private:
   bool enablePower();
+  void disablePower();
   void writePixels(const LedColor* colors, uint8_t count);
   LedColor scaled(LedColor color) const;
 
   bool begun_ = false;
+  bool railOn_ = false;  // LED power rail follows usage: on while any LED is lit
   uint8_t brightness_ = 255;
   LedColor pixels_[MAX_LEDS]{};
   LedColor savedPixels_[MAX_LEDS]{};

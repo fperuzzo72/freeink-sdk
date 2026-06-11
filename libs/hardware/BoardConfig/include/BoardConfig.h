@@ -368,9 +368,7 @@ constexpr AudioConfig NO_AUDIO = {AudioOutput::None,
                                   0,
                                   PIN_UNASSIGNED};
 constexpr LedConfig NO_LEDS = {PIN_UNASSIGNED, 0, LedColorOrder::GRB, false};
-// Bench-verified RGB byte order: with GRB these parts render red as green
-// (first byte on the wire lands in the red slot).
-constexpr LedConfig M5_PAPERCOLOR_LEDS = {21, 2, LedColorOrder::RGB, true};
+constexpr LedConfig M5_PAPERCOLOR_LEDS = {21, 2, LedColorOrder::GRB, true};  // bench-verified GRB
 
 // Murphy M3 audio, recovered from the OEM firmware: ES8388-compatible codec at
 // 7-bit I2C 0x10 on the shared touch bus (SDA=13/SCL=12, 100 kHz), I2S master

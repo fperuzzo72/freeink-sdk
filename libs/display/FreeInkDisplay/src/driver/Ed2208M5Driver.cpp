@@ -36,7 +36,9 @@ constexpr uint32_t PARTIAL_AREA_LIMIT = PANEL_AREA / 4;
 // --- M5PM1 PMIC (routes EPD panel power via GPIO0 / EPD_EN over internal I2C) ---
 constexpr uint8_t M5PM1_ADDR = 0x6E;
 constexpr uint8_t M5PM1_POWER_CONFIG_REG = 0x06;
-constexpr uint8_t M5PM1_WATCHDOG_REG = 0x09;
+constexpr uint8_t M5PM1_I2C_CFG_REG = 0x09;  // I2C_CFG, not a watchdog (official M5PM1
+                                             // map); 0 = 100 kHz + no idle sleep, same as
+                                             // the M5 demo's setI2cConfig(0)
 constexpr uint8_t M5PM1_GPIO_MODE_REG = 0x10;
 constexpr uint8_t M5PM1_GPIO_OUT_REG = 0x11;
 constexpr uint8_t M5PM1_GPIO_DRV_REG = 0x13;
@@ -85,8 +87,15 @@ int8_t Ed2208M5Driver::coCs() const { return BoardConfig::ACTIVE.sd.cs; }
 void Ed2208M5Driver::enablePmicPower() {
   Wire.begin(M5_INTERNAL_I2C_SDA, M5_INTERNAL_I2C_SCL, M5_INTERNAL_I2C_FREQ);
   Wire.setTimeOut(4);
-  m5Pm1WriteReg(M5PM1_WATCHDOG_REG, 0x00);
-  m5Pm1UpdateReg(M5PM1_POWER_CONFIG_REG, 0, M5PM1_POWER_CHARGE_EN | M5PM1_POWER_LDO_EN | M5PM1_POWER_BOOST_EN);
+  m5Pm1WriteReg(M5PM1_I2C_CFG_REG, 0x00);
+  // Actively CLEAR the power bits this driver once set: the PM1 keeps running
+  // across USB reflashes, so bits latched by older firmware survive a flash —
+  // not setting them is not enough. CHARGE_EN/BOOST_EN are never set by M5's
+  // firmware on this board. LDO is the RGB LED rail (owned by LedManager, which
+  // re-enables it lazily while an LED is lit); clear it here too so its green
+  // indicator LED doesn't glow from boot when a stale on-state is inherited
+  // before LedManager::begin() runs — the display always comes up first.
+  m5Pm1UpdateReg(M5PM1_POWER_CONFIG_REG, M5PM1_POWER_CHARGE_EN | M5PM1_POWER_BOOST_EN | M5PM1_POWER_LDO_EN, 0);
   // EPD_EN is M5PM1 GPIO0.
   m5Pm1UpdateReg(M5PM1_GPIO_FUNC0_REG, M5PM1_GPIO0, 0);
   m5Pm1UpdateReg(M5PM1_GPIO_MODE_REG, 0, M5PM1_GPIO0);

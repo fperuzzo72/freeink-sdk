@@ -11,9 +11,10 @@ namespace freeink {
 namespace {
 
 constexpr uint8_t M5PM1_ADDR = 0x6E;
-constexpr uint8_t M5PM1_POWER_CONFIG_REG = 0x06;
-constexpr uint8_t M5PM1_WATCHDOG_REG = 0x09;
-constexpr uint8_t M5PM1_POWER_LDO_EN = 1 << 2;
+constexpr uint8_t M5PM1_POWER_CONFIG_REG = 0x06;  // PWR_CFG (official M5PM1 map)
+constexpr uint8_t M5PM1_I2C_CFG_REG = 0x09;       // I2C_CFG: 0 = 100 kHz, no idle sleep
+constexpr uint8_t M5PM1_NEO_CFG_REG = 0x50;       // PM1's OWN NeoPixel engine: [6] refresh, [5:0] LED count
+constexpr uint8_t M5PM1_POWER_LDO_EN = 1 << 2;    // = PY_RGB_PWR_EN, the LED rail
 constexpr int M5_INTERNAL_I2C_SDA = 3;
 constexpr int M5_INTERNAL_I2C_SCL = 2;
 constexpr uint32_t M5_INTERNAL_I2C_FREQ = 100000;
@@ -21,9 +22,11 @@ constexpr uint32_t M5_INTERNAL_I2C_FREQ = 100000;
 // WS2812/SK6812-compatible 800 kHz timings. The exact high pulse separates 0
 // from 1; the full bit cell stays near 1.25 us. Two LEDs means interrupts are
 // masked for only about 60 us per show().
-constexpr uint16_t T0H_NS = 350;
-constexpr uint16_t T1H_NS = 700;
-constexpr uint16_t BIT_NS = 1250;
+// M5Unified's LedBus_RMT timings for these exact LEDs (300/900 + 900/300 ns,
+// 1.2 us cell, 280 us reset, GRB).
+constexpr uint16_t T0H_NS = 300;
+constexpr uint16_t T1H_NS = 900;
+constexpr uint16_t BIT_NS = 1200;
 
 uint32_t nsToCycles(uint32_t ns) {
   const uint32_t mhz = ESP.getCpuFreqMHz();
@@ -92,30 +95,40 @@ bool LedManager::enablePower() {
 
   Wire.begin(M5_INTERNAL_I2C_SDA, M5_INTERNAL_I2C_SCL, M5_INTERNAL_I2C_FREQ);
   Wire.setTimeOut(4);
-  if (!m5Pm1WriteReg(M5PM1_WATCHDOG_REG, 0x00)) return false;
+  if (!m5Pm1WriteReg(M5PM1_I2C_CFG_REG, 0x00)) return false;
   if (!m5Pm1UpdateReg(M5PM1_POWER_CONFIG_REG, 0, M5PM1_POWER_LDO_EN)) return false;
-  delay(5);
+  delay(10);  // rail ramp + LED power-on reset before the first frame
   return true;
+}
+
+void LedManager::disablePower() {
+  const auto& cfg = BoardConfig::ACTIVE.leds;
+  if (!cfg.pmicRgbPower) return;
+  m5Pm1UpdateReg(M5PM1_POWER_CONFIG_REG, M5PM1_POWER_LDO_EN, 0);
 }
 
 bool LedManager::begin() {
   if (begun_) return true;
   if (!present()) return false;
-  if (!enablePower()) return false;
 
   pinMode(BoardConfig::ACTIVE.leds.data, OUTPUT);
   digitalWrite(BoardConfig::ACTIVE.leds.data, LOW);
-  // Let the LEDs finish their own power-on reset after the rail comes up — a
-  // frame sent too early is mis-latched (typically a stuck green pixel, the
-  // first byte on the wire in GRB order) and nothing rewrites it until the
-  // next show().
-  delay(10);
+  // The LED rail stays OFF outside use: writePixels() powers it up lazily for
+  // the first lit frame and drops it again when everything is black.
+  // Unpowered LEDs are dark by definition — no boot clears needed — and the
+  // rail's green indicator LED only glows while the LEDs are actually in use.
+  // Force the rail off NOW: the PM1 retains state across USB reflashes, so an
+  // older firmware's LDO bit would otherwise stay latched until the first
+  // alarm cycles it.
+  Wire.begin(M5_INTERNAL_I2C_SDA, M5_INTERNAL_I2C_SCL, M5_INTERNAL_I2C_FREQ);
+  Wire.setTimeOut(4);
+  // Evict the PM1 from the LED chain: the PMIC has its own NeoPixel engine
+  // (it renders charge/status onto these same LEDs, even while the ESP
+  // sleeps) — that is the "stuck green LED". NEO_CFG = 0 is the official
+  // M5PM1::disableLeds(): LED count zero, engine off, the ESP owns the chain.
+  m5Pm1WriteReg(M5PM1_NEO_CFG_REG, 0x00);
+  disablePower();
   begun_ = true;
-  // Double clear: even after the settle delay the first frame can land on
-  // marginal silicon; the second, one latch period later, is reliable.
-  clear();
-  delayMicroseconds(300);
-  clear();
   return true;
 }
 
@@ -152,11 +165,10 @@ LedColor LedManager::scaled(LedColor color) const {
 }
 
 // Tight frame sender. Everything it touches lives in IRAM/DRAM/registers: a
-// flash fetch inside the interrupt-masked window (under WiFi/web/audio load,
-// when the cache is contended) stalls mid-bit, stretches the pulse, and the
-// LEDs latch a corrupted frame — seen as colors sticking after an alarm.
+// flash fetch inside the interrupt-masked window (under WiFi/web/audio load)
+// stalls mid-bit, stretches the pulse, and the LEDs latch a corrupted frame.
 static void IRAM_ATTR sendFrame(uint8_t pin, const uint8_t* bytes, uint32_t len, uint32_t t0h,
-                         uint32_t t1h, uint32_t bit) {
+                                uint32_t t1h, uint32_t bit) {
   for (uint32_t i = 0; i < len; ++i) {
     const uint8_t value = bytes[i];
     for (uint8_t m = 0x80; m != 0; m >>= 1) {
@@ -171,6 +183,20 @@ static void IRAM_ATTR sendFrame(uint8_t pin, const uint8_t* bytes, uint32_t len,
 
 void LedManager::writePixels(const LedColor* colors, uint8_t count) {
   if (!begun_ || !colors || count == 0) return;
+
+  bool anyLit = false;
+  for (uint8_t i = 0; i < count && i < MAX_LEDS; ++i) {
+    const LedColor scaledColor = scaled(colors[i]);
+    if (scaledColor.r || scaledColor.g || scaledColor.b) {
+      anyLit = true;
+      break;
+    }
+  }
+  if (!railOn_) {
+    if (!anyLit) return;  // rail off + nothing to light = already dark
+    if (!enablePower()) return;
+    railOn_ = true;
+  }
   // Precompute the byte stream and cycle timings before masking interrupts —
   // the masked window must not touch flash (see sendFrame). nsToCycles calls
   // ESP.getCpuFreqMHz(), a flash-resident function.
@@ -190,7 +216,16 @@ void LedManager::writePixels(const LedColor* colors, uint8_t count) {
   noInterrupts();
   sendFrame(pin, bytes, len, t0h, t1h, bit);
   interrupts();
-  delayMicroseconds(80);
+  // Reset/latch: these parts need >=280 us low; shorter gaps concatenate
+  // back-to-back frames instead of latching them.
+  delayMicroseconds(280);
+
+  // All black: drop the rail. The LEDs are dark without it, and the rail's
+  // indicator LED goes dark too.
+  if (!anyLit && railOn_) {
+    disablePower();
+    railOn_ = false;
+  }
 }
 
 void LedManager::show() { writePixels(pixels_, count()); }
