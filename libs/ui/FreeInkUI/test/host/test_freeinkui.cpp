@@ -1352,6 +1352,55 @@ void testMeasureWrappedText() {
   CHECK_EQ(interactions.count(), 2u);
 }
 
+
+void testButtonHitPadding() {
+  // hitPadding gives adjacent controls contiguous, non-overlapping tap bands
+  // with a single interaction each — no separate band registration.
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  device.minTouchSize = 0;
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  // A stepper pair: [-] at x=302 w=52, [+] at x=358 w=52, 4px gap split 2/2.
+  ButtonProps minus;
+  minus.label = "-";
+  minus.action = 100;
+  minus.minTouchSize = 0;
+  minus.hitPadding = Insets{2, 2, 4, 4};  // top, right, bottom, left
+  button(frame, Rect{302, 100, 52, 30}, minus);
+  ButtonProps plus = minus;
+  plus.action = 101;
+  plus.hitPadding = Insets{2, 4, 4, 2};
+  button(frame, Rect{358, 100, 52, 30}, plus);
+
+  CHECK_EQ(interactions.count(), 2u);
+  // One interaction each, bands contiguous at x=356: [-] owns 298..356,
+  // [+] owns 356..414.
+  CHECK_EQ(interactions.data()[0].rect.x, 298);
+  CHECK_EQ(interactions.data()[0].rect.right(), 356);
+  CHECK_EQ(interactions.data()[1].rect.x, 356);
+  // A tap in the gap right of the [-] visual resolves to [-], not [+].
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 355;
+  tap.touchY = 115;
+  CHECK_EQ(interactions.route(tap).action, 100);
+
+  // hitPadding composes with edge snapping: a button 4px from the bottom
+  // bezel reaches it.
+  FakeDrawTarget draw2;
+  InteractionBuffer<8> interactions2;
+  Frame<8> frame2(draw2, device, input, interactions2);
+  ButtonProps pager;
+  pager.label = "Next";
+  pager.action = 102;
+  pager.minTouchSize = 0;
+  button(frame2, Rect{352, 768, 120, 28}, pager);  // bottom gap 4 < snap 12
+  CHECK_EQ(interactions2.data()[0].rect.bottom(), 800);
+}
+
 void testInvertedDrawTarget() {
   CHECK(invertedColor(Color::Black) == Color::White);
   CHECK(invertedColor(Color::White) == Color::Black);
@@ -1449,6 +1498,7 @@ int main() {
   testLayoutTextWrapping();
   testTouchToLogical();
   testMeasureWrappedText();
+  testButtonHitPadding();
   testInvertedDrawTarget();
   testStyleSetUnset();
 

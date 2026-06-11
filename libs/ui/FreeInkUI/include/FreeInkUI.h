@@ -975,6 +975,12 @@ struct ButtonProps {
   TextStyle text{};
   StyleSet styles{};
   int16_t minTouchSize = 44;
+  // Extra hit area beyond the visual rect, per edge. Use this to give
+  // adjacent controls contiguous, non-overlapping tap bands (split the gap
+  // between a stepper's -/+ instead of letting centered minTouchSize
+  // expansion overlap the neighbor). Composes with minTouchSize, screen
+  // clamping, and edge snapping; the visual rect is unchanged.
+  Insets hitPadding{};
   int16_t gap = 4;
   bool enabled = true;
 };
@@ -1344,7 +1350,11 @@ TextStyle textStyleWithForeground(TextStyle text, Paint foreground);
 template <size_t MaxInteractions>
 void button(Frame<MaxInteractions>& frame, Rect rect, const ButtonProps& props) {
   if (props.enabled && props.action != NO_ACTION) {
-    Rect hitRect = ensureMinTouchRect(rect, props.minTouchSize, frame.screen());
+    const Rect padded{static_cast<int16_t>(rect.x - props.hitPadding.left),
+                      static_cast<int16_t>(rect.y - props.hitPadding.top),
+                      static_cast<int16_t>(rect.width + props.hitPadding.left + props.hitPadding.right),
+                      static_cast<int16_t>(rect.height + props.hitPadding.top + props.hitPadding.bottom)};
+    Rect hitRect = ensureMinTouchRect(padded, props.minTouchSize, frame.screen());
     frame.hit(hitRect, props.action, props.value, props.inputMask, props.state);
   }
 

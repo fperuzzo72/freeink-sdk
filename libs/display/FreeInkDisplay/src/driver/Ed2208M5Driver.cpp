@@ -13,6 +13,16 @@
 namespace freeink {
 namespace {
 
+// Fast (interrupted) refresh appearance. Default 0 = light "paper" UI: the
+// straight pixel mapping sends logical white as the controller's white code,
+// whose waveform — cut off at ~340 ms, before white settles — lands yellow.
+// Set -DFREEINK_M5_DARK_FAST_REFRESH=1 for the upstream community-sdk dark
+// hack instead: logical white written as controller black, giving an inverted
+// black-background UI on fast refreshes (complete waveforms stay truthful).
+#ifndef FREEINK_M5_DARK_FAST_REFRESH
+#define FREEINK_M5_DARK_FAST_REFRESH 0
+#endif
+
 // Physical panel geometry (the app-facing framebuffer is 600x400 landscape).
 constexpr uint16_t PANEL_WIDTH = 400;
 constexpr uint16_t PANEL_HEIGHT = 600;
@@ -154,15 +164,20 @@ void Ed2208M5Driver::begin(EpdBus& bus) {
 }
 
 void Ed2208M5Driver::writeFrame(EpdBus& bus, const uint8_t* fb) {
-  // Pixel codes 0x0/0x1 are the controller's black/white. The interrupted
-  // refresh cuts the OTP waveform off before white settles, which flips the
-  // apparent polarity — so the fast path writes logical white as controller
-  // BLACK (the dark hack) and the image reads correctly. A complete waveform
-  // settles truthfully, so it needs the straight mapping; reusing the dark-hack
-  // polarity there displays the frame inverted (black background, white text).
-  // This runs before refresh() consumes the one-shot flag, so pick per-frame.
+  // Pixel codes 0x0/0x1 are the controller's black/white. The straight mapping
+  // is correct for both paths in light mode: a complete waveform settles
+  // truthfully (true white), and an interrupted one leaves logical-white
+  // pixels yellow (the white track cut early) — a light paper-style UI.
+  // In dark mode only the fast path swaps (the upstream dark hack); complete
+  // waveforms must stay straight or they display inverted. writeFrame runs
+  // before refresh() consumes the one-shot flag, so it can pick per-frame.
+#if FREEINK_M5_DARK_FAST_REFRESH
   const uint8_t EPD_WHITE = _completeNextRefresh ? 0x1 : 0x0;
   const uint8_t EPD_BLACK = _completeNextRefresh ? 0x0 : 0x1;
+#else
+  constexpr uint8_t EPD_WHITE = 0x1;
+  constexpr uint8_t EPD_BLACK = 0x0;
+#endif
   uint8_t packedRow[PANEL_WIDTH / 2];
 
   bus.beginTxn();

@@ -436,6 +436,12 @@ CONFIRM/BACK mapping per board. Long-press and swipe synthesis stay
 app-owned. Apps with their own input layer write the same few lines against
 it.
 
+Touch hit areas are declarative: `minTouchSize` center-expands small targets,
+`ButtonProps.hitPadding` extends a button's tap band per edge (give adjacent
+controls contiguous, non-overlapping bands instead of overlapping centered
+expansion), and hit rects within 12px of a screen edge snap to the bezel —
+all composed in `ensureMinTouchRect`, one interaction per control.
+
 Touch orientation mapping is SDK-owned: `touchToLogical()` converts
 normalized panel-native portrait coordinates to the logical frame for any
 `DeviceContext.orientation`, with `flipX`/`flipY` for mirrored panel mounting
