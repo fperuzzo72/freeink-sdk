@@ -215,8 +215,21 @@ uint16_t Ed2208M5Driver::fastRefreshCutoffMs() const {
 }
 
 void Ed2208M5Driver::interruptRefresh(EpdBus& bus) {
-  // Abort the OTP waveform before white settles. The cutoff also picks where
-  // the gate scan freezes — see setFastRefreshCutoffMs().
+  // Abort the OTP waveform before white settles. CRITICAL: anchor the cutoff
+  // to BUSY's falling edge (the drive actually starting), NOT the 0x12
+  // command. The controller preps before driving — power ramp, on-die
+  // temperature read (which calibrates the waveform), gate setup — and that
+  // prep time varies per refresh. A command-anchored delay therefore cuts at
+  // a different waveform phase every time: mostly mid dark/blue phases (the
+  // muddy, blue-banded look), occasionally just after the white push (the
+  // "randomly looks fantastic" refresh). Edge-anchoring makes the cut phase
+  // — and therefore the panel's appearance — deterministic and tunable via
+  // setFastRefreshCutoffMs().
+  const int8_t busyPin = bus.pins().busy;
+  const unsigned long t0 = millis();
+  while (digitalRead(busyPin) == HIGH && millis() - t0 < 500) {
+    delayMicroseconds(200);
+  }
   delay(_cutoffMs ? _cutoffMs : REFRESH_CUTOFF_MS);
   bus.reset();
   initController(bus);
