@@ -252,9 +252,18 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   // settle flavor of the same bank (DTM1 == DTM2 after display()'s post-
   // refresh sync, so only the gentle WW/BB cells fire).
   if (_inGrayscaleMode) {
+    // grayscaleRevert scrubs the panel to white and leaves BOTH DTM planes
+    // all-white with _redRamSynced set, so DTM1 matches the displayed state
+    // and the differential below is valid by construction (white-baseline,
+    // the same pattern the full sync uses).
     grayscaleRevert(bus, fb);
   }
-  const bool cleanBaseNeeded = !_redRamSynced || _forceFullSyncNext || _initialFullSyncsRemaining > 0;
+  // _grayState.lsbValid means grayscale planes were written over DTM1/DTM2
+  // since the last display — the controller RAM no longer holds the displayed
+  // BW frame even though _redRamSynced may still read true, so the
+  // differential would mis-drive; take the clean fallback path instead.
+  const bool cleanBaseNeeded =
+      !_redRamSynced || _grayState.lsbValid || _forceFullSyncNext || _initialFullSyncsRemaining > 0;
   if (cleanBaseNeeded) {
     display(bus, fb, nullptr, fallback, /*turnOff=*/false);
     loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
@@ -282,6 +291,12 @@ void Uc8253X3Driver::preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, 
   // writeGrayscalePlaneStrip); X is byte-aligned outward since PTL horizontal
   // resolution is 8 pixels.
   if (w == 0 || h == 0 || x >= _w || y >= _h) return;
+  // The settle is only meaningful (and only safe) when both DTM planes hold
+  // the displayed BW frame. Skip when grayscale planes have been written over
+  // them (lsbValid), a grayscale refresh left the RAM unsynced, or the gray
+  // bank is still loaded — firing the mid bank's strong BW/WB drives against
+  // gray-coded state pairs would corrupt the region.
+  if (_inGrayscaleMode || !_redRamSynced || _grayState.lsbValid) return;
   const uint16_t xEndLogical = static_cast<uint16_t>(((x + w - 1) < (_w - 1)) ? (x + w - 1) : (_w - 1));
   const uint16_t yEndLogical = static_cast<uint16_t>(((y + h - 1) < (_h - 1)) ? (y + h - 1) : (_h - 1));
   const uint16_t xs = static_cast<uint16_t>(x & ~7u);
