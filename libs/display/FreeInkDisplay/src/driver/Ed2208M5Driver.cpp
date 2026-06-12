@@ -31,7 +31,14 @@ constexpr uint16_t BUSY_SETTLE_MS = 20;
 constexpr uint8_t FAST_CLEAN_INTERVAL = 6;
 constexpr uint8_t DARK_DISPLAY_CTRL = 0x0F;
 constexpr uint32_t PANEL_AREA = static_cast<uint32_t>(PANEL_WIDTH) * PANEL_HEIGHT;
-constexpr uint32_t PARTIAL_AREA_LIMIT = PANEL_AREA / 4;
+// Windowed (partial) refreshes are DISABLED: an interrupted refresh is not a
+// stable end state — the pigments keep relaxing toward blue/grey for minutes
+// afterwards, so regions refreshed at different times settle to different
+// colors and the partial-window edge shows as a hard color band (observed as
+// a blue band over the clock area, reappearing within a minute of any full
+// pass). Driving the whole panel every time keeps it uniformly "aged".
+// getDirtyWindow() is still used as the no-change early-out.
+constexpr uint32_t PARTIAL_AREA_LIMIT = 0;
 
 }  // namespace
 
