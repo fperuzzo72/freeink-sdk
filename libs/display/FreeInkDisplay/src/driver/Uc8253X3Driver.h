@@ -32,10 +32,10 @@ struct Uc8253X3Config {
   Uc8253LutBank normal;  // condition-pass / settle (CDI 0xA9)
   Uc8253LutBank half;    // scrub (CDI 0xA9)
   Uc8253LutBank fast;    // turbo differential (CDI 0x29)
-  Uc8253LutBank grayscale;
   Uc8253LutBank full;    // OEM full / factory (CDI 0x29)
-  Uc8253LutBank gc;      // community 4-level grayscale (CDI 0x29)
-  uint8_t lutLen;        // bytes per LUT sent to the controller (42)
+  Uc8253LutBank gc;        // community 4-level grayscale (CDI 0x29)
+  Uc8253LutBank preBwMid;  // OEM grayscale preconditioning settle (CDI 0xA9)
+  uint8_t lutLen;          // bytes per LUT sent to the controller (42)
 };
 
 const Uc8253X3Config& uc8253X3DefaultConfig();
@@ -54,6 +54,7 @@ class Uc8253X3Driver : public PanelDriver {
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
 
   bool supportsStripGrayscale() const override { return true; }
+  void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,

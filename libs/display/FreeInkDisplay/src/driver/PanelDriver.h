@@ -57,6 +57,13 @@ class PanelDriver {
 
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual bool supportsStripGrayscale() const { return false; }
+  // Grayscale preconditioning settle pass (OEM X3 "AA-pre-BW(mid)"), windowed
+  // to the panel rect [x, x+w) x [y, y+h) like the OEM's PTL usage; fire after
+  // the BW base frame is displayed, before grayscale planes are written.
+  // Default no-op for panels whose grayscale needs no conditioning.
+  virtual void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    (void)bus; (void)x; (void)y; (void)w; (void)h;
+  }
   virtual void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) { (void)bus; (void)lsb; }
   virtual void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) { (void)bus; (void)msb; }
   virtual void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,

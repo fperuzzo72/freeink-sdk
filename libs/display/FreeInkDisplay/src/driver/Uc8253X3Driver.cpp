@@ -39,9 +39,10 @@ const Uc8253X3Config& uc8253X3DefaultConfig() {
       {lut_x3_vcom_normal, lut_x3_ww_normal, lut_x3_bw_normal, lut_x3_wb_normal, lut_x3_bb_normal},
       {lut_x3_vcom_half, lut_x3_ww_half, lut_x3_bw_half, lut_x3_wb_half, lut_x3_bb_half},
       {lut_x3_vcom_fast, lut_x3_ww_fast, lut_x3_bw_fast, lut_x3_wb_fast, lut_x3_bb_fast},
-      {lut_x3_vcom_grayscale, lut_x3_ww_grayscale, lut_x3_bw_grayscale, lut_x3_wb_grayscale, lut_x3_bb_grayscale},
       {lut_x3_vcom_full, lut_x3_ww_full, lut_x3_bw_full, lut_x3_wb_full, lut_x3_bb_full},
       {lut_x3_vcom_gc, lut_x3_ww_gc, lut_x3_bw_gc, lut_x3_wb_gc, lut_x3_bb_gc},
+      {lut_x3_vcom_aa_pre_bw_mid, lut_x3_ww_aa_pre_bw_mid, lut_x3_bw_aa_pre_bw_mid, lut_x3_wb_aa_pre_bw_mid,
+       lut_x3_bb_aa_pre_bw_mid},
       42,  // controller accepts 42 bytes of each 43-byte array
   };
   return cfg;
@@ -237,6 +238,39 @@ void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
   }
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
+}
+
+void Uc8253X3Driver::preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+  // OEM V5.6.33 "AA-pre-BW(mid)" pass: gentle settle of the displayed BW
+  // frame (DTM1 == DTM2 == frame after display()'s post-refresh DTM1 sync)
+  // that leaves particles receptive to the weak grayscale nudge waveform.
+  // Without it a strong base refresh sets pixels too firmly for the gray
+  // drive to move. Windowed to the gray region via PTL exactly like the OEM
+  // loader (PTIN -> window -> CDI/bank -> refresh -> PTOUT). The PTL Y range
+  // is in GATE space (logical row y lives at gate H-1-y, see
+  // writeGrayscalePlaneStrip); X is byte-aligned outward since PTL horizontal
+  // resolution is 8 pixels.
+  if (w == 0 || h == 0 || x >= _w || y >= _h) return;
+  const uint16_t xEndLogical = static_cast<uint16_t>(((x + w - 1) < (_w - 1)) ? (x + w - 1) : (_w - 1));
+  const uint16_t yEndLogical = static_cast<uint16_t>(((y + h - 1) < (_h - 1)) ? (y + h - 1) : (_h - 1));
+  const uint16_t xs = static_cast<uint16_t>(x & ~7u);
+  const uint16_t xe = static_cast<uint16_t>(xEndLogical | 7u);
+  const uint16_t gateYStart = static_cast<uint16_t>((_h - 1) - yEndLogical);
+  const uint16_t gateYEnd = static_cast<uint16_t>((_h - 1) - y);
+  const uint8_t win[9] = {static_cast<uint8_t>(xs >> 8),
+                          static_cast<uint8_t>(xs & 0xFF),
+                          static_cast<uint8_t>(xe >> 8),
+                          static_cast<uint8_t>(xe & 0xFF),
+                          static_cast<uint8_t>(gateYStart >> 8),
+                          static_cast<uint8_t>(gateYStart & 0xFF),
+                          static_cast<uint8_t>(gateYEnd >> 8),
+                          static_cast<uint8_t>(gateYEnd & 0xFF),
+                          0x01};
+  bus.cmd(CMD_PARTIAL_IN);
+  bus.cmdData(CMD_PARTIAL_WINDOW, win, 9);
+  loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
+  triggerRefresh(bus, /*turnOff=*/false);
+  bus.cmd(CMD_PARTIAL_OUT);
 }
 
 void Uc8253X3Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {

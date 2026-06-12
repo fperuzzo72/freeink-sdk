@@ -72,6 +72,13 @@ class FreeInkDisplay {
 #endif
   void setFramebuffer(const uint8_t* bwBuffer) const;
 
+  // X3 grayscale preconditioning settle pass, windowed to the gray region in
+  // physical panel coordinates; call after the BW base frame is displayed and
+  // before the grayscale planes are written. The no-arg overload settles the
+  // full frame. No-op on panels that do not need it. See
+  // Uc8253X3Driver::preconditionGrayscale.
+  void preconditionGrayscale();
+  void preconditionGrayscale(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
   void copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer);
   void copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer);
   void copyGrayscaleMsbBuffers(const uint8_t* msbBuffer);

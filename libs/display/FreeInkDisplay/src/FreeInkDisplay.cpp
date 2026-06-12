@@ -250,6 +250,14 @@ void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_
   _driver->copyGrayscaleMsb(_bus, msbBuffer);
 }
 
+void FreeInkDisplay::preconditionGrayscale() {
+  _driver->preconditionGrayscale(_bus, 0, 0, getDisplayWidth(), getDisplayHeight());
+}
+
+void FreeInkDisplay::preconditionGrayscale(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+  _driver->preconditionGrayscale(_bus, x, y, w, h);
+}
+
 void FreeInkDisplay::copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer) { _driver->copyGrayscaleLsb(_bus, lsbBuffer); }
 
 void FreeInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { _driver->copyGrayscaleMsb(_bus, msbBuffer); }
