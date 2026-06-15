@@ -311,6 +311,28 @@ bool InputManager::wasTouchTap(float& nx, float& ny) const {
   return false;
 #endif
 }
+
+bool InputManager::wasTouchPressedAt(float& nx, float& ny) const {
+#if FREEINK_CAP_TOUCH
+  // Press-edge analogue of wasTouchTap: true on the frame a touch begins, writing
+  // the touch-down position normalized 0..1 in the panel's native frame. Lets the
+  // app highlight what's under the finger on touch-down (before release).
+  if (!touchPressedEvent) return false;
+  const auto& t = BoardConfig::ACTIVE.touch;
+  const uint16_t w = (t.rawMaxX > t.rawMinX) ? static_cast<uint16_t>(t.rawMaxX - t.rawMinX) : 1;
+  const uint16_t h = (t.rawMaxY > t.rawMinY) ? static_cast<uint16_t>(t.rawMaxY - t.rawMinY) : 1;
+  float x = static_cast<float>(touchDownPoint.x) / w;
+  float y = static_cast<float>(touchDownPoint.y) / h;
+  nx = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+  ny = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
+  return true;
+#else
+  (void)nx;
+  (void)ny;
+  return false;
+#endif
+}
+
 bool InputManager::wasHomeKeyPressed() const { return touchHomeKeyEvent; }
 
 void InputManager::beginTouch() {

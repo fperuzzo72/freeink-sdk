@@ -124,6 +124,10 @@ class InputManager {
   // gestures; the app maps panel-native to its display/logical frame. Returns
   // false (leaving outputs untouched) when no release this frame or no touch HW.
   bool wasTouchTap(float& nx, float& ny) const;
+  // Press-edge analogue of wasTouchTap: true on the frame a touch begins, with the
+  // touch-down position normalized 0..1 in the panel's native frame. For showing a
+  // selected/pressed state under the finger on touch-down (release activates).
+  bool wasTouchPressedAt(float& nx, float& ny) const;
   // True on the press edge of the GT911 capacitive home key (controllers without
   // one never report it). Cleared each #update().
   bool wasHomeKeyPressed() const;
