@@ -315,6 +315,10 @@ struct TouchConfig {
   // coords start at byte 1); true = coords start at byte 0 (no track-id), as seen
   // on M5Paper's GT911 which boots without a reset/config dance. Ignored (CHSC6x).
   bool gt911CoordsAtByte0;
+  // Touch power-rail enable (active-high). PIN_UNASSIGNED on boards whose touch
+  // controller is always powered; driven HIGH before the reset/probe on boards
+  // that gate it (e.g. Sticky's TOUCH_EN). Default keeps existing initializers valid.
+  int8_t powerEnable = PIN_UNASSIGNED;
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
@@ -749,7 +753,7 @@ constexpr BoardProfile STICKY = {
     // GT911 touch on its own I2C bus (SDA3 SCL2 INT21 RST41, 0x5D alt 0x14). GT911
     // reports pixel coords, so raw range == panel size; standard datasheet frame
     // layout (RST wired -> reset/config dance runs, track-id present).
-    {TouchController::Gt911, 3, 2, 21, 41, 0x5D, 0, 799, 0, 479, false, 0x14, false, false},
+    {TouchController::Gt911, 3, 2, 21, 41, 0x5D, 0, 799, 0, 479, false, 0x14, false, false, 42},  // TOUCH_EN=GPIO42
     NO_FRONTLIGHT,  // e-paper, no frontlight (charge LED is board-support)
     STICKY_AUDIO,   // no output codec; LEDC buzzer on GPIO48 (Buzzer lib). PDM mic is separate (mic field)
     NO_LEDS,        // charge-state LED is charger-driven, not an addressable strip

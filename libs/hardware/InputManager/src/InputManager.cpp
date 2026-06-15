@@ -446,6 +446,15 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const u
 void InputManager::beginGt911() {
   const auto& t = BoardConfig::ACTIVE.touch;
 
+  // Power the touch rail first (boards that gate it, e.g. Sticky's TOUCH_EN on
+  // GPIO42). Active-high + settle, before the reset dance and I2C probe; without
+  // this the GT911 never ACKs and touch is reported absent. No-op when unassigned.
+  if (t.powerEnable >= 0) {
+    pinMode(t.powerEnable, OUTPUT);
+    digitalWrite(t.powerEnable, HIGH);
+    delay(50);
+  }
+
   // Reset + address-select dance: INT level as RST rises selects the address
   // (LOW -> primary 0x5D, HIGH -> alt 0x14). We select the primary.
   if (t.reset >= 0 && t.irq >= 0) {
