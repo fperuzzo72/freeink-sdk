@@ -128,6 +128,10 @@ class InputManager {
   // touch-down position normalized 0..1 in the panel's native frame. For showing a
   // selected/pressed state under the finger on touch-down (release activates).
   bool wasTouchPressedAt(float& nx, float& ny) const;
+  // Duration (ms) of the last touch contact, latched on release — valid on the
+  // release frame (when wasTouchReleased()/wasTouchTap() are true). Raw primitive
+  // for the app's tap-vs-long-press gesture policy; 0 if no touch HW.
+  unsigned long lastTouchHeldMs() const;
   // True on the press edge of the GT911 capacitive home key (controllers without
   // one never report it). Cleared each #update().
   bool wasHomeKeyPressed() const;
@@ -187,6 +191,7 @@ class InputManager {
   bool touchHomeKeyDown = false;
   TouchPoint touchPoint = {false, 0, 0, 0};
   TouchPoint touchDownPoint = {false, 0, 0, 0};  // first sample of the current contact (tap routing)
+  unsigned long lastTouchHeldDurationMs = 0;     // contact duration, latched at release
 
   static constexpr int NUM_BUTTONS_1 = 4;
   static const int ADC_RANGES_1[];

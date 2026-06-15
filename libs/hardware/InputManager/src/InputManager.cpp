@@ -333,6 +333,14 @@ bool InputManager::wasTouchPressedAt(float& nx, float& ny) const {
 #endif
 }
 
+unsigned long InputManager::lastTouchHeldMs() const {
+#if FREEINK_CAP_TOUCH
+  return lastTouchHeldDurationMs;
+#else
+  return 0;
+#endif
+}
+
 bool InputManager::wasHomeKeyPressed() const { return touchHomeKeyEvent; }
 
 void InputManager::beginTouch() {
@@ -406,6 +414,7 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
   if (touchPressed && now >= touchReleaseAt) {
     touchPressed = false;
     touchReleasedEvent = true;
+    lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
   }
 }
 
@@ -596,7 +605,10 @@ void InputManager::pollGt911(const unsigned long now) {
       touchPressed = true;
     }
   } else {
-    if (touchPressed) touchReleasedEvent = true;
+    if (touchPressed) {
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+    }
     touchPressed = false;
     touchPoint.valid = false;
   }
