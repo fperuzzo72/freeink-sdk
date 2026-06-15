@@ -127,7 +127,14 @@ void FreeInkDisplay::begin() {
   // External-library drivers (e.g. M5GFX) own the SPI/display hardware; only
   // bring up FreeInk's bus for native controller drivers.
   if (!_driver->usesExternalBus()) {
-    _bus.begin(_pins, _driver->spiHz(), _driver->busyPolarity(), _driver->spiMiso(), _driver->coCs());
+    // Pins come from the active board profile (set by selectDriver()/setDisplayX3),
+    // not the constructor args — same source the IT8951 driver already uses, so one
+    // binary drives whichever panel is runtime-selected and per-board pins (incl.
+    // the EPD power-enable) are always correct. The ctor _pins are legacy and unused
+    // here; a consumer no longer needs to know the panel's wiring.
+    const auto& d = BoardConfig::ACTIVE.display;
+    const EpdPins pins{d.sclk, d.mosi, d.cs, d.dc, d.rst, d.busy, d.powerEnable};
+    _bus.begin(pins, _driver->spiHz(), _driver->busyPolarity(), _driver->spiMiso(), _driver->coCs());
   }
 
   const PanelGeometry geom = _driver->geometry();
