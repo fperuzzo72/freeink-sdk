@@ -328,7 +328,7 @@ wifi     = wifi
 
 python libs/assets/Icons/tools/gen_icons.py \
     --manifest icons.txt \
-    --svgdir   libs/assets/Icons/icons \
+    --svgdir   libs/assets/Icons/lucide/icons \
     --sizes    24,32,40,48 \
     --out      generated_icons.h
 ```
@@ -341,9 +341,10 @@ black/transparent threshold at the top of the script if your SVGs aren't Lucide.
 
 ### Browsing the set
 
-All 1735 Lucide names live in `libs/assets/Icons/icons/*.svg` — reference any of them
-by filename (minus `.svg`) in a manifest. Lucide is MIT-licensed
-(`libs/assets/Icons/icons/LICENSE`).
+Lucide is vendored as a **git submodule** at `libs/assets/Icons/lucide` (run
+`git submodule update --init` to fetch it). All 1735 names live in
+`libs/assets/Icons/lucide/icons/*.svg` — reference any by filename (minus `.svg`) in
+a manifest. Lucide is MIT-licensed (`libs/assets/Icons/lucide/LICENSE`).
 
 ## Using FreeInk from PlatformIO
 
