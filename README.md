@@ -281,6 +281,70 @@ library and bundles a Noto Sans bitmap font — swap in your own with
 `<GfxRenderer.h>` is available) and to this SDK's `InputManager`
 (`FreeInkUIInputManager.h`). See [`docs/freeink-ui.md`](docs/freeink-ui.md).
 
+## Icons (`libs/assets/Icons`)
+
+A 1-bpp icon format with baked-in alignment metadata, the full [Lucide](https://lucide.dev)
+SVG set vendored as source, and a generator that turns any of them into ready-to-draw
+C structs. The goal: crisp icons at any UI scale, vertically centered on text with no
+per-icon tweaking, correct in every orientation.
+
+### The `freeink::Icon` format
+
+```c
+struct Icon {
+  uint16_t w, h;
+  int16_t  opticalCenterY;  // row of the artwork's center of mass
+  const uint8_t* bits;      // rows top-to-bottom, (w+7)/8 bytes each, MSB-first;
+                            // bit 1 = transparent, bit 0 = black (drawn)
+};
+```
+
+- **Not pre-rotated.** The renderer maps logical→panel coordinates itself, so one
+  asset is correct in all four orientations (draw it through an orientation-aware
+  blit — e.g. CrossPoint's `GfxRenderer::drawIcon(const freeink::Icon&, x, y)`,
+  which routes each pixel through `drawPixel`).
+- **`opticalCenterY` is measured from the art**, so asymmetric icons (a clock, a
+  wifi fan, arrows) center correctly without hand-nudging. Align an icon to a line
+  of text by putting its optical center on the text's optical center:
+
+  ```cpp
+  // textTop is where the text is drawn; the renderer supplies the text's optical
+  // center offset from the font's real x-height (no guessed ascender fractions).
+  const int textCenter = textTop + renderer.getTextVisualCenterOffset(fontId);
+  renderer.drawIcon(icon, x, textCenter - icon.opticalCenterY);
+  ```
+
+### Generating icons
+
+Don't bake the whole library into flash — generate only what you use. List the icons
+you want in a manifest (`alias = lucide-name`) and run the generator:
+
+```
+# icons.txt
+settings = settings
+recent   = clock
+transfer = arrow-down-up
+wifi     = wifi
+
+python libs/assets/Icons/tools/gen_icons.py \
+    --manifest icons.txt \
+    --svgdir   libs/assets/Icons/icons \
+    --sizes    24,32,40,48 \
+    --out      generated_icons.h
+```
+
+This emits, per icon per size, a `static const freeink::Icon icon_<alias>_<px>` with
+its bits and optical center precomputed. Pick the size nearest your scaled target at
+runtime (`24/32/40/48`) so a scaled-up UI gets a genuinely higher-resolution asset
+instead of a blocky upscale. Requires `rsvg-convert` (librsvg) and Pillow; tune the
+black/transparent threshold at the top of the script if your SVGs aren't Lucide.
+
+### Browsing the set
+
+All 1735 Lucide names live in `libs/assets/Icons/icons/*.svg` — reference any of them
+by filename (minus `.svg`) in a manifest. Lucide is MIT-licensed
+(`libs/assets/Icons/icons/LICENSE`).
+
 ## Using FreeInk from PlatformIO
 
 See **[`platformio.sample.ini`](platformio.sample.ini)** for a complete, ready-to-copy
@@ -389,6 +453,7 @@ gaps (I²C battery gauge, expander button).
 
 ```
 libs/
+  assets/Icons/             freeink::Icon format + vendored Lucide SVGs + generator
   display/FreeInkDisplay/   facade + EInkDisplay shim + per-controller drivers + LUTs
   hardware/BoardConfig/     board profiles & capability descriptors
   hardware/InputManager/    buttons + capacitive touch (CHSC6x, GT911)
