@@ -341,6 +341,14 @@ unsigned long InputManager::lastTouchHeldMs() const {
 #endif
 }
 
+bool InputManager::wasTouchActivity() const {
+#if FREEINK_CAP_TOUCH
+  return touchPressedEvent || touchReleasedEvent;
+#else
+  return false;
+#endif
+}
+
 bool InputManager::wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const {
 #if FREEINK_CAP_TOUCH
   if (!touchReleasedEvent) return false;

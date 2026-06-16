@@ -140,6 +140,10 @@ class InputManager {
   // wasTouchTap(); the app checks wasSwipe() first to disambiguate. False when no
   // touch HW or the movement was below threshold (a plain tap).
   bool wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const;
+  // True if a touch press or release happened this frame. Coarse "the user touched
+  // the screen" signal (the touch analogue of wasAnyPressed/Released) for resetting
+  // idle/sleep timers and restoring CPU frequency. False on non-touch boards.
+  bool wasTouchActivity() const;
   // True on the press edge of the GT911 capacitive home key (controllers without
   // one never report it). Cleared each #update().
   bool wasHomeKeyPressed() const;
