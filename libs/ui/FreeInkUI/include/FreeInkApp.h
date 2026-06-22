@@ -107,6 +107,18 @@ class Screen {
 
   void list(const ListProps& props) { ui::list(frame_, content_, props); }
 
+  void checkbox(const CheckboxProps& props) { ui::checkbox(frame_, takeTop(theme_.rowHeight), props); }
+
+  void slider(const SliderProps& props, int16_t height = 0) {
+    ui::slider(frame_, takeTop(height > 0 ? height : theme_.rowHeight), props);
+  }
+
+  void dropdown(const DropdownProps& props) { ui::dropdown(frame_, takeTop(theme_.rowHeight), props); }
+
+  void table(const TableProps& props, int16_t height = 0) {
+    ui::table(frame_, takeTop(height > 0 ? height : static_cast<int16_t>(props.rowHeight * props.rows)), props);
+  }
+
   void settingRow(const SettingRowProps& props) { ui::settingRow(frame_, takeTop(theme_.rowHeight), props); }
 
   void toggleRow(const ToggleRowProps& props) { ui::toggleRow(frame_, takeTop(theme_.rowHeight), props); }

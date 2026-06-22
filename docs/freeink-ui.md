@@ -466,11 +466,15 @@ The SDK provides a small set of immediate-mode components, deliberately not
 tied to any application's screen structure:
 
 - `button`
+- `checkbox`
+- `slider`
 - `gestureBar`
 - `header`
 - `list` (virtualized; see below — supports hug-content pill rows and
   selection markers)
 - settings rows: `settingRow`, `toggleRow`, `stepperRow`, `radioGroup`
+- `dropdown`
+- `table`
 - reader surfaces: `readerChrome`, `tapZones`
 - book surfaces: `bookCard`, `coverGrid`, `coverCarousel`
 - `progressBar`

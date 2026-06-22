@@ -74,7 +74,7 @@ void writeManifest(const char* path) {
       "      \"category\": \"settings\",\n"
       "      \"title\": \"Settings and controls\",\n"
       "      \"components\": [\"settingRow\", \"toggleRow\", \"stepperRow\", \"radioGroup\", \"textField\", "
-      "\"tabBar\", \"list\"]\n"
+      "\"tabBar\", \"list\", \"checkbox\", \"slider\", \"dropdown\", \"table\"]\n"
       "    },\n"
       "    {\n"
       "      \"file\": \"freeinkui-reader.svg\",\n"
@@ -99,11 +99,15 @@ void writeManifest(const char* path) {
       "  ],\n"
       "  \"palette\": [\n"
       "    {\"component\": \"button\", \"category\": \"controls\", \"file\": \"freeinkui-components/button.svg\"},\n"
+      "    {\"component\": \"checkbox\", \"category\": \"controls\", \"file\": \"freeinkui-components/checkbox.svg\"},\n"
+      "    {\"component\": \"slider\", \"category\": \"controls\", \"file\": \"freeinkui-components/slider.svg\"},\n"
       "    {\"component\": \"settingRow\", \"category\": \"settings\", \"file\": \"freeinkui-components/setting-row.svg\"},\n"
       "    {\"component\": \"toggleRow\", \"category\": \"settings\", \"file\": \"freeinkui-components/toggle-row.svg\"},\n"
       "    {\"component\": \"stepperRow\", \"category\": \"settings\", \"file\": \"freeinkui-components/stepper-row.svg\"},\n"
+      "    {\"component\": \"dropdown\", \"category\": \"settings\", \"file\": \"freeinkui-components/dropdown.svg\"},\n"
       "    {\"component\": \"radioGroup\", \"category\": \"settings\", \"file\": \"freeinkui-components/radio-group.svg\"},\n"
       "    {\"component\": \"list\", \"category\": \"settings\", \"file\": \"freeinkui-components/list.svg\"},\n"
+      "    {\"component\": \"table\", \"category\": \"data\", \"file\": \"freeinkui-components/table.svg\"},\n"
       "    {\"component\": \"tabBar\", \"category\": \"navigation\", \"file\": \"freeinkui-components/tab-bar.svg\"},\n"
       "    {\"component\": \"textField\", \"category\": \"input\", \"file\": \"freeinkui-components/text-field.svg\"},\n"
       "    {\"component\": \"keyGrid\", \"category\": \"input\", \"file\": \"freeinkui-components/key-grid.svg\"},\n"
@@ -197,6 +201,24 @@ void renderPalette(const std::string& dir) {
     toggleRow(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 24), rect.width, 44}, props);
   });
 
+  renderComponent(dir, "checkbox.svg", "checkbox", [](auto& frame, Rect rect) {
+    CheckboxProps props;
+    props.label = "Wi-Fi sync";
+    props.checked = true;
+    props.action = 1;
+    props.text = text();
+    checkbox(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 26), rect.width, 36}, props);
+  });
+
+  renderComponent(dir, "slider.svg", "slider", [](auto& frame, Rect rect) {
+    SliderProps props;
+    props.value = 64;
+    props.max = 100;
+    props.action = 1;
+    props.radius = 2;
+    slider(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 30), rect.width, 34}, props);
+  });
+
   renderComponent(dir, "stepper-row.svg", "stepperRow", [](auto& frame, Rect rect) {
     StepperRowProps props;
     props.row.label = "Font size";
@@ -206,6 +228,16 @@ void renderPalette(const std::string& dir) {
     props.decrement = 1;
     props.increment = 2;
     stepperRow(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 24), rect.width, 44}, props);
+  });
+
+  renderComponent(dir, "dropdown.svg", "dropdown", [](auto& frame, Rect rect) {
+    DropdownProps props;
+    props.label = "Font";
+    props.value = "Noto Sans";
+    props.action = 1;
+    props.labelText = text();
+    props.valueText = text();
+    dropdown(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 26), rect.width, 42}, props);
   });
 
   renderComponent(dir, "radio-group.svg", "radioGroup", [](auto& frame, Rect rect) {
@@ -232,6 +264,17 @@ void renderPalette(const std::string& dir) {
     props.valueText = text();
     props.rowHeight = 34;
     list(frame, rect, props);
+  });
+
+  renderComponent(dir, "table.svg", "table", [](auto& frame, Rect rect) {
+    const char* cells[6] = {"Name", "Value", "Battery", "82%", "Wi-Fi", "On"};
+    TableProps props;
+    props.cells = cells;
+    props.rows = 3;
+    props.cols = 2;
+    props.headerRow = true;
+    props.text = text();
+    table(frame, rect, props);
   });
 
   renderComponent(dir, "tab-bar.svg", "tabBar", [](auto& frame, Rect rect) {

@@ -167,6 +167,44 @@ def emit_stepper_row(child, lines, actions, index):
     lines.append(f"  screen.stepperRow({name});")
 
 
+def emit_checkbox(child, lines, actions, index):
+    name = f"checkbox{index}"
+    lines.append(f"  freeink::ui::CheckboxProps {name};")
+    lines.append(f"  {name}.label = {cstr(child.get('label'))};")
+    lines.append(f"  {name}.checked = {bool_literal(child.get('checked', False))};")
+    if child.get("action") is not None:
+        lines.append(f"  {name}.action = {action_expr(child.get('action'), actions)};")
+    if child.get("value") is not None:
+        lines.append(f"  {name}.value = {int(child.get('value'))};")
+    lines.append(f"  screen.checkbox({name});")
+
+
+def emit_slider(child, lines, actions, index):
+    name = f"slider{index}"
+    lines.append(f"  freeink::ui::SliderProps {name};")
+    lines.append(f"  {name}.value = {int(child.get('value', 0))};")
+    lines.append(f"  {name}.max = {int(child.get('max', 100))};")
+    if child.get("action") is not None:
+        lines.append(f"  {name}.action = {action_expr(child.get('action'), actions)};")
+    height = child.get("height")
+    if height is not None:
+        lines.append(f"  screen.slider({name}, {int(height)});")
+    else:
+        lines.append(f"  screen.slider({name});")
+
+
+def emit_dropdown(child, lines, actions, index):
+    name = f"dropdown{index}"
+    lines.append(f"  freeink::ui::DropdownProps {name};")
+    if child.get("label") is not None:
+        lines.append(f"  {name}.label = {cstr(child.get('label'))};")
+    if child.get("value") is not None:
+        lines.append(f"  {name}.value = {cstr(child.get('value'))};")
+    if child.get("action") is not None:
+        lines.append(f"  {name}.action = {action_expr(child.get('action'), actions)};")
+    lines.append(f"  screen.dropdown({name});")
+
+
 def emit_radio_group(child, lines, actions, index):
     options = child.get("options", [])
     name = f"radioOptions{index}"
@@ -255,6 +293,12 @@ def generate(schema):
             emit_toggle_row(child, lines, actions, index)
         elif kind == "stepperRow":
             emit_stepper_row(child, lines, actions, index)
+        elif kind == "checkbox":
+            emit_checkbox(child, lines, actions, index)
+        elif kind == "slider":
+            emit_slider(child, lines, actions, index)
+        elif kind == "dropdown":
+            emit_dropdown(child, lines, actions, index)
         elif kind == "radioGroup":
             emit_radio_group(child, lines, actions, index)
         elif kind == "spacer":

@@ -294,6 +294,61 @@ library and bundles a Noto Sans bitmap font — swap in your own with
 `<GfxRenderer.h>` is available) and to this SDK's `InputManager`
 (`FreeInkUIInputManager.h`). See [`docs/freeink-ui.md`](docs/freeink-ui.md).
 
+### FreeInkUI vs LVGL
+
+[LVGL](https://lvgl.io/docs/latest/) is the broader general-purpose embedded GUI
+stack. It has a retained object tree, themes, animation/timer machinery, flex/grid
+layouts, many widgets, and broad display/input portability. It also has real
+monochrome support: current LVGL configuration documents
+[`LV_COLOR_DEPTH = 1` (`I1`)](https://docs.lvgl.io/9.4/API/lv_conf_internal_h.html)
+alongside higher color depths, and LVGL's font documentation describes
+[1/2/4/8-bpp glyph bitmaps](https://docs.lvgl.io/9.3/overview/font.html). That
+means the FreeInkUI argument is not "LVGL cannot do e-paper"; it is that FreeInkUI
+is smaller, more direct, and opinionated around FreeInk e-paper firmware.
+
+FreeInkUI exists for the narrower case where the whole product is an e-paper
+reader/appliance firmware and the UI should fit the display driver instead of
+being a portable GUI runtime:
+
+| Use LVGL when... | Use FreeInkUI when... |
+|---|---|
+| You need a mature retained GUI toolkit with broad widget coverage, animations, themes, and flex/grid layout. | You want a small immediate-mode layer that draws straight into `FreeInkDisplay` with fixed-capacity routing and no heap-owned object tree. |
+| Your product targets many display technologies or already has an LVGL driver/input stack. | Your product is centered on FreeInk-supported e-paper boards, partial/full refresh choices, ghosting constraints, reader chrome, tap zones, and board capabilities. |
+| You need LVGL extras such as calendar, chart, meter, spinner, image decoders, file explorer, IME, or demos. | You need reader-specific components out of the box: book cards, cover grids/carousels, reader status chrome, tap zones, e-ink-safe dialogs, and generated 1-bit previews. |
+| You are comfortable paying the RAM/code complexity cost of a general GUI runtime. | You want borrowed strings/assets, freestanding C++17, host tests, static screen generation, and predictable per-frame drawing. |
+
+FreeInkUI is not trying to replace LVGL for every embedded GUI. It is trying to
+make the common e-reader/e-paper firmware surfaces as direct as LVGL's widget API
+while staying tied to FreeInk's display/input model.
+
+#### LVGL widget parity
+
+This table tracks LVGL-style component coverage using e-paper-specific FreeInkUI
+names. "Primitive" means the drawing operation exists directly on `DrawTarget`;
+"domain" means FreeInkUI provides a reader-focused component instead of a generic
+LVGL clone.
+
+| LVGL widget family | FreeInkUI coverage |
+|---|---|
+| Base object/container | `Frame`, `Stack`, `Screen`, `FreeInkApp`; immediate-mode rather than retained objects |
+| Label | Primitive: `DrawTarget::text`; used by `header`, `statusBar`, rows, dialogs |
+| Image/canvas/line | Primitive: `bitmap`, `fill`, `stroke`, `line`, `triangle`; `DisplayTarget` renders into the 1-bit framebuffer |
+| Button | `button`, `gestureBar`, `FooterAction` |
+| Button matrix / keyboard | `keyGrid`, `qwertyKeyboard` |
+| Checkbox | `checkbox` |
+| Switch | `toggleRow` |
+| Slider | `slider`; discrete setting changes use `stepperRow` |
+| Bar/progress | `progressBar`, reader/status progress |
+| Text area | `textField` plus `qwertyKeyboard`; intentionally simple, app owns editing buffer |
+| Dropdown/roller/select | `dropdown`, `radioGroup`, `contextMenu` |
+| List/menu | `list`, `settingRow`, `contextMenu` |
+| Tabview/tileview/window | `tabBar`, `readerChrome`, app-level `Screen` composition |
+| Table | `table` |
+| Message box/dialog | `popup`, `toast`, `messagePanel`, `optionDialog` |
+| Chart/meter | `metricCard`, `progressBar`; generic chart/meter widgets are not first-class yet |
+| Calendar/spinner/arc/animation extras | Not first-class; add as app components when they make sense for a specific e-paper product |
+| E-reader/library surfaces | `tapZones`, `readerChrome`, `bookCard`, `coverGrid`, `coverCarousel`, `batteryIndicator` |
+
 ### FreeInkUI component gallery
 
 FreeInkUI includes e-paper-specific UI primitives and an app-builder layer for
@@ -322,16 +377,24 @@ Each preview below is generated from the real component code and indexed in
 
 - `button`<br>
   ![button](docs/images/freeinkui-components/button.svg)
+- `checkbox`<br>
+  ![checkbox](docs/images/freeinkui-components/checkbox.svg)
+- `slider`<br>
+  ![slider](docs/images/freeinkui-components/slider.svg)
 - `settingRow`<br>
   ![settingRow](docs/images/freeinkui-components/setting-row.svg)
 - `toggleRow`<br>
   ![toggleRow](docs/images/freeinkui-components/toggle-row.svg)
 - `stepperRow`<br>
   ![stepperRow](docs/images/freeinkui-components/stepper-row.svg)
+- `dropdown`<br>
+  ![dropdown](docs/images/freeinkui-components/dropdown.svg)
 - `radioGroup`<br>
   ![radioGroup](docs/images/freeinkui-components/radio-group.svg)
 - `list`<br>
   ![list](docs/images/freeinkui-components/list.svg)
+- `table`<br>
+  ![table](docs/images/freeinkui-components/table.svg)
 
 **Input and Navigation**
 

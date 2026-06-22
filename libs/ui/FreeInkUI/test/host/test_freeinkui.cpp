@@ -1581,6 +1581,48 @@ void testEReaderSettingsComponents() {
   CHECK(sawToggleRadius);
 }
 
+void testLvglParityControls() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(320, 240);
+  InputSnapshot input;
+  InteractionBuffer<16> interactions;
+  Frame<16> frame(draw, device, input, interactions);
+
+  CheckboxProps check;
+  check.label = "Sync";
+  check.checked = true;
+  check.action = 610;
+  checkbox(frame, Rect{0, 0, 160, 40}, check);
+
+  SliderProps slide;
+  slide.value = 50;
+  slide.max = 100;
+  slide.action = 611;
+  slider(frame, Rect{0, 48, 160, 34}, slide);
+
+  DropdownProps drop;
+  drop.label = "Font";
+  drop.value = "Noto Sans";
+  drop.action = 612;
+  dropdown(frame, Rect{0, 90, 180, 40}, drop);
+
+  const char* cells[6] = {"Name", "Value", "Battery", "82%", "Wi-Fi", "On"};
+  TableProps tableProps;
+  tableProps.cells = cells;
+  tableProps.rows = 3;
+  tableProps.cols = 2;
+  tableProps.headerRow = true;
+  table(frame, Rect{0, 138, 220, 72}, tableProps);
+
+  CHECK_EQ(interactions.count(), 3u);
+  CHECK_EQ(interactions.data()[0].action, 610);
+  CHECK_EQ(interactions.data()[1].action, 611);
+  CHECK_EQ(interactions.data()[2].action, 612);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Line) >= 2u);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Triangle) >= 1u);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Text) >= 8u);
+}
+
 void testQwertyKeyboardComponent() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -1828,6 +1870,7 @@ int main() {
   testInvertedDrawTarget();
   testStyleSetUnset();
   testEReaderSettingsComponents();
+  testLvglParityControls();
   testQwertyKeyboardComponent();
   testEReaderChromeMenusAndPanels();
   testEReaderBookSurfaces();
