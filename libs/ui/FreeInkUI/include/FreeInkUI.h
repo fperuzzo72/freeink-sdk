@@ -236,8 +236,13 @@ inline void forEachBitmapPixel(const Rect rect, const BitmapRef& src, const Bitm
                                const Rotation rotation = Rotation::None) {
   if (!src || rect.empty()) return;
   const int bytesPerRow = (src.width + 7) / 8;
+  // Mask1 is the freeink::Icon convention (bit 1 = transparent, bit 0 = draw);
+  // BW1 is set-bit-is-ink. Fold that polarity in here so both formats plot
+  // their drawn pixels through the same sampling math.
+  const bool maskInverted = src.format == BitmapFormat::Mask1;
   const auto srcInk = [&](const int sx, const int sy) {
-    return (src.data[sy * bytesPerRow + sx / 8] >> (7 - (sx % 8))) & 0x01;
+    const uint8_t bit = (src.data[sy * bytesPerRow + sx / 8] >> (7 - (sx % 8))) & 0x01;
+    return static_cast<uint8_t>(maskInverted ? (bit ^ 1) : bit);
   };
 
   // Sample through the rotation so the rest of the layout math sees a
@@ -365,6 +370,17 @@ enum Corners : uint8_t {
   CornersAll = CornersTop | CornersBottom,
 };
 
+enum Edges : uint8_t {
+  EdgesNone = 0,
+  EdgeTop = 1 << 0,
+  EdgeRight = 1 << 1,
+  EdgeBottom = 1 << 2,
+  EdgeLeft = 1 << 3,
+  EdgesHorizontal = EdgeTop | EdgeBottom,
+  EdgesVertical = EdgeLeft | EdgeRight,
+  EdgesAll = EdgesHorizontal | EdgesVertical,
+};
+
 struct BoxStyle {
   Paint background = Paint::none();
   Paint foreground = Paint::solid(Color::Black);
@@ -407,7 +423,7 @@ struct ThemeTokens {
   int16_t spaceMd = 8;
   int16_t spaceLg = 16;
   int16_t minTouchSize = 44;
-  int16_t rowHeight = 36;
+  int16_t rowHeight = 44;
   int16_t headerHeight = 44;
   int16_t footerHeight = 40;
   int16_t progressHeight = 4;
@@ -975,6 +991,7 @@ struct ButtonProps {
   TextStyle text{};
   StyleSet styles{};
   int16_t minTouchSize = 44;
+  uint8_t radius = 0;
   // Extra hit area beyond the visual rect, per edge. Use this to give
   // adjacent controls contiguous, non-overlapping tap bands (split the gap
   // between a stepper's -/+ instead of letting centered minTouchSize
@@ -982,6 +999,7 @@ struct ButtonProps {
   // clamping, and edge snapping; the visual rect is unchanged.
   Insets hitPadding{};
   int16_t gap = 4;
+  uint8_t borderEdges = EdgesAll;
   bool enabled = true;
 };
 
@@ -993,6 +1011,7 @@ struct HeaderProps {
   TextStyle subtitleText{};
   StyleSet styles{};
   int16_t titleOffsetY = 0;
+  uint8_t borderEdges = EdgesAll;
   bool centered = false;
 };
 
@@ -1033,6 +1052,7 @@ struct ListProps {
   StyleSet rowStyles{};
   int16_t rowHeight = 36;
   int16_t rowGap = 0;
+  uint8_t rowRadius = 0;
   int16_t sidePadding = 8;
   int16_t textGap = 6;
   int16_t iconSize = 0;
@@ -1081,7 +1101,9 @@ struct SliderProps {
   Paint knob = Paint::solid(Color::Black);
   Paint border = Paint::solid(Color::Black);
   int16_t trackHeight = 4;
-  int16_t knobWidth = 10;
+  int16_t knobWidth = 14;
+  int16_t knobHeight = 22;
+  int16_t horizontalPadding = 8;
   int16_t minTouchSize = 44;
   uint8_t radius = 0;
   bool enabled = true;
@@ -1096,9 +1118,11 @@ struct CheckboxProps {
   TextStyle text{};
   StyleSet styles{};
   State state = StateNormal;
-  int16_t boxSize = 16;
+  int16_t boxSize = 18;
+  int16_t sidePadding = 8;
   int16_t gap = 8;
   int16_t minTouchSize = 44;
+  uint8_t radius = 0;
   bool enabled = true;
 };
 
@@ -1134,6 +1158,7 @@ struct PopupProps {
   TextStyle text{};
   StyleSet styles{};
   Insets padding{12, 16, 12, 16};
+  int16_t maxWidth = 0;  // 0 = 3/4 bounds width when auto-sized by Screen::popup.
   ProgressBarProps progress{};
   int16_t progressHeight = 4;
   bool showProgress = false;
@@ -1164,7 +1189,10 @@ struct DropdownProps {
   Insets padding{6, 8, 6, 8};
   int16_t gap = 8;
   int16_t indicatorWidth = 12;
+  int16_t indicatorSize = 8;
+  uint8_t indicatorStroke = 1;
   int16_t minTouchSize = 44;
+  uint8_t radius = 0;
   bool enabled = true;
 };
 
@@ -1176,6 +1204,7 @@ struct TableProps {
   StyleSet cellStyles{};
   Paint grid = Paint::solid(Color::Black);
   uint8_t gridWidth = 1;
+  uint8_t cellRadius = 0;
   int16_t rowHeight = 24;
   int16_t padding = 4;
   bool headerRow = false;
@@ -1214,6 +1243,7 @@ struct KeyGridProps {
   StyleSet keyStyles{};
   int16_t gap = 0;
   int16_t minTouchSize = 28;
+  uint8_t radius = 0;
   bool inactiveSelection = false;
 };
 
@@ -1222,6 +1252,52 @@ constexpr int16_t QWERTY_KEY_MODE = -2;
 constexpr int16_t QWERTY_KEY_BACKSPACE = 8;
 constexpr int16_t QWERTY_KEY_ENTER = 13;
 constexpr int16_t QWERTY_KEY_SPACE = 32;
+
+enum class KeyboardLayoutId : uint8_t {
+  QwertyEn,
+  AzertyFr,
+  QwertzDe,
+  SpanishEs,
+};
+
+struct KeyboardKey {
+  const char* label = nullptr;   // UTF-8 visual label.
+  const char* output = nullptr;  // UTF-8 text the app may insert for normal keys.
+  KeyKind kind = KeyKind::Normal;
+  State state = StateNormal;
+  int16_t value = 0;       // Stable key id returned in ActionEvent::value.
+  uint8_t widthUnits = 1;  // Relative visual width within the row.
+  bool enabled = true;
+};
+
+struct KeyboardRow {
+  const KeyboardKey* keys = nullptr;
+  uint8_t count = 0;
+  uint8_t insetUnits = 0;
+};
+
+struct KeyboardLayout {
+  const KeyboardRow* rows = nullptr;
+  uint8_t rowCount = 0;
+};
+
+struct KeyboardProps {
+  const KeyboardLayout* layout = nullptr;
+  ActionId keyAction = NO_ACTION;
+  ActionId shiftAction = NO_ACTION;
+  ActionId modeAction = NO_ACTION;
+  ActionId deleteAction = NO_ACTION;
+  ActionId okAction = NO_ACTION;
+  uint16_t inputMask = InputDefault;
+  int16_t selectedIndex = -1;
+  TextStyle labelText{};
+  StyleSet keyStyles{};
+  Insets padding{5, 5, 5, 5};
+  int16_t gap = 3;
+  int16_t minTouchSize = 28;
+  uint8_t keyRadius = 0;
+  bool inactiveSelection = false;
+};
 
 struct QwertyKeyboardProps {
   ActionId keyAction = NO_ACTION;
@@ -1233,8 +1309,11 @@ struct QwertyKeyboardProps {
   int16_t selectedIndex = -1;
   TextStyle labelText{};
   StyleSet keyStyles{};
-  int16_t gap = 2;
+  Insets padding{5, 5, 5, 5};
+  int16_t gap = 3;
   int16_t minTouchSize = 28;
+  uint8_t keyRadius = 0;
+  KeyboardLayoutId layout = KeyboardLayoutId::QwertyEn;
   bool shifted = false;
   bool symbols = false;
   bool inactiveSelection = false;
@@ -1426,6 +1505,7 @@ struct SettingRowProps {
   StyleSet styles{};
   State state = StateNormal;
   bool enabled = true;
+  uint8_t radius = 0;
   int16_t sidePadding = 8;
   int16_t textGap = 6;
   int16_t iconSize = 0;
@@ -1438,10 +1518,10 @@ struct ToggleRowProps {
   bool checked = false;
   ActionId toggleAction = NO_ACTION;
   int16_t toggleValue = 0;
-  int16_t toggleWidth = 34;
+  int16_t toggleWidth = 38;
   int16_t toggleHeight = 18;
-  uint8_t radius = 4;
-  uint8_t knobRadius = 2;
+  uint8_t radius = 0;
+  uint8_t knobRadius = 0;
   int16_t knobInset = 3;
   uint8_t borderWidth = 1;
   Paint track = Paint::solid(Color::White);
@@ -1458,13 +1538,15 @@ struct StepperRowProps {
   ActionId increment = NO_ACTION;
   int16_t decrementValue = -1;
   int16_t incrementValue = 1;
-  int16_t buttonWidth = 44;
-  int16_t valueWidth = 56;
-  int16_t gap = 4;
+  int16_t buttonWidth = 32;
+  int16_t buttonHeight = 28;
+  int16_t valueWidth = 44;
+  int16_t gap = 6;
   StyleSet buttonStyles{};
   Paint controlPaint = Paint::solid(Color::Black);
-  int16_t controlSize = 14;
+  int16_t controlSize = 8;
   uint8_t controlStroke = 2;
+  uint8_t buttonRadius = 0;
 };
 
 struct RadioOption {
@@ -1483,6 +1565,7 @@ struct RadioGroupProps {
   StyleSet styles{};
   int16_t gap = 4;
   int16_t minTouchSize = 44;
+  uint8_t radius = 0;
 };
 
 struct ContextMenuProps {
@@ -1671,6 +1754,47 @@ void drawBitmap(DrawTarget& target, Rect rect, BitmapRef bitmap, BitmapMode mode
 BitmapRef resolveBitmap(AssetResolver* resolver, const AssetRef& asset);
 int16_t clampInt16(int32_t value, int16_t minValue, int16_t maxValue);
 TextStyle textStyleWithForeground(TextStyle text, Paint foreground);
+const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted = false, bool symbols = false);
+
+inline void setStyleRadius(StyleSet& styles, uint8_t radius) {
+  styles.normal.radius = radius;
+  styles.selected.radius = radius;
+  styles.focused.radius = radius;
+  styles.active.radius = radius;
+  styles.disabled.radius = radius;
+}
+
+inline BitmapRef lucideDeleteIcon16() {
+  static constexpr uint8_t bits[] = {
+      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF8, 0x01, 0xF3, 0xFD, 0xE7,
+      0xFD, 0xCF, 0x6D, 0xBF, 0x9D, 0xBF, 0x9D, 0xCF, 0x6D, 0xE7, 0xFD,
+      0xF3, 0xFD, 0xF8, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+  };
+  return BitmapRef{bits, 16, 16, BitmapFormat::Mask1};
+}
+
+inline void drawBorderEdges(DrawTarget& target, Rect rect, Paint paint, uint8_t width, uint8_t radius, uint8_t corners,
+                            uint8_t edges) {
+  if (paint.kind == PaintKind::None || width == 0 || edges == EdgesNone || rect.empty()) return;
+  if ((edges & EdgesAll) == EdgesAll) {
+    target.stroke(rect, paint, width, radius, corners);
+    return;
+  }
+  if (edges & EdgeTop) {
+    target.line(Point{rect.x, rect.y}, Point{static_cast<int16_t>(rect.right() - 1), rect.y}, width, paint);
+  }
+  if (edges & EdgeRight) {
+    const int16_t x = static_cast<int16_t>(rect.right() - 1);
+    target.line(Point{x, rect.y}, Point{x, static_cast<int16_t>(rect.bottom() - 1)}, width, paint);
+  }
+  if (edges & EdgeBottom) {
+    const int16_t y = static_cast<int16_t>(rect.bottom() - 1);
+    target.line(Point{rect.x, y}, Point{static_cast<int16_t>(rect.right() - 1), y}, width, paint);
+  }
+  if (edges & EdgeLeft) {
+    target.line(Point{rect.x, rect.y}, Point{rect.x, static_cast<int16_t>(rect.bottom() - 1)}, width, paint);
+  }
+}
 
 template <size_t MaxInteractions>
 void button(Frame<MaxInteractions>& frame, Rect rect, const ButtonProps& props) {
@@ -1684,12 +1808,14 @@ void button(Frame<MaxInteractions>& frame, Rect rect, const ButtonProps& props) 
   }
 
   StyleSet styles = props.styles.unset() ? defaultButtonStyles() : props.styles;
+  if (props.radius > 0) setStyleRadius(styles, props.radius);
   State state = props.enabled ? props.state : static_cast<State>(props.state | StateDisabled);
   state = frame.stateFor(props.action, props.value, state);
   const BoxStyle& style = styles.resolve(state);
   frame.target().fill(rect, style.background, style.radius, style.corners);
   if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
-    frame.target().stroke(rect, style.border, style.borderWidth, style.radius, style.corners);
+    drawBorderEdges(frame.target(), rect, style.border, style.borderWidth, style.radius, style.corners,
+                    props.borderEdges);
   }
 
   Rect content = rect.inset(Insets{2, 4, 2, 4});
@@ -1720,7 +1846,8 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
   const BoxStyle& style = styles.resolve(StateNormal);
   frame.target().fill(rect, style.background, style.radius, style.corners);
   if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
-    frame.target().stroke(rect, style.border, style.borderWidth, style.radius, style.corners);
+    drawBorderEdges(frame.target(), rect, style.border, style.borderWidth, style.radius, style.corners,
+                    props.borderEdges);
   }
 
   Rect content = rect.inset(Insets{0, 6, 0, 6});
@@ -1768,8 +1895,10 @@ void slider(Frame<MaxInteractions>& frame, Rect rect, const SliderProps& props) 
   }
   state = frame.stateFor(props.action, props.actionValue, state);
 
+  Rect content = rect.inset(Insets{0, props.horizontalPadding, 0, props.horizontalPadding});
+  if (content.empty()) return;
   const int16_t trackH = props.trackHeight < 1 ? 1 : props.trackHeight;
-  Rect track{rect.x, static_cast<int16_t>(rect.y + (rect.height - trackH) / 2), rect.width, trackH};
+  Rect track{content.x, static_cast<int16_t>(content.y + (content.height - trackH) / 2), content.width, trackH};
   ProgressBarProps bar;
   bar.value = props.value;
   bar.max = props.max;
@@ -1782,9 +1911,10 @@ void slider(Frame<MaxInteractions>& frame, Rect rect, const SliderProps& props) 
   int32_t value = props.value < 0 ? 0 : props.value;
   if (value > max) value = max;
   const int16_t knobW = props.knobWidth < 4 ? 4 : props.knobWidth;
-  const int16_t travel = rect.width > knobW ? static_cast<int16_t>(rect.width - knobW) : 0;
-  const int16_t knobX = static_cast<int16_t>(rect.x + (static_cast<int32_t>(travel) * value) / max);
-  Rect knobRect{knobX, rect.y, knobW, rect.height};
+  const int16_t knobH = props.knobHeight < trackH ? trackH : props.knobHeight;
+  const int16_t travel = content.width > knobW ? static_cast<int16_t>(content.width - knobW) : 0;
+  const int16_t knobX = static_cast<int16_t>(content.x + (static_cast<int32_t>(travel) * value) / max);
+  Rect knobRect{knobX, static_cast<int16_t>(content.y + (content.height - knobH) / 2), knobW, knobH};
   frame.target().fill(knobRect, hasState(state, StateDisabled) ? Paint::dither(Color::LightGray) : props.knob,
                       props.radius);
   if (props.border.kind != PaintKind::None) frame.target().stroke(knobRect, props.border, 1, props.radius);
@@ -1800,10 +1930,12 @@ void checkbox(Frame<MaxInteractions>& frame, Rect rect, const CheckboxProps& pro
   }
   state = frame.stateFor(props.action, props.value, state);
   StyleSet styles = props.styles.unset() ? defaultButtonStyles() : props.styles;
+  if (props.radius > 0) setStyleRadius(styles, props.radius);
   const BoxStyle& style = styles.resolve(state);
 
   const int16_t box = props.boxSize < 8 ? 8 : props.boxSize;
-  Rect boxRect{rect.x, static_cast<int16_t>(rect.y + (rect.height - box) / 2), box, box};
+  Rect boxRect{static_cast<int16_t>(rect.x + props.sidePadding),
+               static_cast<int16_t>(rect.y + (rect.height - box) / 2), box, box};
   frame.target().fill(boxRect, style.background, style.radius, style.corners);
   frame.target().stroke(boxRect, style.border.kind == PaintKind::None ? Paint::solid(Color::Black) : style.border,
                         style.borderWidth ? style.borderWidth : 1, style.radius, style.corners);
@@ -1821,7 +1953,8 @@ void checkbox(Frame<MaxInteractions>& frame, Rect rect, const CheckboxProps& pro
   if (props.label) {
     Rect textRect{static_cast<int16_t>(boxRect.right() + props.gap), rect.y,
                   static_cast<int16_t>(rect.right() - boxRect.right() - props.gap), rect.height};
-    frame.target().text(textRect, props.label, textStyleWithForeground(props.text, style.foreground));
+    Paint labelInk = hasState(state, StateDisabled) ? Paint::dither(Color::LightGray) : Paint::solid(Color::Black);
+    frame.target().text(textRect, props.label, textStyleWithForeground(props.text, labelInk));
   }
 }
 
@@ -1958,6 +2091,7 @@ void dropdown(Frame<MaxInteractions>& frame, Rect rect, const DropdownProps& pro
   }
   state = frame.stateFor(props.action, props.actionValue, state);
   StyleSet styles = props.styles.unset() ? defaultButtonStyles() : props.styles;
+  if (props.radius > 0) setStyleRadius(styles, props.radius);
   const BoxStyle& style = styles.resolve(state);
   frame.target().fill(rect, style.background, style.radius, style.corners);
   if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
@@ -1968,10 +2102,16 @@ void dropdown(Frame<MaxInteractions>& frame, Rect rect, const DropdownProps& pro
   const int16_t indicatorW = props.indicatorWidth < 8 ? 8 : props.indicatorWidth;
   Rect indicator{static_cast<int16_t>(content.right() - indicatorW), content.y, indicatorW, content.height};
   const int16_t cx = static_cast<int16_t>(indicator.x + indicator.width / 2);
-  const int16_t cy = static_cast<int16_t>(indicator.y + indicator.height / 2 + 2);
+  const int16_t cy = static_cast<int16_t>(indicator.y + indicator.height / 2);
   const Paint ink = style.foreground.kind == PaintKind::None ? Paint::solid(Color::Black) : style.foreground;
-  frame.target().triangle(Point{static_cast<int16_t>(cx - 5), static_cast<int16_t>(cy - 3)},
-                          Point{static_cast<int16_t>(cx + 5), static_cast<int16_t>(cy - 3)}, Point{cx, cy}, ink);
+  const int16_t chevron = props.indicatorSize < 4 ? 4 : props.indicatorSize;
+  const int16_t half = static_cast<int16_t>(chevron / 2);
+  const int16_t rise = half;
+  const uint8_t stroke = props.indicatorStroke == 0 ? 1 : props.indicatorStroke;
+  frame.target().line(Point{static_cast<int16_t>(cx - half), static_cast<int16_t>(cy - rise)},
+                      Point{cx, cy}, stroke, ink);
+  frame.target().line(Point{cx, cy}, Point{static_cast<int16_t>(cx + half), static_cast<int16_t>(cy - rise)},
+                      stroke, ink);
 
   Rect textRect{content.x, content.y, static_cast<int16_t>(indicator.x - content.x - props.gap), content.height};
   if (props.label && props.value) {
@@ -1991,6 +2131,7 @@ template <size_t MaxInteractions>
 void table(Frame<MaxInteractions>& frame, Rect rect, const TableProps& props) {
   if (!props.cells || props.rows == 0 || props.cols == 0) return;
   StyleSet styles = props.cellStyles.unset() ? defaultListRowStyles() : props.cellStyles;
+  if (props.cellRadius > 0) setStyleRadius(styles, props.cellRadius);
   const int16_t cellW = static_cast<int16_t>(rect.width / props.cols);
   const int16_t rowH = props.rowHeight < 1 ? static_cast<int16_t>(rect.height / props.rows) : props.rowHeight;
   for (uint8_t row = 0; row < props.rows; ++row) {
@@ -2003,7 +2144,7 @@ void table(Frame<MaxInteractions>& frame, Rect rect, const TableProps& props) {
       const BoxStyle& style = styles.resolve(state);
       frame.target().fill(cell, style.background, style.radius, style.corners);
       if (props.grid.kind != PaintKind::None && props.gridWidth > 0) {
-        frame.target().stroke(cell, props.grid, props.gridWidth);
+        frame.target().stroke(cell, props.grid, props.gridWidth, style.radius, style.corners);
       }
       const char* value = props.cells[static_cast<uint16_t>(row) * props.cols + col];
       if (value) {
@@ -2083,6 +2224,7 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
     }
     state = frame.stateFor(props.action, item.actionValue, state);
     StyleSet styles = props.rowStyles.unset() ? defaultListRowStyles() : props.rowStyles;
+    if (props.rowRadius > 0) setStyleRadius(styles, props.rowRadius);
     const BoxStyle& style = styles.resolve(state);
     frame.target().fill(row, style.background, style.radius, style.corners);
     if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
@@ -2162,30 +2304,23 @@ void keyGrid(Frame<MaxInteractions>& frame, Rect rect, const KeyGridProps& props
       bp.text = props.labelText;
       bp.styles = props.keyStyles.unset() ? defaultKeyStyles() : props.keyStyles;
       bp.minTouchSize = props.minTouchSize;
+      bp.radius = props.radius;
       bp.enabled = key.enabled && key.kind != KeyKind::Disabled;
-      // Space and Delete render glyph art instead of a text label.
-      const bool glyphKey = (key.kind == KeyKind::Space || key.kind == KeyKind::Delete) && !bp.icon;
+      if (key.kind == KeyKind::Delete && !bp.icon) {
+        bp.icon = lucideDeleteIcon16();
+        bp.label = nullptr;
+      }
+      // Space renders glyph art instead of a text label.
+      const bool glyphKey = key.kind == KeyKind::Space && !bp.icon;
       if (glyphKey) bp.label = nullptr;
       button(frame, keyRect, bp);
       if (glyphKey) {
         const Paint ink = bp.styles.resolve(frame.stateFor(props.action, key.value, state)).foreground;
         const int16_t cx = static_cast<int16_t>(keyRect.x + keyRect.width / 2);
         const int16_t cy = static_cast<int16_t>(keyRect.y + keyRect.height / 2);
-        if (key.kind == KeyKind::Space) {
-          const int16_t half = static_cast<int16_t>(keyRect.width * 3 / 10);
-          frame.target().line(Point{static_cast<int16_t>(cx - half), static_cast<int16_t>(cy + 3)},
-                              Point{static_cast<int16_t>(cx + half), static_cast<int16_t>(cy + 3)}, 3, ink);
-        } else {
-          // Left-pointing delete arrow: shaft plus chevron head.
-          const int16_t len = static_cast<int16_t>(keyRect.width / 4);
-          const int16_t head = static_cast<int16_t>(len / 2 > 1 ? len / 2 : 1);
-          const int16_t tail = static_cast<int16_t>(cx - len / 2);
-          frame.target().line(Point{tail, cy}, Point{static_cast<int16_t>(cx + len / 2), cy}, 3, ink);
-          frame.target().line(Point{tail, cy}, Point{static_cast<int16_t>(tail + head), static_cast<int16_t>(cy - head)},
-                              3, ink);
-          frame.target().line(Point{tail, cy}, Point{static_cast<int16_t>(tail + head), static_cast<int16_t>(cy + head)},
-                              3, ink);
-        }
+        const int16_t half = static_cast<int16_t>(keyRect.width * 3 / 10);
+        frame.target().line(Point{static_cast<int16_t>(cx - half), static_cast<int16_t>(cy + 3)},
+                            Point{static_cast<int16_t>(cx + half), static_cast<int16_t>(cy + 3)}, 3, ink);
       }
       if (key.secondaryLabel && key.enabled) {
         Rect sec{static_cast<int16_t>(keyRect.right() - cellW / 3), keyRect.y, static_cast<int16_t>(cellW / 3),
@@ -2197,103 +2332,96 @@ void keyGrid(Frame<MaxInteractions>& frame, Rect rect, const KeyGridProps& props
 }
 
 template <size_t MaxInteractions>
-void qwertyKeyboard(Frame<MaxInteractions>& frame, Rect rect, const QwertyKeyboardProps& props) {
-  static constexpr const char* letters[26] = {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p",
-                                              "a", "s", "d", "f", "g", "h", "j", "k", "l",
-                                              "z", "x", "c", "v", "b", "n", "m"};
-  static constexpr const char* shifted[26] = {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P",
-                                              "A", "S", "D", "F", "G", "H", "J", "K", "L",
-                                              "Z", "X", "C", "V", "B", "N", "M"};
-  static constexpr const char* symbols[26] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
-                                             "-", "/", ":", ";", "(", ")", "$", "&", "@",
-                                             ".", ",", "?", "!", "'", "\"", "#"};
-
-  StyleSet styles = props.keyStyles.unset() ? defaultKeyStyles() : props.keyStyles;
+void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& props) {
+  if (!props.layout || !props.layout->rows || props.layout->rowCount == 0) return;
+  StyleSet styles = props.keyStyles.unset() ? defaultButtonStyles() : props.keyStyles;
+  if (props.keyRadius > 0) setStyleRadius(styles, props.keyRadius);
+  TextStyle keyText = props.labelText;
+  keyText.align = TextAlign::Center;
+  keyText.maxLines = 1;
+  rect = rect.inset(props.padding);
+  if (rect.empty() || rect.width < 10 || rect.height < 10) return;
   const int16_t gap = props.gap < 0 ? 0 : props.gap;
-  const int16_t rowH = static_cast<int16_t>((rect.height - gap * 3) / 4);
-  const int16_t keyW = static_cast<int16_t>((rect.width - gap * 9) / 10);
-  const char* const* labels = props.symbols ? symbols : (props.shifted ? shifted : letters);
+  const int16_t rowH = static_cast<int16_t>((rect.height - gap * (props.layout->rowCount - 1)) / props.layout->rowCount);
   int16_t logicalIndex = 0;
 
-  auto drawKey = [&](Rect keyRect, const char* label, ActionId action, int16_t value, KeyKind kind,
-                     int16_t selectedIndex) {
-    State state = StateNormal;
-    if (props.selectedIndex == selectedIndex) state |= props.inactiveSelection ? StateFocused : StateSelected;
-    ButtonProps bp;
-    bp.label = (kind == KeyKind::Space || kind == KeyKind::Delete) ? nullptr : label;
-    bp.action = action;
-    bp.value = value;
-    bp.inputMask = props.inputMask;
-    bp.state = state;
-    bp.text = props.labelText;
-    bp.styles = styles;
-    bp.minTouchSize = props.minTouchSize;
-    button(frame, keyRect, bp);
-
-    if (kind != KeyKind::Space && kind != KeyKind::Delete) return;
-    const Paint ink = styles.resolve(frame.stateFor(action, value, state)).foreground;
-    const int16_t cx = static_cast<int16_t>(keyRect.x + keyRect.width / 2);
-    const int16_t cy = static_cast<int16_t>(keyRect.y + keyRect.height / 2);
-    if (kind == KeyKind::Space) {
-      const int16_t half = static_cast<int16_t>(keyRect.width * 3 / 10);
-      frame.target().line(Point{static_cast<int16_t>(cx - half), static_cast<int16_t>(cy + 3)},
-                          Point{static_cast<int16_t>(cx + half), static_cast<int16_t>(cy + 3)}, 3, ink);
-      return;
-    }
-    const int16_t len = static_cast<int16_t>(keyRect.width / 4);
-    const int16_t head = static_cast<int16_t>(len / 2 > 2 ? len / 2 : 2);
-    const int16_t tail = static_cast<int16_t>(cx - len / 2);
-    frame.target().line(Point{tail, cy}, Point{static_cast<int16_t>(cx + len / 2), cy}, 3, ink);
-    frame.target().line(Point{tail, cy}, Point{static_cast<int16_t>(tail + head), static_cast<int16_t>(cy - head)}, 3,
-                        ink);
-    frame.target().line(Point{tail, cy}, Point{static_cast<int16_t>(tail + head), static_cast<int16_t>(cy + head)}, 3,
-                        ink);
+  auto actionFor = [&](KeyKind kind) {
+    if (kind == KeyKind::Shift && props.shiftAction != NO_ACTION) return props.shiftAction;
+    if (kind == KeyKind::Mode && props.modeAction != NO_ACTION) return props.modeAction;
+    if (kind == KeyKind::Delete && props.deleteAction != NO_ACTION) return props.deleteAction;
+    if (kind == KeyKind::Ok && props.okAction != NO_ACTION) return props.okAction;
+    return props.keyAction;
   };
 
-  for (uint8_t row = 0; row < 3; ++row) {
-    const uint8_t count = row == 0 ? 10 : (row == 1 ? 9 : 7);
-    const int16_t y = static_cast<int16_t>(rect.y + row * (rowH + gap));
-    int16_t x = static_cast<int16_t>(rect.x + (10 - count) * (keyW + gap) / 2);
-    if (row == 2) {
-      const int16_t specialW = static_cast<int16_t>(keyW * 3 / 2);
-      drawKey(Rect{rect.x, y, specialW, rowH}, "Shift",
-              props.shiftAction != NO_ACTION ? props.shiftAction : props.keyAction, QWERTY_KEY_SHIFT, KeyKind::Shift,
-              logicalIndex++);
-      x = static_cast<int16_t>(rect.x + specialW + gap);
-      for (uint8_t col = 0; col < count; ++col) {
-        const uint8_t idx = static_cast<uint8_t>(19 + col);
-        drawKey(Rect{x, y, keyW, rowH}, labels[idx], props.keyAction, static_cast<int16_t>(labels[idx][0]),
-                KeyKind::Normal, logicalIndex++);
-        x = static_cast<int16_t>(x + keyW + gap);
-      }
-      drawKey(Rect{x, y, static_cast<int16_t>(rect.right() - x), rowH}, "Del",
-              props.deleteAction != NO_ACTION ? props.deleteAction : props.keyAction, QWERTY_KEY_BACKSPACE,
-              KeyKind::Delete, logicalIndex++);
-      continue;
-    }
+  auto drawKey = [&](Rect keyRect, const KeyboardKey& key, int16_t selectedIndex) {
+    State state = StateNormal;
+    if (props.selectedIndex == selectedIndex) state |= props.inactiveSelection ? StateFocused : StateSelected;
+    if (!key.enabled || key.kind == KeyKind::Disabled) state |= StateDisabled;
+    const ActionId action = actionFor(key.kind);
+    ButtonProps bp;
+    bp.label = (key.kind == KeyKind::Space || key.kind == KeyKind::Delete) ? nullptr : key.label;
+    bp.action = action;
+    bp.value = key.value;
+    bp.inputMask = props.inputMask;
+    bp.state = state;
+    bp.text = keyText;
+    bp.styles = styles;
+    bp.minTouchSize = props.minTouchSize;
+    bp.radius = props.keyRadius;
+    bp.enabled = key.enabled && key.kind != KeyKind::Disabled;
+    if (key.kind == KeyKind::Delete) bp.icon = lucideDeleteIcon16();
+    button(frame, keyRect, bp);
 
-    const uint8_t base = row == 0 ? 0 : 10;
-    for (uint8_t col = 0; col < count; ++col) {
-      const uint8_t idx = static_cast<uint8_t>(base + col);
-      drawKey(Rect{x, y, keyW, rowH}, labels[idx], props.keyAction, static_cast<int16_t>(labels[idx][0]),
-              KeyKind::Normal, logicalIndex++);
-      x = static_cast<int16_t>(x + keyW + gap);
+    if (key.kind != KeyKind::Space) return;
+    const Paint ink = styles.resolve(frame.stateFor(action, key.value, state)).foreground;
+    const int16_t cx = static_cast<int16_t>(keyRect.x + keyRect.width / 2);
+    const int16_t cy = static_cast<int16_t>(keyRect.y + keyRect.height / 2);
+    const int16_t half = static_cast<int16_t>(keyRect.width * 3 / 10);
+    frame.target().line(Point{static_cast<int16_t>(cx - half), static_cast<int16_t>(cy + 3)},
+                        Point{static_cast<int16_t>(cx + half), static_cast<int16_t>(cy + 3)}, 3, ink);
+  };
+
+  for (uint8_t row = 0; row < props.layout->rowCount; ++row) {
+    const KeyboardRow& layoutRow = props.layout->rows[row];
+    if (!layoutRow.keys || layoutRow.count == 0) continue;
+    uint16_t units = static_cast<uint16_t>(layoutRow.insetUnits * 2);
+    for (uint8_t col = 0; col < layoutRow.count; ++col) {
+      units = static_cast<uint16_t>(units + (layoutRow.keys[col].widthUnits ? layoutRow.keys[col].widthUnits : 1));
+    }
+    const int16_t unitW = static_cast<int16_t>((rect.width - gap * (layoutRow.count - 1)) / units);
+    const int16_t y = static_cast<int16_t>(rect.y + row * (rowH + gap));
+    int16_t x = static_cast<int16_t>(rect.x + layoutRow.insetUnits * unitW);
+    const int16_t rowRight = static_cast<int16_t>(rect.right() - layoutRow.insetUnits * unitW);
+    for (uint8_t col = 0; col < layoutRow.count; ++col) {
+      const KeyboardKey& key = layoutRow.keys[col];
+      const uint8_t keyUnits = key.widthUnits ? key.widthUnits : 1;
+      const int16_t w = col == layoutRow.count - 1 ? static_cast<int16_t>(rowRight - x)
+                                                   : static_cast<int16_t>(unitW * keyUnits);
+      drawKey(Rect{x, y, w, rowH}, key, logicalIndex++);
+      x = static_cast<int16_t>(x + w + gap);
     }
   }
+}
 
-  const int16_t y = static_cast<int16_t>(rect.y + 3 * (rowH + gap));
-  const int16_t modeW = static_cast<int16_t>(keyW * 2);
-  const int16_t okW = static_cast<int16_t>(keyW * 2);
-  const int16_t spaceW = static_cast<int16_t>(rect.width - modeW - okW - gap * 2);
-  int16_t x = rect.x;
-  drawKey(Rect{x, y, modeW, rowH}, props.symbols ? "ABC" : "?123",
-          props.modeAction != NO_ACTION ? props.modeAction : props.keyAction, QWERTY_KEY_MODE, KeyKind::Mode,
-          logicalIndex++);
-  x = static_cast<int16_t>(x + modeW + gap);
-  drawKey(Rect{x, y, spaceW, rowH}, "Space", props.keyAction, QWERTY_KEY_SPACE, KeyKind::Space, logicalIndex++);
-  x = static_cast<int16_t>(x + spaceW + gap);
-  drawKey(Rect{x, y, okW, rowH}, "OK", props.okAction != NO_ACTION ? props.okAction : props.keyAction,
-          QWERTY_KEY_ENTER, KeyKind::Ok, logicalIndex++);
+template <size_t MaxInteractions>
+void qwertyKeyboard(Frame<MaxInteractions>& frame, Rect rect, const QwertyKeyboardProps& props) {
+  KeyboardProps keyboardProps;
+  keyboardProps.layout = &builtinKeyboardLayout(props.layout, props.shifted, props.symbols);
+  keyboardProps.keyAction = props.keyAction;
+  keyboardProps.shiftAction = props.shiftAction;
+  keyboardProps.modeAction = props.modeAction;
+  keyboardProps.deleteAction = props.deleteAction;
+  keyboardProps.okAction = props.okAction;
+  keyboardProps.inputMask = props.inputMask;
+  keyboardProps.selectedIndex = props.selectedIndex;
+  keyboardProps.labelText = props.labelText;
+  keyboardProps.keyStyles = props.keyStyles;
+  keyboardProps.padding = props.padding;
+  keyboardProps.gap = props.gap;
+  keyboardProps.minTouchSize = props.minTouchSize;
+  keyboardProps.keyRadius = props.keyRadius;
+  keyboardProps.inactiveSelection = props.inactiveSelection;
+  keyboard(frame, rect, keyboardProps);
 }
 
 template <size_t MaxInteractions, size_t MaxSlots = 3>
@@ -2404,7 +2532,6 @@ void tabBar(Frame<MaxInteractions>& frame, Rect rect, const TabBarProps& props) 
   if (styles.unset()) {
     styles.selected.background = Paint::solid(Color::Black);
     styles.selected.foreground = Paint::solid(Color::White);
-    styles.selected.radius = 12;
   }
 
   const int16_t dividerH = props.divider ? 1 : 0;
@@ -2579,6 +2706,7 @@ void settingRow(Frame<MaxInteractions>& frame, Rect rect, const SettingRowProps&
   state = frame.stateFor(props.action, props.valueId, state);
 
   StyleSet styles = props.styles.unset() ? defaultListRowStyles() : props.styles;
+  if (props.radius > 0) setStyleRadius(styles, props.radius);
   const BoxStyle& style = styles.resolve(state);
   frame.target().fill(rect, style.background, style.radius, style.corners);
   if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
@@ -2665,14 +2793,20 @@ void stepperRow(Frame<MaxInteractions>& frame, Rect rect, const StepperRowProps&
   SettingRowProps row = props.row;
   row.value = nullptr;
   row.drawChevron = false;
+  const int16_t sidePadding = row.sidePadding < 0 ? 0 : row.sidePadding;
+  const int16_t controlsX = static_cast<int16_t>(rect.right() - sidePadding - controlsW);
   Rect labelRect = rect;
-  labelRect.width = static_cast<int16_t>(labelRect.width - controlsW - props.gap);
+  labelRect.width = static_cast<int16_t>(controlsX - props.gap - rect.x);
+  if (labelRect.width < 0) labelRect.width = 0;
   settingRow(frame, labelRect, row);
 
-  int16_t x = static_cast<int16_t>(rect.right() - controlsW);
+  int16_t x = controlsX;
   StyleSet buttonStyles = props.buttonStyles.unset()
                               ? (row.styles.unset() ? defaultButtonStyles() : row.styles)
                               : props.buttonStyles;
+  const int16_t visualH = static_cast<int16_t>(
+      props.buttonHeight < 18 ? 18 : (props.buttonHeight > rect.height ? rect.height : props.buttonHeight));
+  const int16_t visualY = static_cast<int16_t>(rect.y + (rect.height - visualH) / 2);
   auto drawControl = [&](Rect buttonRect, bool plus, ActionId action, int16_t value, Insets hitPadding) {
     ButtonProps buttonProps;
     buttonProps.label = nullptr;
@@ -2681,7 +2815,10 @@ void stepperRow(Frame<MaxInteractions>& frame, Rect rect, const StepperRowProps&
     buttonProps.text = row.valueText;
     buttonProps.styles = buttonStyles;
     buttonProps.minTouchSize = row.minTouchSize;
+    buttonProps.radius = props.buttonRadius;
     buttonProps.hitPadding = hitPadding;
+    buttonProps.hitPadding.top = static_cast<int16_t>(buttonProps.hitPadding.top + (buttonRect.y - rect.y));
+    buttonProps.hitPadding.bottom = static_cast<int16_t>(buttonProps.hitPadding.bottom + (rect.bottom() - buttonRect.bottom()));
     button(frame, buttonRect, buttonProps);
 
     const int16_t half = static_cast<int16_t>((props.controlSize < 4 ? 4 : props.controlSize) / 2);
@@ -2703,20 +2840,21 @@ void stepperRow(Frame<MaxInteractions>& frame, Rect rect, const StepperRowProps&
   minus.styles = buttonStyles;
   minus.minTouchSize = row.minTouchSize;
   minus.hitPadding = Insets{0, static_cast<int16_t>(props.gap / 2), 0, 0};
-  drawControl(Rect{x, rect.y, props.buttonWidth, rect.height}, false, props.decrement, props.decrementValue,
+  drawControl(Rect{x, visualY, props.buttonWidth, visualH}, false, props.decrement, props.decrementValue,
               minus.hitPadding);
   x = static_cast<int16_t>(x + props.buttonWidth + props.gap);
 
   TextStyle valueText = row.valueText;
   valueText.align = TextAlign::Center;
-  frame.target().text(Rect{x, rect.y, props.valueWidth, rect.height}, props.value, valueText);
+  Rect valueRect{x, visualY, props.valueWidth, visualH};
+  frame.target().text(valueRect, props.value, valueText);
   x = static_cast<int16_t>(x + props.valueWidth + props.gap);
 
   ButtonProps plus = minus;
   plus.action = props.increment;
   plus.value = props.incrementValue;
   plus.hitPadding = Insets{0, 0, 0, static_cast<int16_t>(props.gap / 2)};
-  drawControl(Rect{x, rect.y, props.buttonWidth, rect.height}, true, props.increment, props.incrementValue,
+  drawControl(Rect{x, visualY, props.buttonWidth, visualH}, true, props.increment, props.incrementValue,
               plus.hitPadding);
 }
 
@@ -2738,6 +2876,7 @@ void radioGroup(Frame<MaxInteractions>& frame, Rect rect, const RadioGroupProps&
     buttonProps.text = props.text;
     buttonProps.styles = props.styles;
     buttonProps.minTouchSize = props.minTouchSize;
+    buttonProps.radius = props.radius;
     buttonProps.enabled = option.enabled;
     button(frame, cell, buttonProps);
     x = static_cast<int16_t>(x + cell.width + props.gap);

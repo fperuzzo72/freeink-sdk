@@ -18,7 +18,7 @@ StyleSet defaultButtonStyles() {
   styles.focused.background = Paint::dither(Color::LightGray);
   styles.focused.foreground = Paint::solid(Color::Black);
   styles.focused.border = Paint::solid(Color::Black);
-  styles.focused.borderWidth = 2;
+  styles.focused.borderWidth = 1;
 
   styles.active.background = Paint::solid(Color::Black);
   styles.active.foreground = Paint::solid(Color::White);
@@ -95,6 +95,119 @@ ThemeTokens defaultThemeTokens(FontId smallFont, FontId bodyFont, FontId titleFo
   tokens.textField.selected.border = Paint::solid(Color::Black);
   tokens.textField.selected.borderWidth = 2;
   return tokens;
+}
+
+namespace {
+
+#define K(label, output, value) KeyboardKey{label, output, KeyKind::Normal, StateNormal, value, 1, true}
+#define K2(label, output, value) KeyboardKey{label, output, KeyKind::Normal, StateNormal, value, 2, true}
+#define KS(label, kind, value, units) KeyboardKey{label, nullptr, kind, StateNormal, value, units, true}
+
+static const KeyboardKey EN_ROW1[] = {K("q", "q", 'q'), K("w", "w", 'w'), K("e", "e", 'e'), K("r", "r", 'r'),
+                                      K("t", "t", 't'), K("y", "y", 'y'), K("u", "u", 'u'), K("i", "i", 'i'),
+                                      K("o", "o", 'o'), K("p", "p", 'p')};
+static const KeyboardKey EN_ROW2[] = {K("a", "a", 'a'), K("s", "s", 's'), K("d", "d", 'd'), K("f", "f", 'f'),
+                                      K("g", "g", 'g'), K("h", "h", 'h'), K("j", "j", 'j'), K("k", "k", 'k'),
+                                      K("l", "l", 'l')};
+static const KeyboardKey EN_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("z", "z", 'z'),
+                                      K("x", "x", 'x'), K("c", "c", 'c'), K("v", "v", 'v'), K("b", "b", 'b'),
+                                      K("n", "n", 'n'), K("m", "m", 'm'),
+                                      KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+static const KeyboardKey EN_ROW4[] = {KS("?123", KeyKind::Mode, QWERTY_KEY_MODE, 2),
+                                      KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 6),
+                                      KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
+
+static const KeyboardKey EN_SHIFT_ROW1[] = {K("Q", "Q", 'Q'), K("W", "W", 'W'), K("E", "E", 'E'), K("R", "R", 'R'),
+                                            K("T", "T", 'T'), K("Y", "Y", 'Y'), K("U", "U", 'U'), K("I", "I", 'I'),
+                                            K("O", "O", 'O'), K("P", "P", 'P')};
+static const KeyboardKey EN_SHIFT_ROW2[] = {K("A", "A", 'A'), K("S", "S", 'S'), K("D", "D", 'D'), K("F", "F", 'F'),
+                                            K("G", "G", 'G'), K("H", "H", 'H'), K("J", "J", 'J'), K("K", "K", 'K'),
+                                            K("L", "L", 'L')};
+static const KeyboardKey EN_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("Z", "Z", 'Z'),
+                                            K("X", "X", 'X'), K("C", "C", 'C'), K("V", "V", 'V'), K("B", "B", 'B'),
+                                            K("N", "N", 'N'), K("M", "M", 'M'),
+                                            KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+
+static const KeyboardKey SYMBOL_ROW1[] = {K("1", "1", '1'), K("2", "2", '2'), K("3", "3", '3'), K("4", "4", '4'),
+                                          K("5", "5", '5'), K("6", "6", '6'), K("7", "7", '7'), K("8", "8", '8'),
+                                          K("9", "9", '9'), K("0", "0", '0')};
+static const KeyboardKey SYMBOL_ROW2[] = {K("-", "-", '-'), K("/", "/", '/'), K(":", ":", ':'), K(";", ";", ';'),
+                                          K("(", "(", '('), K(")", ")", ')'), K("$", "$", '$'), K("&", "&", '&'),
+                                          K("@", "@", '@')};
+static const KeyboardKey SYMBOL_ROW3[] = {KS("ABC", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K(".", ".", '.'),
+                                          K(",", ",", ','), K("?", "?", '?'), K("!", "!", '!'), K("'", "'", '\''),
+                                          K("\"", "\"", '"'), K("#", "#", '#'),
+                                          KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+
+static const KeyboardKey FR_ROW1[] = {K("a", "a", 'a'), K("z", "z", 'z'), K("e", "e", 'e'), K("r", "r", 'r'),
+                                      K("t", "t", 't'), K("y", "y", 'y'), K("u", "u", 'u'), K("i", "i", 'i'),
+                                      K("o", "o", 'o'), K("p", "p", 'p')};
+static const KeyboardKey FR_ROW2[] = {K("q", "q", 'q'), K("s", "s", 's'), K("d", "d", 'd'), K("f", "f", 'f'),
+                                      K("g", "g", 'g'), K("h", "h", 'h'), K("j", "j", 'j'), K("k", "k", 'k'),
+                                      K("l", "l", 'l'), K("m", "m", 'm')};
+static const KeyboardKey FR_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("w", "w", 'w'),
+                                      K("x", "x", 'x'), K("c", "c", 'c'), K("v", "v", 'v'), K("b", "b", 'b'),
+                                      K("n", "n", 'n'), K("é", "é", 1001),
+                                      KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+
+static const KeyboardKey DE_ROW1[] = {K("q", "q", 'q'), K("w", "w", 'w'), K("e", "e", 'e'), K("r", "r", 'r'),
+                                      K("t", "t", 't'), K("z", "z", 'z'), K("u", "u", 'u'), K("i", "i", 'i'),
+                                      K("o", "o", 'o'), K("p", "p", 'p')};
+static const KeyboardKey DE_ROW2[] = {K("a", "a", 'a'), K("s", "s", 's'), K("d", "d", 'd'), K("f", "f", 'f'),
+                                      K("g", "g", 'g'), K("h", "h", 'h'), K("j", "j", 'j'), K("k", "k", 'k'),
+                                      K("l", "l", 'l'), K("ü", "ü", 1101)};
+static const KeyboardKey DE_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("y", "y", 'y'),
+                                      K("x", "x", 'x'), K("c", "c", 'c'), K("v", "v", 'v'), K("b", "b", 'b'),
+                                      K("n", "n", 'n'), K("m", "m", 'm'), K("ß", "ß", 1102),
+                                      KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+
+static const KeyboardKey ES_ROW1[] = {K("q", "q", 'q'), K("w", "w", 'w'), K("e", "e", 'e'), K("r", "r", 'r'),
+                                      K("t", "t", 't'), K("y", "y", 'y'), K("u", "u", 'u'), K("i", "i", 'i'),
+                                      K("o", "o", 'o'), K("p", "p", 'p')};
+static const KeyboardKey ES_ROW2[] = {K("a", "a", 'a'), K("s", "s", 's'), K("d", "d", 'd'), K("f", "f", 'f'),
+                                      K("g", "g", 'g'), K("h", "h", 'h'), K("j", "j", 'j'), K("k", "k", 'k'),
+                                      K("l", "l", 'l'), K("ñ", "ñ", 1201)};
+static const KeyboardKey ES_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("z", "z", 'z'),
+                                      K("x", "x", 'x'), K("c", "c", 'c'), K("v", "v", 'v'), K("b", "b", 'b'),
+                                      K("n", "n", 'n'), K("m", "m", 'm'),
+                                      KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+
+static const KeyboardRow EN_ROWS[] = {{EN_ROW1, 10, 0}, {EN_ROW2, 9, 1}, {EN_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
+static const KeyboardRow EN_SHIFT_ROWS[] = {{EN_SHIFT_ROW1, 10, 0}, {EN_SHIFT_ROW2, 9, 1}, {EN_SHIFT_ROW3, 9, 0},
+                                           {EN_ROW4, 3, 0}};
+static const KeyboardRow SYMBOL_ROWS[] = {{SYMBOL_ROW1, 10, 0}, {SYMBOL_ROW2, 9, 1}, {SYMBOL_ROW3, 9, 0},
+                                         {EN_ROW4, 3, 0}};
+static const KeyboardRow FR_ROWS[] = {{FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
+static const KeyboardRow DE_ROWS[] = {{DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 10, 0}, {EN_ROW4, 3, 0}};
+static const KeyboardRow ES_ROWS[] = {{ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
+
+static const KeyboardLayout EN_LAYOUT{EN_ROWS, 4};
+static const KeyboardLayout EN_SHIFT_LAYOUT{EN_SHIFT_ROWS, 4};
+static const KeyboardLayout SYMBOL_LAYOUT{SYMBOL_ROWS, 4};
+static const KeyboardLayout FR_LAYOUT{FR_ROWS, 4};
+static const KeyboardLayout DE_LAYOUT{DE_ROWS, 4};
+static const KeyboardLayout ES_LAYOUT{ES_ROWS, 4};
+
+#undef K
+#undef K2
+#undef KS
+
+}  // namespace
+
+const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, bool symbols) {
+  if (symbols) return SYMBOL_LAYOUT;
+  if (shifted && id == KeyboardLayoutId::QwertyEn) return EN_SHIFT_LAYOUT;
+  switch (id) {
+    case KeyboardLayoutId::AzertyFr:
+      return FR_LAYOUT;
+    case KeyboardLayoutId::QwertzDe:
+      return DE_LAYOUT;
+    case KeyboardLayoutId::SpanishEs:
+      return ES_LAYOUT;
+    case KeyboardLayoutId::QwertyEn:
+    default:
+      return EN_LAYOUT;
+  }
 }
 
 Rect centeredRect(Rect outer, Size inner) {

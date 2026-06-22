@@ -984,7 +984,7 @@ void testThemePrimitiveParity() {
   CHECK_EQ(draw3.ops[0].corners, static_cast<uint8_t>(CornersTop));
   CHECK_EQ(draw3.ops[1].corners, static_cast<uint8_t>(CornersBottom));
 
-  // Keyboard space/del glyph art comes from the component now.
+  // Keyboard space/delete affordances come from the component now.
   FakeDrawTarget draw4;
   Frame<16> frame4(draw4, device, input, interactions);
   const KeyGridKey bottom[2] = {
@@ -997,7 +997,8 @@ void testThemePrimitiveParity() {
   row.cols = 2;
   row.action = 70;
   keyGrid(frame4, Rect{0, 600, 200, 40}, row);
-  CHECK_EQ(draw4.countKind(FakeDrawTarget::Op::Line), 4u);  // 1 space bar + 3 del arrow strokes
+  CHECK_EQ(draw4.countKind(FakeDrawTarget::Op::Line), 1u);
+  CHECK_EQ(draw4.countKind(FakeDrawTarget::Op::Bitmap), 1u);
 
   // Charging battery draws a bolt (two triangles) instead of a dithered fill.
   FakeDrawTarget draw5;
@@ -1093,6 +1094,20 @@ void testRotationAndBitmapSampling() {
   forEachBitmapPixel(Rect{0, 0, 2, 2}, dotMask, BitmapMode::Center, capture, Rotation::CCW90);
   CHECK_EQ(gotX, 0);
   CHECK_EQ(gotY, 1);
+
+  // Mask1 polarity (the freeink::Icon convention): bit 0 = draw, bit 1 =
+  // transparent — the inverse of BW1. The same `dot` bits (one set bit at
+  // 0,0) plot the OTHER three pixels under Mask1.
+  BitmapRef dotInv = dotMask;
+  dotInv.format = BitmapFormat::Mask1;
+  int drawn = 0;
+  bool hitOrigin = false;
+  forEachBitmapPixel(Rect{0, 0, 2, 2}, dotInv, BitmapMode::Center, [&](int16_t x, int16_t y) {
+    ++drawn;
+    if (x == 0 && y == 0) hitOrigin = true;
+  });
+  CHECK_EQ(drawn, 3);       // three clear bits draw
+  CHECK(!hitOrigin);        // the one set bit is transparent
 }
 
 
@@ -1575,10 +1590,15 @@ void testEReaderSettingsComponents() {
   CHECK(draw.countKind(FakeDrawTarget::Op::Text) >= 7);
   CHECK(draw.countKind(FakeDrawTarget::Op::Stroke) >= 1);
   bool sawToggleRadius = false;
+  bool sawInsetStepperPlus = false;
   for (size_t i = 0; i < draw.opCount; ++i) {
     if (draw.ops[i].kind == FakeDrawTarget::Op::Stroke && draw.ops[i].radius == 3) sawToggleRadius = true;
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Fill && draw.ops[i].rect.x == 200 && draw.ops[i].rect.width == 32) {
+      sawInsetStepperPlus = true;
+    }
   }
   CHECK(sawToggleRadius);
+  CHECK(sawInsetStepperPlus);
 }
 
 void testLvglParityControls() {
@@ -1618,8 +1638,8 @@ void testLvglParityControls() {
   CHECK_EQ(interactions.data()[0].action, 610);
   CHECK_EQ(interactions.data()[1].action, 611);
   CHECK_EQ(interactions.data()[2].action, 612);
-  CHECK(draw.countKind(FakeDrawTarget::Op::Line) >= 2u);
-  CHECK(draw.countKind(FakeDrawTarget::Op::Triangle) >= 1u);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Line) >= 4u);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Triangle), 0u);
   CHECK(draw.countKind(FakeDrawTarget::Op::Text) >= 8u);
 }
 
@@ -1645,12 +1665,60 @@ void testQwertyKeyboardComponent() {
   CHECK_EQ(interactions.data()[27].action, 403);
   CHECK_EQ(interactions.data()[29].value, QWERTY_KEY_SPACE);
   CHECK_EQ(interactions.data()[30].action, 404);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Bitmap) >= 1u);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Stroke) >= 31u);
 
   InputSnapshot tap;
   tap.touchReleased = true;
   tap.touchX = 250;
   tap.touchY = 145;
   CHECK_EQ(interactions.route(tap).value, QWERTY_KEY_SPACE);
+}
+
+void testLocalizedKeyboardLayout() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<40> interactions;
+  Frame<40> frame(draw, device, input, interactions);
+
+  KeyboardProps props;
+  props.layout = &builtinKeyboardLayout(KeyboardLayoutId::SpanishEs);
+  props.keyAction = 410;
+  props.shiftAction = 411;
+  props.deleteAction = 412;
+  props.okAction = 413;
+  props.labelText.align = TextAlign::Center;
+  keyboard(frame, Rect{0, 0, 480, 160}, props);
+
+  CHECK_EQ(interactions.count(), 32u);
+  CHECK_EQ(interactions.data()[19].value, 1201);  // Spanish ñ key has a stable non-ASCII key id.
+  CHECK_EQ(interactions.data()[28].action, 412);
+  CHECK_EQ(interactions.data()[31].action, 413);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Stroke) >= 32u);
+}
+
+void testScreenKeyboardUsesResponsiveHeight() {
+  FakeDrawTarget draw;
+  DeviceContext device{800, 480};
+  InputSnapshot input;
+  InteractionBuffer<40> interactions;
+  Frame<40> frame(draw, device, input, interactions);
+  ThemeTokens theme;
+  Screen<40> screen(frame, theme);
+
+  QwertyKeyboardProps keyboard;
+  keyboard.keyAction = 400;
+  keyboard.shiftAction = 401;
+  keyboard.modeAction = 402;
+  keyboard.deleteAction = 403;
+  keyboard.okAction = 404;
+  screen.qwertyKeyboard(keyboard, 0, LayoutAnchor::Bottom);
+
+  CHECK_EQ(interactions.count(), 31u);
+  CHECK(interactions.data()[0].rect.y >= 275);
+  CHECK(interactions.data()[0].rect.y < 320);
+  CHECK(interactions.data()[30].rect.bottom() <= device.height);
 }
 
 void testEReaderChromeMenusAndPanels() {
@@ -1787,6 +1855,125 @@ void appTestHandler(const ActionEvent& event, void* user) {
   state->last = event;
 }
 
+void testHeaderBorderEdges() {
+  FakeDrawTarget draw;
+  DeviceContext device{200, 120};
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+  ThemeTokens theme;
+  theme.headerHeight = 20;
+  Screen<8> screen(frame, theme);
+
+  screen.header("Top");
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Line), 1u);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
+
+  FakeDrawTarget boxedDraw;
+  InteractionBuffer<8> boxedInteractions;
+  Frame<8> boxedFrame(boxedDraw, device, input, boxedInteractions);
+  Screen<8> boxedScreen(boxedFrame, theme);
+  HeaderProps headerProps;
+  headerProps.title = "Top";
+  headerProps.borderEdges = EdgesAll;
+  boxedScreen.header(headerProps);
+  CHECK_EQ(boxedDraw.countKind(FakeDrawTarget::Op::Stroke), 1u);
+}
+
+void testPopupAutoSizeAndAlignment() {
+  FakeDrawTarget draw;
+  DeviceContext device{240, 320};
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+  ThemeTokens theme;
+  Screen<8> screen(frame, theme);
+
+  PopupProps popupProps;
+  popupProps.message = "Saved";
+  popupProps.maxWidth = 180;
+  popupProps.text.align = TextAlign::Center;
+  screen.popup(popupProps);
+
+  CHECK(draw.opCount >= 3);
+  CHECK(draw.ops[0].kind == FakeDrawTarget::Op::Fill);
+  CHECK(draw.ops[0].rect.width < 180);
+  CHECK(draw.ops[0].rect.x > 0);
+  CHECK(draw.ops[0].rect.right() < device.width);
+
+  bool sawCenteredText = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Text && draw.ops[i].rect.x > draw.ops[0].rect.x &&
+        draw.ops[i].rect.right() < draw.ops[0].rect.right()) {
+      sawCenteredText = true;
+    }
+  }
+  CHECK(sawCenteredText);
+}
+
+void testScreenAnchoredLayout() {
+  FakeDrawTarget draw;
+  DeviceContext device{200, 120};
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+  ThemeTokens theme;
+  theme.headerHeight = 20;
+  theme.rowHeight = 30;
+  theme.footerHeight = 20;
+  Screen<8> screen(frame, theme);
+
+  screen.header("Top");
+  screen.button("Bottom", ActionBack, 0, StateNormal, LayoutAnchor::Bottom);
+  SettingRowProps row;
+  row.label = "Middle";
+  screen.settingRow(row);
+
+  CHECK_EQ(screen.body().y, 54);
+  CHECK_EQ(screen.body().height, 32);
+
+  bool sawBottomButton = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Fill && draw.ops[i].rect.y == 90 &&
+        draw.ops[i].rect.height == 30) {
+      sawBottomButton = true;
+    }
+  }
+  CHECK(sawBottomButton);
+
+  FakeDrawTarget footerDraw;
+  InteractionBuffer<8> footerInteractions;
+  Frame<8> footerFrame(footerDraw, device, input, footerInteractions);
+  Screen<8> footerScreen(footerFrame, theme);
+  const FooterAction actions[2] = {{"Open", ActionOpen, 1}, {"Back", ActionBack, 2}};
+  footerScreen.footer(actions, 2);
+  bool sawInsetFooterStart = false;
+  bool sawInsetFooterEnd = false;
+  for (size_t i = 0; i < footerDraw.opCount; ++i) {
+    if (footerDraw.ops[i].kind == FakeDrawTarget::Op::Fill && footerDraw.ops[i].rect.x == 8) {
+      sawInsetFooterStart = true;
+    }
+    if (footerDraw.ops[i].kind == FakeDrawTarget::Op::Fill && footerDraw.ops[i].rect.right() == 192) {
+      sawInsetFooterEnd = true;
+    }
+  }
+  CHECK(sawInsetFooterStart);
+  CHECK(sawInsetFooterEnd);
+  CHECK_EQ(footerDraw.countKind(FakeDrawTarget::Op::Line), 2u);
+  CHECK_EQ(footerDraw.countKind(FakeDrawTarget::Op::Stroke), 0u);
+
+  FakeDrawTarget boxedFooterDraw;
+  InteractionBuffer<8> boxedFooterInteractions;
+  Frame<8> boxedFooterFrame(boxedFooterDraw, device, input, boxedFooterInteractions);
+  Screen<8> boxedFooterScreen(boxedFooterFrame, theme);
+  FooterProps footerProps;
+  footerProps.actions = actions;
+  footerProps.count = 2;
+  footerProps.buttonBorderEdges = EdgesAll;
+  boxedFooterScreen.footer(footerProps);
+  CHECK_EQ(boxedFooterDraw.countKind(FakeDrawTarget::Op::Stroke), 2u);
+}
+
 void testFreeInkAppDispatchesScreenActions() {
   FakeDrawTarget draw;
   DeviceContext device{200, 120};
@@ -1872,8 +2059,13 @@ int main() {
   testEReaderSettingsComponents();
   testLvglParityControls();
   testQwertyKeyboardComponent();
+  testLocalizedKeyboardLayout();
+  testScreenKeyboardUsesResponsiveHeight();
   testEReaderChromeMenusAndPanels();
   testEReaderBookSurfaces();
+  testHeaderBorderEdges();
+  testPopupAutoSizeAndAlignment();
+  testScreenAnchoredLayout();
   testFreeInkAppDispatchesScreenActions();
   testFreeInkAppHandlerOverflowFlag();
 

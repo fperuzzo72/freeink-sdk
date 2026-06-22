@@ -294,6 +294,25 @@ library and bundles a Noto Sans bitmap font — swap in your own with
 `<GfxRenderer.h>` is available) and to this SDK's `InputManager`
 (`FreeInkUIInputManager.h`). See [`docs/freeink-ui.md`](docs/freeink-ui.md).
 
+### Local visual builder
+
+The lightweight builder is a self-contained local web app. It edits the same
+JSON schema consumed by `tools/gen_screen.py`, loads its palette from
+`docs/images/freeinkui-gallery.json`, and can ask the local server to return the
+generated C++ header. Its screen preview is rendered through the real C++
+FreeInkUI/`DisplayTarget` path and returned as SVG, so preview pixels match the
+SDK renderer instead of a browser-only approximation.
+
+```sh
+python3 libs/ui/FreeInkUI/tools/builder/server.py
+```
+
+Open `http://127.0.0.1:8088/`, choose a device profile and portrait/landscape
+preview, arrange components, anchor layout regions to the top or bottom, export
+the schema, or use Generate C++ to emit a `FreeInkApp.h` screen function. The
+builder carries no firmware runtime cost; generated firmware still receives
+static C++.
+
 ### FreeInkUI vs LVGL
 
 [LVGL](https://lvgl.io/docs/latest/) is the broader general-purpose embedded GUI
@@ -333,13 +352,13 @@ LVGL clone.
 | Base object/container | `Frame`, `Stack`, `Screen`, `FreeInkApp`; immediate-mode rather than retained objects |
 | Label | Primitive: `DrawTarget::text`; used by `header`, `statusBar`, rows, dialogs |
 | Image/canvas/line | Primitive: `bitmap`, `fill`, `stroke`, `line`, `triangle`; `DisplayTarget` renders into the 1-bit framebuffer |
-| Button | `button`, `gestureBar`, `FooterAction` |
-| Button matrix / keyboard | `keyGrid`, `qwertyKeyboard` |
+| Button | `button`, `gestureBar`, `FooterAction`/`FooterProps` |
+| Button matrix / keyboard | `keyGrid`, `keyboard`, `qwertyKeyboard` with built-in QWERTY English, AZERTY French, QWERTZ German, and Spanish layouts |
 | Checkbox | `checkbox` |
 | Switch | `toggleRow` |
 | Slider | `slider`; discrete setting changes use `stepperRow` |
 | Bar/progress | `progressBar`, reader/status progress |
-| Text area | `textField` plus `qwertyKeyboard`; intentionally simple, app owns editing buffer |
+| Text area | `textField` plus `keyboard`/`qwertyKeyboard`; intentionally simple, app owns editing buffer and text insertion |
 | Dropdown/roller/select | `dropdown`, `radioGroup`, `contextMenu` |
 | List/menu | `list`, `settingRow`, `contextMenu` |
 | Tabview/tileview/window | `tabBar`, `readerChrome`, app-level `Screen` composition |
@@ -402,7 +421,7 @@ Each preview below is generated from the real component code and indexed in
   ![textField](docs/images/freeinkui-components/text-field.svg)
 - `keyGrid`<br>
   ![keyGrid](docs/images/freeinkui-components/key-grid.svg)
-- `qwertyKeyboard`<br>
+- `keyboard` / `qwertyKeyboard`<br>
   ![qwertyKeyboard](docs/images/freeinkui-components/qwerty-keyboard.svg)
 - `gestureBar`<br>
   ![gestureBar](docs/images/freeinkui-components/gesture-bar.svg)

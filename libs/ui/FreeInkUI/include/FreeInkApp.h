@@ -20,12 +20,25 @@ enum class RefreshHint : uint8_t {
   Clean,
 };
 
+enum class LayoutAnchor : uint8_t {
+  Top,
+  Bottom,
+};
+
 struct FooterAction {
   const char* label = nullptr;
   ActionId action = NO_ACTION;
   int16_t value = 0;
   State state = StateNormal;
   bool enabled = true;
+};
+
+struct FooterProps {
+  const FooterAction* actions = nullptr;
+  uint8_t count = 0;
+  int16_t sidePadding = 8;
+  int16_t gap = 4;
+  uint8_t buttonBorderEdges = EdgeTop;
 };
 
 template <size_t MaxInteractions>
@@ -40,6 +53,9 @@ class Screen {
   const DeviceContext& device() const { return frame_.device(); }
   const ThemeTokens& theme() const { return theme_; }
   Rect contentRect() const { return content_; }
+
+  void setContentMargin(Insets margin) { content_ = insetClamped(frame_.safeRect(), margin); }
+  void insetContent(Insets margin) { content_ = insetClamped(content_, margin); }
 
   Rect takeTop(int16_t height, int16_t gap = 0) {
     if (height < 0) height = 0;
@@ -60,11 +76,16 @@ class Screen {
     return rect;
   }
 
-  void spacer(int16_t height) { takeTop(height); }
+  Rect take(LayoutAnchor anchor, int16_t height, int16_t gap = 0) {
+    return anchor == LayoutAnchor::Bottom ? takeBottom(height, gap) : takeTop(height, gap);
+  }
+
+  void spacer(int16_t height, LayoutAnchor anchor = LayoutAnchor::Top) { take(anchor, height); }
 
   Rect body() const { return content_; }
 
-  void header(const char* title, const char* subtitle = nullptr, const char* rightLabel = nullptr) {
+  void header(const char* title, const char* subtitle = nullptr, const char* rightLabel = nullptr,
+              LayoutAnchor anchor = LayoutAnchor::Top) {
     HeaderProps props;
     props.title = title;
     props.subtitle = subtitle;
@@ -72,12 +93,24 @@ class Screen {
     props.titleText = theme_.titleText;
     props.subtitleText = theme_.smallText;
     props.styles = theme_.popup;
-    ui::header(frame_, takeTop(theme_.headerHeight), props);
+    props.borderEdges = EdgeBottom;
+    ui::header(frame_, take(anchor, theme_.headerHeight), props);
   }
 
-  void status(const StatusBarProps& props) { ui::statusBar(frame_, takeTop(theme_.headerHeight), props); }
+  void header(const HeaderProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
+    HeaderProps themed = props;
+    if (themed.titleText.font == 0) themed.titleText = theme_.titleText;
+    if (themed.subtitleText.font == 0) themed.subtitleText = theme_.smallText;
+    if (themed.styles.unset()) themed.styles = theme_.popup;
+    ui::header(frame_, take(anchor, theme_.headerHeight), themed);
+  }
 
-  void button(const char* label, ActionId action, int16_t value = 0, State state = StateNormal) {
+  void status(const StatusBarProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::statusBar(frame_, take(anchor, theme_.headerHeight), props);
+  }
+
+  void button(const char* label, ActionId action, int16_t value = 0, State state = StateNormal,
+              LayoutAnchor anchor = LayoutAnchor::Top) {
     ButtonProps props;
     props.label = label;
     props.action = action;
@@ -86,10 +119,19 @@ class Screen {
     props.text = theme_.bodyText;
     props.styles = theme_.button;
     props.minTouchSize = theme_.minTouchSize;
-    ui::button(frame_, takeTop(theme_.rowHeight, theme_.spaceSm), props);
+    ui::button(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), props);
   }
 
-  void list(const ListItem* items, uint16_t count, int16_t selectedIndex, ActionId action, uint16_t topIndex = 0) {
+  void button(const ButtonProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ButtonProps themed = props;
+    if (themed.text.font == 0) themed.text = theme_.bodyText;
+    if (themed.styles.unset()) themed.styles = theme_.button;
+    themed.minTouchSize = theme_.minTouchSize;
+    ui::button(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), themed);
+  }
+
+  void list(const ListItem* items, uint16_t count, int16_t selectedIndex, ActionId action, uint16_t topIndex = 0,
+            int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
     ListProps props;
     props.items = items;
     props.count = count;
@@ -102,59 +144,96 @@ class Screen {
     props.headerText = theme_.smallText;
     props.rowStyles = theme_.listRow;
     props.rowHeight = theme_.rowHeight;
-    ui::list(frame_, content_, props);
+    ui::list(frame_, height > 0 ? take(anchor, height) : content_, props);
   }
 
-  void list(const ListProps& props) { ui::list(frame_, content_, props); }
-
-  void checkbox(const CheckboxProps& props) { ui::checkbox(frame_, takeTop(theme_.rowHeight), props); }
-
-  void slider(const SliderProps& props, int16_t height = 0) {
-    ui::slider(frame_, takeTop(height > 0 ? height : theme_.rowHeight), props);
+  void list(const ListProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ListProps themed = props;
+    if (themed.labelText.font == 0) themed.labelText = theme_.bodyText;
+    if (themed.subtitleText.font == 0) themed.subtitleText = theme_.smallText;
+    if (themed.valueText.font == 0) themed.valueText = theme_.smallText;
+    if (themed.headerText.font == 0) themed.headerText = theme_.smallText;
+    if (themed.rowStyles.unset()) themed.rowStyles = theme_.listRow;
+    if (themed.rowHeight <= 0) themed.rowHeight = theme_.rowHeight;
+    ui::list(frame_, height > 0 ? take(anchor, height) : content_, themed);
   }
 
-  void dropdown(const DropdownProps& props) { ui::dropdown(frame_, takeTop(theme_.rowHeight), props); }
-
-  void table(const TableProps& props, int16_t height = 0) {
-    ui::table(frame_, takeTop(height > 0 ? height : static_cast<int16_t>(props.rowHeight * props.rows)), props);
+  void checkbox(const CheckboxProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::checkbox(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), props);
   }
 
-  void settingRow(const SettingRowProps& props) { ui::settingRow(frame_, takeTop(theme_.rowHeight), props); }
-
-  void toggleRow(const ToggleRowProps& props) { ui::toggleRow(frame_, takeTop(theme_.rowHeight), props); }
-
-  void stepperRow(const StepperRowProps& props) { ui::stepperRow(frame_, takeTop(theme_.rowHeight), props); }
-
-  void radioGroup(const RadioGroupProps& props, int16_t height = 0) {
-    ui::radioGroup(frame_, takeTop(height > 0 ? height : theme_.rowHeight), props);
+  void slider(const SliderProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::slider(frame_, take(anchor, height > 0 ? height : theme_.rowHeight, theme_.spaceSm), props);
   }
 
-  void qwertyKeyboard(const QwertyKeyboardProps& props, int16_t height = 0) {
-    ui::qwertyKeyboard(frame_, takeTop(height > 0 ? height : static_cast<int16_t>(theme_.rowHeight * 4)), props);
+  void dropdown(const DropdownProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::dropdown(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), props);
   }
 
-  void bookCard(const BookCardProps& props, int16_t height = 0) {
-    ui::bookCard(frame_, takeTop(height > 0 ? height : static_cast<int16_t>(theme_.rowHeight * 2)), props);
+  void table(const TableProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::table(frame_, take(anchor, height > 0 ? height : static_cast<int16_t>(props.rowHeight * props.rows),
+                           theme_.spaceSm),
+              props);
   }
 
-  void footer(const FooterAction* actions, uint8_t count) {
-    Rect rect = takeBottom(theme_.footerHeight);
-    if (!actions || count == 0 || rect.empty()) return;
-    const int16_t gap = theme_.spaceSm;
-    const int16_t totalGap = static_cast<int16_t>(count > 1 ? (count - 1) * gap : 0);
-    const int16_t slotW = static_cast<int16_t>((rect.width - totalGap) / count);
-    int16_t x = rect.x;
-    for (uint8_t i = 0; i < count; ++i) {
-      Rect slot{x, rect.y, i == count - 1 ? static_cast<int16_t>(rect.right() - x) : slotW, rect.height};
+  void settingRow(const SettingRowProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::settingRow(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), props);
+  }
+
+  void toggleRow(const ToggleRowProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::toggleRow(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), props);
+  }
+
+  void stepperRow(const StepperRowProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::stepperRow(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), props);
+  }
+
+  void radioGroup(const RadioGroupProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::radioGroup(frame_, take(anchor, height > 0 ? height : theme_.rowHeight, theme_.spaceSm), props);
+  }
+
+  void qwertyKeyboard(const QwertyKeyboardProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::qwertyKeyboard(frame_, take(anchor, height > 0 ? height : defaultKeyboardHeight()), props);
+  }
+
+  void keyboard(const KeyboardProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::keyboard(frame_, take(anchor, height > 0 ? height : defaultKeyboardHeight()), props);
+  }
+
+  void bookCard(const BookCardProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::bookCard(frame_, take(anchor, height > 0 ? height : static_cast<int16_t>(theme_.rowHeight * 2)), props);
+  }
+
+  void footer(const FooterAction* actions, uint8_t count, LayoutAnchor anchor = LayoutAnchor::Bottom) {
+    FooterProps props;
+    props.actions = actions;
+    props.count = count;
+    footer(props, anchor);
+  }
+
+  void footer(const FooterProps& footer, LayoutAnchor anchor = LayoutAnchor::Bottom) {
+    Rect rect = take(anchor, theme_.footerHeight);
+    if (!footer.actions || footer.count == 0 || rect.empty()) return;
+    const int16_t sidePadding = footer.sidePadding < 0 ? 0 : footer.sidePadding;
+    const int16_t gap = footer.gap < 0 ? 0 : footer.gap;
+    Rect content = insetClamped(rect, Insets{0, sidePadding, 0, sidePadding});
+    if (content.empty()) return;
+    const int16_t totalGap = static_cast<int16_t>(footer.count > 1 ? (footer.count - 1) * gap : 0);
+    const int16_t slotW = static_cast<int16_t>((content.width - totalGap) / footer.count);
+    int16_t x = content.x;
+    for (uint8_t i = 0; i < footer.count; ++i) {
+      Rect slot{x, content.y, i == footer.count - 1 ? static_cast<int16_t>(content.right() - x) : slotW,
+                content.height};
       ButtonProps props;
-      props.label = actions[i].label;
-      props.action = actions[i].action;
-      props.value = actions[i].value;
-      props.state = actions[i].state;
-      props.enabled = actions[i].enabled;
+      props.label = footer.actions[i].label;
+      props.action = footer.actions[i].action;
+      props.value = footer.actions[i].value;
+      props.state = footer.actions[i].state;
+      props.enabled = footer.actions[i].enabled;
       props.text = theme_.bodyText;
       props.styles = theme_.button;
       props.minTouchSize = theme_.minTouchSize;
+      props.borderEdges = footer.buttonBorderEdges;
       ui::button(frame_, slot, props);
       x = static_cast<int16_t>(x + slot.width + gap);
     }
@@ -165,9 +244,24 @@ class Screen {
     props.message = message;
     props.text = theme_.bodyText;
     props.styles = theme_.popup;
-    const Rect rect = centeredRect(frame_.safeRect(), Size{static_cast<int16_t>(frame_.safeRect().width * 3 / 4),
-                                                           static_cast<int16_t>(theme_.rowHeight * 3)});
-    ui::popup(frame_, rect, props);
+    popup(props);
+  }
+
+  void popup(const PopupProps& props) {
+    PopupProps themed = props;
+    if (themed.text.font == 0) themed.text = theme_.bodyText;
+    if (themed.styles.unset()) themed.styles = theme_.popup;
+    const Rect bounds = frame_.safeRect();
+    const int16_t maxW = themed.maxWidth > 0 ? themed.maxWidth : static_cast<int16_t>(bounds.width * 3 / 4);
+    const int16_t contentW = static_cast<int16_t>(maxW - themed.padding.left - themed.padding.right);
+    const Size textSize = measureWrappedText(frame_.target(), themed.message, themed.text, contentW > 1 ? contentW : 1);
+    int16_t height = static_cast<int16_t>(textSize.height + themed.padding.top + themed.padding.bottom);
+    if (themed.showProgress) {
+      const int16_t barH = themed.progressHeight > 0 ? themed.progressHeight : 4;
+      height = static_cast<int16_t>(height + barH + theme_.spaceSm);
+    }
+    const Size panelSize{static_cast<int16_t>(textSize.width + themed.padding.left + themed.padding.right), height};
+    ui::popup(frame_, centeredRect(bounds, panelSize), themed);
   }
 
   void dialog(const OptionDialogProps& props, int16_t width = 0) {
@@ -177,6 +271,28 @@ class Screen {
   }
 
  private:
+  int16_t defaultKeyboardHeight() const {
+    const Rect safe = frame_.safeRect();
+    int16_t height = static_cast<int16_t>(theme_.rowHeight * 3 + theme_.spaceSm * 3);
+    const int16_t widthBased = static_cast<int16_t>(safe.width / 4);
+    if (widthBased > height) height = widthBased;
+    const int16_t maxHeight = static_cast<int16_t>(safe.height * 45 / 100);
+    if (height > maxHeight) height = maxHeight;
+    if (height > safe.height) height = safe.height;
+    return height < 1 ? 1 : height;
+  }
+
+  static Rect insetClamped(Rect rect, Insets margin) {
+    int32_t x = static_cast<int32_t>(rect.x) + margin.left;
+    int32_t y = static_cast<int32_t>(rect.y) + margin.top;
+    int32_t right = static_cast<int32_t>(rect.right()) - margin.right;
+    int32_t bottom = static_cast<int32_t>(rect.bottom()) - margin.bottom;
+    if (right < x) right = x;
+    if (bottom < y) bottom = y;
+    return Rect{static_cast<int16_t>(x), static_cast<int16_t>(y), static_cast<int16_t>(right - x),
+                static_cast<int16_t>(bottom - y)};
+  }
+
   FrameType& frame_;
   const ThemeTokens& theme_;
   Rect content_{};

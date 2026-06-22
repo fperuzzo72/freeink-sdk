@@ -142,7 +142,8 @@ class DisplayTarget final : public DrawTarget {
               const Paint foreground = Paint::solid(Color::Black),
               const Rotation rotation = Rotation::None) override {
     if (!bitmap || rect.empty()) return;
-    // BW1 and Mask1 are both row-major, MSB-first, set-bit-is-ink masks here.
+    // Both row-major, MSB-first; forEachBitmapPixel folds in the per-format
+    // polarity (BW1 set-bit-is-ink, Mask1 the Icon convention: 0 = draw).
     if (bitmap.format != BitmapFormat::BW1 && bitmap.format != BitmapFormat::Mask1) return;
     const Color color = foreground.kind == PaintKind::None ? Color::Black : foreground.color;
     if (color == Color::Transparent) return;

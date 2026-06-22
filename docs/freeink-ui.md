@@ -169,15 +169,38 @@ and button-first boards.
 It manages a remaining content rectangle from `safeRect()`:
 
 - `header(title, subtitle, rightLabel)` consumes the top header band
+- `header(props)` accepts `HeaderProps` for custom header chrome
 - `status(props)` consumes the top status band
 - `footer(actions, count)` consumes the bottom footer band
+- `footer(props)` accepts `FooterProps` for nav spacing and button border edges
 - `button(label, action, value, state)` adds one full-width row button
 - `list(items, count, selected, action, topIndex)` fills the remaining body
 - `list(props)` uses a full `ListProps` when you need detailed styling
-- `popup(message)` draws a centered popup over the current screen
+- `popup(message)` draws an auto-sized centered popup over the current screen
+- `popup(props)` accepts `PopupProps` for max width, padding, progress, and text alignment
 - `dialog(props, width)` sizes and draws an `optionDialog`
 - `spacer(height)`, `takeTop(...)`, `takeBottom(...)`, and `body()` let custom
   code reserve or draw into exact regions
+
+Header bars default to a bottom divider, and footer/nav buttons default to a
+top divider. Set `HeaderProps::borderEdges` or
+`FooterProps::buttonBorderEdges` to `EdgesNone`, `EdgeTop`, `EdgeBottom`,
+`EdgesHorizontal`, `EdgesVertical`, or `EdgesAll` when you want different nav
+chrome.
+
+Most row-like builder calls also accept an optional `LayoutAnchor` argument.
+Use `LayoutAnchor::Bottom` for controls that should reserve space from the
+bottom edge while the rest of the screen continues to fill from the top:
+
+```cpp
+screen.header("Search");
+
+freeink::ui::QwertyKeyboardProps keys;
+keys.keyAction = ActionKeyboardKey;
+screen.qwertyKeyboard(keys, 144, freeink::ui::LayoutAnchor::Bottom);
+
+screen.list(results, resultCount, selected, ActionOpen);
+```
 
 Use the builder for common screens, then drop down to `screen.frame()` or
 `screen.target()` for custom surfaces:
@@ -242,7 +265,6 @@ The `Screen` API is also the target for design-time tooling. The bundled
 ```json
 {
   "screen": "settings",
-  "maxInteractions": 32,
   "children": [
     {"type": "header", "title": "Settings"},
     {
@@ -263,6 +285,8 @@ The `Screen` API is also the target for design-time tooling. The bundled
     },
     {
       "type": "qwertyKeyboard",
+      "anchor": "bottom",
+      "layout": "spanish_es",
       "action": "keyboardKey",
       "shiftAction": "keyboardShift",
       "deleteAction": "keyboardDelete",
@@ -289,12 +313,32 @@ python3 libs/ui/FreeInkUI/tools/gen_screen.py settings.freeinkui.json \
     --out SettingsScreen.h
 ```
 
+Or launch the local builder:
+
+```sh
+python3 libs/ui/FreeInkUI/tools/builder/server.py
+```
+
+Open `http://127.0.0.1:8088/` to choose a device profile, switch the preview
+between portrait and landscape, drag components into a screen, edit props,
+export the same JSON schema, or generate C++ through the local server. The
+builder palette is loaded from `docs/images/freeinkui-gallery.json`, and the
+screen preview is rendered by compiling the generated screen against the real
+FreeInkUI/`DisplayTarget` renderer and returning SVG. That keeps the visual
+preview aligned with on-device component output instead of browser-only CSS.
+
 The output contains an inline `settingsScreen(...)`-style function plus
 generated `ActionId` constants. Supported schema component types currently
 include `header`, `footer`, `list`, `button`, `settingRow`, `toggleRow`,
-`stepperRow`, `radioGroup`, `qwertyKeyboard`, `spacer`, and `popup`. A future drag-and-drop
-builder can edit this same schema and preview real device profiles, then emit
-the same static C++ so firmware carries no JSON parser or GUI-builder runtime.
+`stepperRow`, `checkbox`, `slider`, `dropdown`, `table`, `radioGroup`,
+`qwertyKeyboard`, `spacer`, `popup`, and `optionDialog`. Components that consume
+layout space can set `"anchor": "top"` or `"anchor": "bottom"`; omitted anchors use the
+component default (`footer` defaults bottom, most others default top). Modal
+overlays such as `popup` and `optionDialog` render centered over the screen. The
+`qwertyKeyboard` schema also accepts `"layout": "qwerty_en"`, `"azerty_fr"`,
+`"qwertz_de"`, or `"spanish_es"`. The builder edits this same schema and
+previews real device profiles, then emits the same static C++ so firmware
+carries no JSON parser or GUI-builder runtime.
 
 ### Manual Frame API
 
@@ -487,6 +531,7 @@ tied to any application's screen structure:
 - `optionDialog`
 - `textField`
 - `keyGrid`
+- `keyboard` (data-driven rows for localized or custom layouts)
 - `qwertyKeyboard`
 - `metricCard`
 - `batteryIndicator`
@@ -505,6 +550,17 @@ slot, such as a book page renderer or a cover image.
 The e-reader-specific components are still immediate-mode: every frame gets a
 props struct, draws into a rect, and registers semantic actions.
 
+Controls default to square corners. Pass a positive radius on the relevant
+props (`ButtonProps::radius`, `SettingRowProps::radius`,
+`ToggleRowProps::radius`/`knobRadius`, `StepperRowProps::buttonRadius`,
+`CheckboxProps::radius`, `SliderProps::radius`, `DropdownProps::radius`,
+`RadioGroupProps::radius`, `TableProps::cellRadius`, or
+`QwertyKeyboardProps::keyRadius`) when a product theme wants rounded controls.
+The builder exposes the same fields in the inspector and JSON schema.
+Dropdowns use a stroked chevron indicator by default; tune
+`DropdownProps::indicatorWidth`, `indicatorSize`, and `indicatorStroke` for a
+heavier, lighter, or wider affordance.
+
 Settings rows cover common device preferences:
 
 ```cpp
@@ -512,7 +568,8 @@ freeink::ui::ToggleRowProps dark;
 dark.row.label = "Dark mode";
 dark.row.action = ActionDarkMode;
 dark.checked = settings.darkMode;
-dark.radius = 3;       // rectangular by default; raise for pill-style tracks
+// Optional: round the track/knob for a softer toggle.
+dark.radius = 3;
 dark.knobRadius = 1;
 toggleRow(ui, rowRect, dark);
 
@@ -525,13 +582,14 @@ font.controlSize = 14; // explicit plus/minus strokes, independent of font glyph
 stepperRow(ui, rowRect, font);
 ```
 
-Text-entry screens can use the generic `keyGrid` for compact custom pads or
-`qwertyKeyboard` for a full four-row keyboard with Shift, mode, space, delete,
-and OK keys:
+Text-entry screens can use the generic `keyGrid` for compact custom pads,
+`keyboard` for data-driven rows, or `qwertyKeyboard` for a ready-made four-row
+keyboard with Shift, mode, space, delete, and OK keys:
 
 ```cpp
 freeink::ui::QwertyKeyboardProps keyboard;
-keyboard.keyAction = ActionKeyboardKey;     // letter/space values are ASCII
+keyboard.layout = freeink::ui::KeyboardLayoutId::SpanishEs;
+keyboard.keyAction = ActionKeyboardKey;
 keyboard.shiftAction = ActionKeyboardShift;
 keyboard.modeAction = ActionKeyboardMode;
 keyboard.deleteAction = ActionKeyboardDelete;
@@ -539,6 +597,26 @@ keyboard.okAction = ActionKeyboardOk;
 keyboard.selectedIndex = focusedKey;
 qwertyKeyboard(ui, keyboardRect, keyboard);
 ```
+
+For custom or app-provided layouts, pass `KeyboardProps` directly:
+
+```cpp
+freeink::ui::KeyboardProps keyboard;
+keyboard.layout = &freeink::ui::builtinKeyboardLayout(freeink::ui::KeyboardLayoutId::AzertyFr);
+keyboard.keyAction = ActionKeyboardKey;
+keyboard.shiftAction = ActionKeyboardShift;
+keyboard.deleteAction = ActionKeyboardDelete;
+keyboard.okAction = ActionKeyboardOk;
+freeink::ui::keyboard(ui, keyboardRect, keyboard);
+```
+
+Built-in layout IDs are `QwertyEn`, `AzertyFr`, `QwertzDe`, and `SpanishEs`.
+Normal ASCII keys report their code point in `ActionEvent::value`; localized
+keys use stable non-ASCII values so firmware can map the selected key back to
+the active layout's UTF-8 output string. Visible glyph coverage depends on the
+active `DrawTarget` font asset, so devices shipping wider language support
+should include matching Noto Sans glyph ranges in their generated bitmap font or
+use a renderer with native text shaping.
 
 Reader screens can register invisible tap zones over the page while drawing
 chrome separately:
@@ -621,7 +699,7 @@ e-reader chrome typically needs:
   estimate line counts from single-line `measureText`
 - `bitmap()` for icon masks
 
-Components build on these: `keyGrid` and `qwertyKeyboard` draw space-bar and
+Components build on these: `keyGrid`, `keyboard`, and `qwertyKeyboard` draw space-bar and
 delete-arrow glyph art themselves for special keys without labels,
 `stepperRow` draws plus/minus controls as centered strokes instead of relying
 on font glyph sizing, the `list` component offers `Underline` and `Triangle`
