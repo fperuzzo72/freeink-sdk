@@ -138,6 +138,32 @@ uint8_t InputManager::getState() {
 
 InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
 
+void InputManager::beginAsync(const uint8_t taskPriority, const uint32_t pollMs, const uint8_t queueLen) {
+  if (_asyncTask) return;  // already running
+  _asyncPollMs = pollMs;
+  _asyncQueue = xQueueCreate(queueLen, sizeof(uint8_t));
+  if (!_asyncQueue) return;
+  xTaskCreate(asyncTaskTrampoline, "fi_input", 4096, this, taskPriority, &_asyncTask);
+}
+
+void InputManager::asyncTaskTrampoline(void* self) { static_cast<InputManager*>(self)->asyncPoll(); }
+
+void InputManager::asyncPoll() {
+  static const uint8_t kButtons[] = {BTN_BACK, BTN_CONFIRM, BTN_LEFT, BTN_RIGHT, BTN_UP, BTN_DOWN};
+  for (;;) {
+    update();
+    for (const uint8_t b : kButtons) {
+      if (wasPressed(b)) xQueueSend(_asyncQueue, &b, 0);
+    }
+    vTaskDelay(pdMS_TO_TICKS(_asyncPollMs));
+  }
+}
+
+bool InputManager::popPress(uint8_t& button) {
+  if (!_asyncQueue) return false;
+  return xQueueReceive(_asyncQueue, &button, 0) == pdTRUE;
+}
+
 bool InputManager::isDigitalPressed(const int8_t pin) const {
   return pin >= 0 && digitalRead(pin) == LOW;
 }

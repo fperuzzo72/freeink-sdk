@@ -116,9 +116,15 @@ so the SD manager itself stays device-agnostic.
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
-runtime via `setDisplayX3()`, which swaps the active profile and driver. Devices
-on a different MCU build their own binary, selected with a `-DFREEINK_DEVICE_*`
-flag. A build targets exactly one of the three MCU families — ESP32-C3 (X3/X4),
+runtime via `setDisplayX3()`, which swaps the active profile and driver. The
+`XteinkDetect` library (`libs/hardware/XteinkDetect`) supplies the canonical
+detection: `freeink::selectXteinkDevice()` runs an I²C fingerprint of the
+X3-only peripherals (BQ27220 gauge, DS3231 RTC, QMI8658 IMU on SDA20/SCL0),
+calls `BoardConfig::selectDevice()` for the match, and returns whether an X3 was
+found so the caller can `display.setDisplayX3()`. Call it before
+`SDCardManager::begin()` and `FreeInkDisplay::begin()` so both read the right
+profile. Devices on a different MCU build their own binary, selected with a
+`-DFREEINK_DEVICE_*` flag. A build targets exactly one of the three MCU families — ESP32-C3 (X3/X4),
 ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky), or classic ESP32 (M5Paper);
 `BoardConfig` rejects mixing families at compile time.
 

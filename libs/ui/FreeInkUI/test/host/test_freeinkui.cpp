@@ -127,7 +127,9 @@ void testDisplayTarget() {
   constexpr int16_t W = 64, H = 32, WB = W / 8;
   uint8_t fb[WB * H];
   std::memset(fb, 0xFF, sizeof(fb));  // white page
-  DisplayTarget target(fb, W, H, WB);
+  // Native orientation so the raw-framebuffer reads below use logical == panel
+  // coordinates (the default would rotate this landscape buffer to portrait).
+  DisplayTarget target(fb, W, H, WB, Orientation::LandscapeCounterClockwise);
 
   const auto pixelInk = [&](int16_t x, int16_t y) {
     return ((fb[y * WB + (x >> 3)] >> (7 - (x & 7))) & 0x01) == 0;  // clear bit = ink

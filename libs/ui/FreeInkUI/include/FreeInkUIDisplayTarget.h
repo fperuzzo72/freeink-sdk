@@ -15,6 +15,16 @@
 // slot defaults to it; call setFont() to swap in your own BitmapFont (see
 // docs/freeink-ui.md and tools/gen_font.py for generating one from any TTF).
 // Gray paints are reproduced on the 1-bit panel with an ordered Bayer dither.
+//
+// Orientation: the target draws in LOGICAL coordinates and rotates each pixel
+// into the panel's native framebuffer at draw time, so apps lay out a screen in
+// whatever orientation they intend without a separate rotated framebuffer. The
+// constructor takes the PANEL's native dimensions; the 4-arg overload picks a
+// sensible default — a landscape-native panel (width > height, e.g. the Xteink
+// X3/X4) defaults to Portrait so a held-tall e-reader reads upright, while a
+// portrait-native panel keeps its native orientation. Pass an explicit
+// Orientation to the 5-arg overload to override (the rotation transforms match
+// CrossPoint's GfxRenderer: Portrait = 90° CW).
 
 #include <FreeInkUI.h>
 #include <FreeInkUIFont.h>
@@ -28,10 +38,25 @@ class DisplayTarget final : public DrawTarget {
   // the app assigns; they index these slots. All default to the bundled font.
   static constexpr FontId FONT_SLOTS = 8;
 
-  DisplayTarget(uint8_t* framebuffer, int16_t width, int16_t height, int16_t widthBytes)
-      : fb_(framebuffer), w_(width), h_(height), wb_(widthBytes) {
+  // Panel-native dimensions + explicit logical orientation.
+  DisplayTarget(uint8_t* framebuffer, int16_t panelWidth, int16_t panelHeight, int16_t panelWidthBytes,
+                Orientation orientation)
+      : fb_(framebuffer),
+        pw_(panelWidth),
+        ph_(panelHeight),
+        pwb_(panelWidthBytes),
+        orientation_(orientation),
+        w_(isPortrait(orientation) ? panelHeight : panelWidth),
+        h_(isPortrait(orientation) ? panelWidth : panelHeight) {
     for (FontId i = 0; i < FONT_SLOTS; ++i) fonts_[i] = &kNotoSansFont;
   }
+
+  // Default orientation: landscape-native panels (width > height) read upright
+  // when held tall, so default them to Portrait; portrait-native panels stay
+  // native. Override with the 5-arg constructor.
+  DisplayTarget(uint8_t* framebuffer, int16_t panelWidth, int16_t panelHeight, int16_t panelWidthBytes)
+      : DisplayTarget(framebuffer, panelWidth, panelHeight, panelWidthBytes,
+                      panelWidth > panelHeight ? Orientation::Portrait : Orientation::LandscapeCounterClockwise) {}
 
   // Point one slot, or every slot, at a different BitmapFont.
   void setFont(const FontId slot, const BitmapFont& font) {
@@ -41,16 +66,21 @@ class DisplayTarget final : public DrawTarget {
     for (FontId i = 0; i < FONT_SLOTS; ++i) fonts_[i] = &font;
   }
 
-  // Convenience: a DeviceContext sized to this framebuffer. Pass the device's
-  // logical orientation (the framebuffer is already in that orientation).
-  DeviceContext deviceContext(const Orientation orientation = Orientation::Portrait) const {
+  // Convenience: a DeviceContext sized to this target's LOGICAL frame, carrying
+  // the orientation the target rotates into so touch mapping (touchToLogical)
+  // and layout agree.
+  DeviceContext deviceContext() const {
     DeviceContext device;
     device.width = w_;
     device.height = h_;
-    device.orientation = orientation;
+    device.orientation = orientation_;
     device.hasButtons = true;
     return device;
   }
+
+  Orientation orientation() const { return orientation_; }
+  int16_t logicalWidth() const { return w_; }
+  int16_t logicalHeight() const { return h_; }
 
   Size measureText(const FontId font, const char* text, const TextStyle) const override {
     const BitmapFont& f = fontFor(font);
@@ -153,10 +183,17 @@ class DisplayTarget final : public DrawTarget {
 
  private:
   uint8_t* fb_;
-  int16_t w_;
-  int16_t h_;
-  int16_t wb_;
+  int16_t pw_;   // panel-native width (px)
+  int16_t ph_;   // panel-native height (px)
+  int16_t pwb_;  // panel-native bytes per row
+  Orientation orientation_;
+  int16_t w_;  // logical width (pw_/ph_ swapped under portrait)
+  int16_t h_;  // logical height
   const BitmapFont* fonts_[FONT_SLOTS];
+
+  static bool isPortrait(const Orientation o) {
+    return o == Orientation::Portrait || o == Orientation::PortraitInverted;
+  }
 
   const BitmapFont& fontFor(const FontId slot) const { return *fonts_[slot < FONT_SLOTS ? slot : 0]; }
 
@@ -180,8 +217,32 @@ class DisplayTarget final : public DrawTarget {
 
   void plot(const int16_t x, const int16_t y, const Color color) {
     if (x < 0 || y < 0 || x >= w_ || y >= h_ || color == Color::Transparent) return;
-    uint8_t& byte = fb_[static_cast<int32_t>(y) * wb_ + (x >> 3)];
-    const uint8_t mask = static_cast<uint8_t>(0x80 >> (x & 7));
+    // Rotate the logical pixel into panel-native space. Transforms match
+    // CrossPoint's GfxRenderer::rotateCoordinates so "up" agrees across stacks.
+    int16_t px;
+    int16_t py;
+    switch (orientation_) {
+      case Orientation::Portrait:  // 90° CW
+        px = y;
+        py = static_cast<int16_t>(ph_ - 1 - x);
+        break;
+      case Orientation::PortraitInverted:  // 90° CCW
+        px = static_cast<int16_t>(pw_ - 1 - y);
+        py = x;
+        break;
+      case Orientation::LandscapeClockwise:  // 180°
+        px = static_cast<int16_t>(pw_ - 1 - x);
+        py = static_cast<int16_t>(ph_ - 1 - y);
+        break;
+      case Orientation::LandscapeCounterClockwise:  // native
+      default:
+        px = x;
+        py = y;
+        break;
+    }
+    uint8_t& byte = fb_[static_cast<int32_t>(py) * pwb_ + (px >> 3)];
+    const uint8_t mask = static_cast<uint8_t>(0x80 >> (px & 7));
+    // Dither sampled in logical space so the Bayer pattern stays stable per UI.
     if (inkForColor(color, x, y))
       byte = static_cast<uint8_t>(byte & ~mask);  // ink: clear bit -> black
     else if (color == Color::White)

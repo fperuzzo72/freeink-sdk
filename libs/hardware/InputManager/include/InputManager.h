@@ -10,6 +10,9 @@
 
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 
 class InputManager {
  public:
@@ -106,8 +109,30 @@ class InputManager {
   using ButtonHook = uint8_t (*)();
   static void setButtonHook(ButtonHook hook) { s_buttonHook = hook; }
 
+  // --- Optional background polling -------------------------------------------
+  // Spawns a FreeRTOS task that samples the buttons every pollMs and latches
+  // each press edge (a BTN_* index) into an internal queue. This decouples input
+  // from rendering: on e-paper, a slow refresh blocks the app's main loop, so a
+  // press that lands mid-refresh is otherwise lost — the task keeps sampling
+  // (refresh busy-waits yield via delay()) and the app drains presses with
+  // popPress() afterward. No-op if already started.
+  //
+  // When async polling is active the app must NOT call update()/wasPressed()
+  // itself; the task owns the edge state. Drain with popPress() instead.
+  void beginAsync(uint8_t taskPriority = 2, uint32_t pollMs = 15, uint8_t queueLen = 32);
+
+  // Pop the next latched button index (BTN_*) into `button`. Returns false when
+  // no press is pending (or async polling was never started).
+  bool popPress(uint8_t& button);
+
  private:
   static ButtonHook s_buttonHook;
+
+  QueueHandle_t _asyncQueue = nullptr;
+  TaskHandle_t _asyncTask = nullptr;
+  uint32_t _asyncPollMs = 15;
+  static void asyncTaskTrampoline(void* self);
+  void asyncPoll();
 
   int getButtonFromADC(int adcValue, const int ranges[], int numButtons);
   bool isDigitalPressed(int8_t pin) const;
