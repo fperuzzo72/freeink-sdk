@@ -38,6 +38,7 @@ constexpr uint16_t kAppearanceKeyboard = 0x03C1;
 constexpr uint16_t kCharReport = 0x2A4D;
 constexpr uint16_t kCharProtocolMode = 0x2A4E;
 constexpr uint16_t kCharBootKbdInput = 0x2A22;
+constexpr uint16_t kCharReportMap = 0x2A4B;
 constexpr uint16_t kDescReportReference = 0x2908;
 
 constexpr uint32_t kRepeatDelayMs = 450;
@@ -61,7 +62,53 @@ bool g_targetTryAltType = false;
 uint32_t g_lastReconnectMs = 0;
 uint8_t g_reconnectIdx = 0;
 
+// HID Report Map hints (parsed once per connection in setupHid). Many BLE
+// page-turner remotes are NOT plain boot keyboards: they place their code on the
+// Consumer Control page (0x0C) or at a non-standard byte offset. These hints, plus
+// the generic-extraction fallback in onReportIngest, let those remotes surface a
+// stable key code so the host (capture-then-assign UI) can bind it. g_lastGenericCode
+// edge-detects the generic path so one physical press = one key event.
+bool g_hasKeyboardPage = false;
+bool g_hasConsumerPage = false;
+uint8_t g_preferredByteIndex = 0xFF;  // byte the report map suggests holds the code
+uint8_t g_lastGenericCode = 0;        // last non-zero code seen on the generic path
+
 BleKeyboardHost& self() { return BleKeyboardHost::getInstance(); }
+
+// Scan a HID Report Map descriptor for Usage Page (0x05 nn) items and note whether
+// a keyboard (0x07) or consumer (0x0C) page is present, plus a heuristic byte index
+// where the active code tends to live (keyboard reports: byte[2]; compact consumer
+// reports: byte[1]). This is a hint, not a full descriptor parse.
+void parseReportMapHints(const uint8_t* map, size_t len) {
+  g_hasKeyboardPage = false;
+  g_hasConsumerPage = false;
+  g_preferredByteIndex = 0xFF;
+  if (!map || len < 2) return;
+  for (size_t i = 0; i + 1 < len; ++i) {
+    if (map[i] == 0x05) {  // Usage Page (1-byte value follows)
+      if (map[i + 1] == 0x07) g_hasKeyboardPage = true;
+      else if (map[i + 1] == 0x0C) g_hasConsumerPage = true;
+    }
+  }
+  if (g_hasKeyboardPage) g_preferredByteIndex = 2;
+  else if (g_hasConsumerPage) g_preferredByteIndex = 1;
+}
+
+// Pick a representative "primary" code from a report that the standard keyboard
+// slot decode did not handle (consumer / compact / non-standard layouts). Prefers
+// the report-map-hinted byte, else the first meaningful non-zero byte. Returns 0
+// when the report carries no code (a release frame).
+uint8_t extractPrimaryCode(const uint8_t* p, size_t n) {
+  const size_t lim = n < 8 ? n : 8;
+  if (g_preferredByteIndex != 0xFF && g_preferredByteIndex < n) {
+    const uint8_t c = p[g_preferredByteIndex];
+    if (c != 0 && c != 0x01) return c;
+  }
+  for (size_t i = 0; i < lim; ++i) {
+    if (p[i] != 0 && p[i] != 0x01) return p[i];
+  }
+  return 0;
+}
 
 #ifndef FREEINK_BLE_HID_SCAN_DEBUG
 #ifdef FREEINK_BLE_KEYBOARD_SCAN_DEBUG
@@ -69,6 +116,12 @@ BleKeyboardHost& self() { return BleKeyboardHost::getInstance(); }
 #else
 #define FREEINK_BLE_HID_SCAN_DEBUG 0
 #endif
+#endif
+
+// Raw HID report logging. Define FREEINK_BLE_HID_REPORT_DEBUG=1 in the firmware to
+// dump every notification's bytes — the fastest way to learn what a new remote sends.
+#ifndef FREEINK_BLE_HID_REPORT_DEBUG
+#define FREEINK_BLE_HID_REPORT_DEBUG 0
 #endif
 
 #if FREEINK_BLE_HID_SCAN_DEBUG
@@ -98,6 +151,23 @@ bool setupHid(NimBLEClient* client) {
   if (proto && proto->canWrite()) {
     uint8_t mode = 1;  // 1 = Report Protocol, 0 = Boot Protocol
     proto->writeValue(&mode, 1, false);
+  }
+
+  // Parse the HID Report Map for usage-page / byte-offset hints, so non-keyboard
+  // page-turner remotes can be decoded by the generic fallback in onReportIngest.
+  g_hasKeyboardPage = false;
+  g_hasConsumerPage = false;
+  g_preferredByteIndex = 0xFF;
+  g_lastGenericCode = 0;
+  if (NimBLERemoteCharacteristic* rmap = hid->getCharacteristic(NimBLEUUID(kCharReportMap))) {
+    if (rmap->canRead()) {
+      NimBLEAttValue v = rmap->readValue();
+      parseReportMapHints(v.data(), v.size());
+#if FREEINK_BLE_HID_REPORT_DEBUG
+      Serial.printf("[BleHid] report map: kbd=%d consumer=%d preferredByte=%d len=%u\n", g_hasKeyboardPage,
+                    g_hasConsumerPage, (int)g_preferredByteIndex, (unsigned)v.size());
+#endif
+    }
   }
 
   bool subscribed = false;
@@ -444,9 +514,13 @@ void BleKeyboardHost::enqueue(const KeyEvent& ev) {
 }
 
 void BleKeyboardHost::emitUsage(uint8_t usage, uint8_t mods) {
+  if (usage == 0) return;
   char ch;
   SpecialKey special;
-  if (!hidTranslate(usage, mods, ch, special)) return;
+  // Best-effort translation: known keyboard usages get a char / SpecialKey. Unknown
+  // codes (page-turner consumer codes, vendor layouts) still surface with keycode set
+  // so a capture-then-assign UI can bind them — hidTranslate already zeroes ch/special.
+  hidTranslate(usage, mods, ch, special);
   KeyEvent ev;
   ev.ch = ch;
   ev.keycode = usage;
@@ -460,57 +534,92 @@ void BleKeyboardHost::emitUsage(uint8_t usage, uint8_t mods) {
 void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   if (!data || len == 0) return;
 
-  // Normalize to [mod][k0..k5]: strip a leading report id (len 9), or handle the
-  // compact 7-byte form (no reserved byte); boot/report protocol is 8 bytes.
+#if FREEINK_BLE_HID_REPORT_DEBUG
+  {
+    char buf[64];
+    size_t off = 0;
+    const size_t dump = len < 16 ? len : 16;
+    for (size_t i = 0; i < dump && off + 3 < sizeof(buf); ++i) {
+      off += snprintf(buf + off, sizeof(buf) - off, "%02X ", data[i]);
+    }
+    Serial.printf("[BleHid] report len=%u %s\n", (unsigned)len, buf);
+  }
+#endif
+
+  // Normalize: strip a leading report id (len 9). Boot/report-protocol keyboard
+  // reports are [mod][reserved][k0..k5] (8 bytes) or a compact [mod][k0..k5] (7).
   const uint8_t* p = data;
   size_t n = len;
   if (n == 9) {
     p += 1;
     n -= 1;
   }
+
+  // --- Standard keyboard report path -----------------------------------------
   uint8_t mod = 0;
   uint8_t keys[6] = {0};
+  bool keyboardShaped = false;
   if (n >= 8) {
     mod = p[0];
     for (int i = 0; i < 6; ++i) keys[i] = p[2 + i];
+    keyboardShaped = true;
   } else if (n == 7) {
     mod = p[0];
     for (int i = 0; i < 6; ++i) keys[i] = p[1 + i];
-  } else {
-    return;
+    keyboardShaped = true;
   }
 
-  // Emit a press for every key newly present versus the previous report.
-  for (int i = 0; i < 6; ++i) {
-    const uint8_t k = keys[i];
-    if (k == 0 || k == 0x01 /*ErrorRollOver*/) continue;
-    bool wasDown = false;
-    for (int j = 0; j < 6; ++j) {
-      if (prevKeys_[j] == k) {
-        wasDown = true;
-        break;
+  bool emittedKb = false;
+  if (keyboardShaped) {
+    // Emit a press for every key newly present versus the previous report.
+    for (int i = 0; i < 6; ++i) {
+      const uint8_t k = keys[i];
+      if (k == 0 || k == 0x01 /*ErrorRollOver*/) continue;
+      bool wasDown = false;
+      for (int j = 0; j < 6; ++j) {
+        if (prevKeys_[j] == k) {
+          wasDown = true;
+          break;
+        }
+      }
+      if (!wasDown) {
+        emitUsage(k, mod);
+        emittedKb = true;
       }
     }
-    if (!wasDown) emitUsage(k, mod);
+
+    // Track the last held key for auto-repeat.
+    uint8_t cur = 0;
+    for (int i = 0; i < 6; ++i) {
+      if (keys[i] != 0 && keys[i] != 0x01) cur = keys[i];
+    }
+    portENTER_CRITICAL(&g_mux);
+    if (cur == 0) {
+      heldUsage_ = 0;
+    } else if (cur != heldUsage_) {
+      heldUsage_ = cur;
+      heldMods_ = mod;
+      heldSince_ = millis();
+      lastRepeat_ = millis();
+    }
+    portEXIT_CRITICAL(&g_mux);
+
+    memcpy(prevKeys_, keys, sizeof(prevKeys_));
   }
 
-  // Track the last held key for auto-repeat.
-  uint8_t cur = 0;
-  for (int i = 0; i < 6; ++i) {
-    if (keys[i] != 0 && keys[i] != 0x01) cur = keys[i];
+  // --- Generic fallback for non-keyboard remotes -----------------------------
+  // Many page turners are not boot keyboards: they emit on the Consumer Control
+  // page or place the code at a non-standard byte. When the keyboard slots produced
+  // nothing and the device doesn't look like a pure keyboard, scan the report for a
+  // representative code and surface it (edge-detected so one press == one event).
+  const bool tryGeneric = !emittedKb && (g_hasConsumerPage || !g_hasKeyboardPage || n < 7);
+  if (tryGeneric) {
+    const uint8_t code = extractPrimaryCode(p, n);
+    if (code != 0 && code != g_lastGenericCode) emitUsage(code, 0);
+    g_lastGenericCode = code;
+  } else if (emittedKb) {
+    g_lastGenericCode = 0;
   }
-  portENTER_CRITICAL(&g_mux);
-  if (cur == 0) {
-    heldUsage_ = 0;
-  } else if (cur != heldUsage_) {
-    heldUsage_ = cur;
-    heldMods_ = mod;
-    heldSince_ = millis();
-    lastRepeat_ = millis();
-  }
-  portEXIT_CRITICAL(&g_mux);
-
-  memcpy(prevKeys_, keys, sizeof(prevKeys_));
 }
 
 void BleKeyboardHost::onScanResultIngest(const char* addr, const char* name, int rssi, uint8_t type, bool hid,
