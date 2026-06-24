@@ -86,6 +86,14 @@ class BleKeyboardHost {
   // capability is compiled out.
   bool begin(const char* hostName = "FreeInk");
 
+  // Fully tear down the BLE stack: stop scanning, drop the link, delete the
+  // connection task, and NimBLEDevice::deinit() so the NimBLE host + controller
+  // RAM (tens of KB) is returned to the heap. Use this — not disconnect() — when
+  // the user turns Bluetooth off, so memory-hungry work (e.g. EPUB inflate) can
+  // allocate again. Bonds persist in NVS; begin() re-inits cleanly afterwards.
+  // Must run at normal CPU frequency (controller deinit), like begin().
+  void end();
+
   // Pump per main-loop iteration: drives auto-reconnect and key auto-repeat.
   // Cheap; never blocks.
   void poll();

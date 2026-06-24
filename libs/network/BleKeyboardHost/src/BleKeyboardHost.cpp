@@ -41,8 +41,10 @@ constexpr uint16_t kCharBootKbdInput = 0x2A22;
 constexpr uint16_t kCharReportMap = 0x2A4B;
 constexpr uint16_t kDescReportReference = 0x2908;
 
-constexpr uint32_t kRepeatDelayMs = 450;
-constexpr uint32_t kRepeatIntervalMs = 45;
+// Page-turner remotes often stream a held key (or omit a clean release frame). If no
+// report arrives within this window, treat the key as released so one physical press
+// yields one event and the next press re-triggers.
+constexpr uint32_t kReleaseTimeoutMs = 150;
 constexpr uint32_t kReconnectBackoffMs = 4000;
 constexpr uint32_t kConnectTimeoutMs = 8000;
 constexpr size_t kScanDebugPayloadMax = 31;
@@ -72,6 +74,7 @@ bool g_hasKeyboardPage = false;
 bool g_hasConsumerPage = false;
 uint8_t g_preferredByteIndex = 0xFF;  // byte the report map suggests holds the code
 uint8_t g_lastGenericCode = 0;        // last non-zero code seen on the generic path
+volatile uint32_t g_lastReportMs = 0;  // millis() of the last HID notification (stale-release)
 
 BleKeyboardHost& self() { return BleKeyboardHost::getInstance(); }
 
@@ -100,12 +103,14 @@ void parseReportMapHints(const uint8_t* map, size_t len) {
 // when the report carries no code (a release frame).
 uint8_t extractPrimaryCode(const uint8_t* p, size_t n) {
   const size_t lim = n < 8 ? n : 8;
-  if (g_preferredByteIndex != 0xFF && g_preferredByteIndex < n) {
-    const uint8_t c = p[g_preferredByteIndex];
-    if (c != 0 && c != 0x01) return c;
+  // NOTE: do NOT skip 0x01 here. In a keyboard report 0x01 is ErrorRollOver, but in
+  // a consumer / vendor report it is a valid button code (e.g. a 3-byte page-turner
+  // report of "01 00 00" on press, "00 00 00" on release). Only zero means "no code".
+  if (g_preferredByteIndex != 0xFF && g_preferredByteIndex < n && p[g_preferredByteIndex] != 0) {
+    return p[g_preferredByteIndex];
   }
   for (size_t i = 0; i < lim; ++i) {
-    if (p[i] != 0 && p[i] != 0x01) return p[i];
+    if (p[i] != 0) return p[i];
   }
   return 0;
 }
@@ -364,29 +369,60 @@ bool BleKeyboardHost::begin(const char* hostName) {
   return true;
 }
 
+void BleKeyboardHost::end() {
+  if (!begun_) return;
+  begun_ = false;
+
+  NimBLEScan* scan = NimBLEDevice::getScan();
+  if (scan && scan->isScanning()) scan->stop();
+  if (g_client && g_client->isConnected()) g_client->disconnect();
+
+  // Kill the connection worker before tearing the stack down so it can't run
+  // doConnect() against freed NimBLE state.
+  if (g_connTask) {
+    vTaskDelete(g_connTask);
+    g_connTask = nullptr;
+  }
+
+  // Free the NimBLE host + BT controller memory back to the heap. Bonds live in
+  // NVS and survive this; begin() re-initializes cleanly.
+  NimBLEDevice::deinit(true);
+
+  g_client = nullptr;
+  g_connecting = false;
+  g_lastGenericCode = 0;
+  g_lastReportMs = 0;
+
+  portENTER_CRITICAL(&g_mux);
+  connected_ = false;
+  connecting_ = false;
+  scanning_ = false;
+  deviceCount_ = 0;
+  ringHead_ = ringTail_ = 0;
+  heldUsage_ = 0;
+  portEXIT_CRITICAL(&g_mux);
+}
+
 void BleKeyboardHost::poll() {
   if (!begun_) return;
 
   // Reflect the live scanner state.
   scanning_ = NimBLEDevice::getScan()->isScanning();
 
-  // Key auto-repeat.
-  uint8_t usage, mods;
-  uint32_t since, last;
+  // Held-key release. Page-turner remotes stream a held key (and many omit a clean
+  // release frame), so we do NOT synthesize host-side auto-repeat — that turned one
+  // tap into dozens of page turns. Instead, when reports stop arriving, age the held
+  // key / last generic code out so one physical press == one event and the next press
+  // (even of the same button) re-triggers. Covers both the keyboard and generic paths.
   portENTER_CRITICAL(&g_mux);
-  usage = heldUsage_;
-  mods = heldMods_;
-  since = heldSince_;
-  last = lastRepeat_;
+  const uint8_t held = heldUsage_;
   portEXIT_CRITICAL(&g_mux);
-  if (usage != 0) {
-    const uint32_t now = millis();
-    if (now - since > kRepeatDelayMs && now - last > kRepeatIntervalMs) {
-      portENTER_CRITICAL(&g_mux);
-      lastRepeat_ = now;
-      portEXIT_CRITICAL(&g_mux);
-      emitUsage(usage, mods);
-    }
+  if ((held != 0 || g_lastGenericCode != 0) && (millis() - g_lastReportMs) > kReleaseTimeoutMs) {
+    portENTER_CRITICAL(&g_mux);
+    heldUsage_ = 0;
+    portEXIT_CRITICAL(&g_mux);
+    memset(prevKeys_, 0, sizeof(prevKeys_));
+    g_lastGenericCode = 0;
   }
 
   // Auto-reconnect to a bonded HID peripheral.
@@ -533,6 +569,7 @@ void BleKeyboardHost::emitUsage(uint8_t usage, uint8_t mods) {
 // --- Internal hooks from the BLE backend -------------------------------------
 void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   if (!data || len == 0) return;
+  g_lastReportMs = millis();  // freshness for the stale-release timeout in poll()
 
 #if FREEINK_BLE_HID_REPORT_DEBUG
   {
@@ -836,6 +873,7 @@ void BleKeyboardHost::persistBonds() {
 namespace freeink {
 
 bool BleKeyboardHost::begin(const char*) { return false; }
+void BleKeyboardHost::end() {}
 void BleKeyboardHost::poll() {}
 void BleKeyboardHost::startScan(uint32_t) {}
 void BleKeyboardHost::stopScan() {}
