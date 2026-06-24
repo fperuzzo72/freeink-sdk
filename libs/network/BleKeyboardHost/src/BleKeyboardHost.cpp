@@ -326,8 +326,26 @@ ClientCB g_clientCb;
 // --- Lifecycle ---------------------------------------------------------------
 bool BleKeyboardHost::begin(const char* hostName) {
   if (begun_) return true;
+
+  // Self-heal a partial teardown: if NimBLE still reports initialized (a previous
+  // deinit raced and didn't complete), NimBLEDevice::init() would no-op and hand back
+  // a dead stack. Force a clean deinit first so the init below actually runs.
+  if (NimBLEDevice::isInitialized()) {
+    NimBLEDevice::deinit(true);
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+
   loadBonds();
-  if (!NimBLEDevice::init(hostName ? hostName : "FreeInk")) return false;
+  if (!NimBLEDevice::init(hostName ? hostName : "FreeInk")) {
+    Serial.println("[BleHid] begin: NimBLEDevice::init() failed");
+    return false;
+  }
+
+  // HID page-turner reports are a few bytes; request the minimum ATT MTU so the
+  // host doesn't reserve large per-connection GATT buffers. On RAM-constrained
+  // targets (ESP32-C3, ~16 KB max contiguous block once the stack is up) every KB
+  // back to the heap matters for the app (e.g. EPUB inflate windows).
+  NimBLEDevice::setMTU(23);
 
   // Bonding with passkey display support. Keyboards often pair like macOS: the
   // host displays a six-digit passkey and the user types it on the peripheral.
@@ -361,6 +379,14 @@ bool BleKeyboardHost::begin(const char* hostName) {
 #endif
 
   g_client = NimBLEDevice::createClient();
+  if (!g_client) {
+    // NimBLE can refuse a new client if a previous one wasn't reclaimed (e.g. rapid
+    // deinit/init cycles). Don't dereference null — unwind cleanly so a later begin()
+    // can retry from a clean state.
+    Serial.println("[BleHid] begin: createClient() returned null");
+    NimBLEDevice::deinit(true);
+    return false;
+  }
   g_client->setConnectTimeout(kConnectTimeoutMs);
   g_client->setClientCallbacks(&g_clientCb, false);
 
@@ -373,22 +399,42 @@ void BleKeyboardHost::end() {
   if (!begun_) return;
   begun_ = false;
 
-  NimBLEScan* scan = NimBLEDevice::getScan();
-  if (scan && scan->isScanning()) scan->stop();
-  if (g_client && g_client->isConnected()) g_client->disconnect();
-
-  // Kill the connection worker before tearing the stack down so it can't run
-  // doConnect() against freed NimBLE state.
+  // Kill the connection worker first so it can't run doConnect() against the stack
+  // while we tear it down.
   if (g_connTask) {
     vTaskDelete(g_connTask);
     g_connTask = nullptr;
   }
+  g_connecting = false;
+
+  NimBLEScan* scan = NimBLEDevice::getScan();
+  if (scan && scan->isScanning()) scan->stop();
+
+  // Close the link and explicitly delete the client BEFORE deinit. This is critical:
+  // NimBLE keeps a fixed-size client array (m_pClients) that survives deinit/init, and
+  // deleteClient() DEFERS deletion while the client is CONNECTED/DISCONNECTING (it sets
+  // a flag and disconnects async). deinit() then tears down the host before that
+  // deferred delete runs, so the slot leaks — and the next begin()'s createClient()
+  // returns null forever (BLE can't restart). Waiting for a real disconnect, then
+  // deleting while DISCONNECTED, frees the slot for good.
+  if (g_client) {
+    if (g_client->isConnected()) g_client->disconnect();
+    for (int i = 0; i < 60 && g_client->isConnected(); ++i) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    vTaskDelay(pdMS_TO_TICKS(150));  // let DISCONNECTING settle to DISCONNECTED
+    NimBLEDevice::deleteClient(g_client);
+    g_client = nullptr;
+  }
 
   // Free the NimBLE host + BT controller memory back to the heap. Bonds live in
-  // NVS and survive this; begin() re-initializes cleanly.
+  // NVS and survive this; begin() re-initializes cleanly. Retry once if the stack
+  // didn't fully tear down (stop raced something), so re-init isn't a no-op.
   NimBLEDevice::deinit(true);
-
-  g_client = nullptr;
+  if (NimBLEDevice::isInitialized()) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+    NimBLEDevice::deinit(true);
+  }
   g_connecting = false;
   g_lastGenericCode = 0;
   g_lastReportMs = 0;
@@ -398,7 +444,8 @@ void BleKeyboardHost::end() {
   connecting_ = false;
   scanning_ = false;
   deviceCount_ = 0;
-  ringHead_ = ringTail_ = 0;
+  ringHead_ = 0;
+  ringTail_ = 0;
   heldUsage_ = 0;
   portEXIT_CRITICAL(&g_mux);
 }

@@ -98,6 +98,11 @@ class BleKeyboardHost {
   // Cheap; never blocks.
   void poll();
 
+  // True while the NimBLE stack is initialized (between a successful begin() and
+  // end()). Lets the app gate CPU-frequency and lifecycle decisions on whether BLE
+  // is actually resident, independent of the user's on/off preference.
+  bool isRunning() const { return begun_; }
+
   // --- Discovery -------------------------------------------------------------
   void startScan(uint32_t ms = 5000);
   void stopScan();
