@@ -2098,6 +2098,11 @@ struct TextAreaProps {
   uint32_t topLine = 0;        // first visual line drawn at the top of the rect
   TextStyle style{};
   bool showCaret = true;
+  // Selection highlight: byte range [selStart, selEnd). Empty (selStart>=selEnd)
+  // means no selection. Drawn as a dithered band behind the text so it reads on
+  // a 1-bit panel without inverting glyphs.
+  uint32_t selStart = 0;
+  uint32_t selEnd = 0;
 };
 
 // One wrapped visual line: byte range [start, start+len) of the source text plus
@@ -2227,10 +2232,34 @@ void textArea(Frame<MaxInteractions>& frame, Rect rect, const TextAreaProps& pro
   lineStyle.align = TextAlign::Left;
   char buf[224];
   bool caretDrawn = false;
+  const bool hasSel = props.selEnd > props.selStart;
   textAreaWalk(t, rect.width, text, props.style, [&](uint32_t idx, const TextAreaLine& ln) {
     if (idx < top || idx >= top + visible) return;
     const int16_t y = static_cast<int16_t>(rect.y + (idx - top) * lh);
     uint16_t n = ln.len < 220 ? ln.len : 220;
+    const uint32_t lineEnd = ln.start + ln.len;
+
+    // Selection band behind the text. Dithered so 1-bit glyphs stay readable.
+    if (hasSel && props.selStart <= lineEnd && props.selEnd > ln.start) {
+      uint32_t ovS = props.selStart > ln.start ? props.selStart : ln.start;
+      uint16_t ps = static_cast<uint16_t>(ovS - ln.start);
+      if (ps > n) ps = n;
+      for (uint16_t i = 0; i < ps; ++i) buf[i] = text[ln.start + i];
+      buf[ps] = '\0';
+      const int16_t xs = static_cast<int16_t>(rect.x + t.measureText(props.style.font, buf, props.style).width);
+      int16_t xe;
+      if (props.selEnd > lineEnd) {
+        xe = rect.right();  // selection continues onto the next line: show the line break selected
+      } else {
+        uint16_t pe = static_cast<uint16_t>(props.selEnd - ln.start);
+        if (pe > n) pe = n;
+        for (uint16_t i = 0; i < pe; ++i) buf[i] = text[ln.start + i];
+        buf[pe] = '\0';
+        xe = static_cast<int16_t>(rect.x + t.measureText(props.style.font, buf, props.style).width);
+      }
+      if (xe > xs) t.fill(Rect{xs, y, static_cast<int16_t>(xe - xs), lh}, Paint::dither(Color::LightGray));
+    }
+
     for (uint16_t i = 0; i < n; ++i) buf[i] = text[ln.start + i];
     buf[n] = '\0';
     if (n > 0) t.text(Rect{rect.x, y, rect.width, lh}, buf, lineStyle);
