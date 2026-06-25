@@ -8,28 +8,18 @@ StyleSet defaultButtonStyles() {
   styles.explicitlySet = true;
   styles.normal.background = Paint::solid(Color::White);
   styles.normal.foreground = Paint::solid(Color::Black);
-  styles.normal.border = Paint::solid(Color::Black);
-  styles.normal.borderWidth = 1;
 
   styles.selected.background = Paint::solid(Color::Black);
   styles.selected.foreground = Paint::solid(Color::White);
-  styles.selected.border = Paint::solid(Color::Black);
-  styles.selected.borderWidth = 1;
 
   styles.focused.background = Paint::dither(Color::LightGray);
   styles.focused.foreground = Paint::solid(Color::Black);
-  styles.focused.border = Paint::solid(Color::Black);
-  styles.focused.borderWidth = 1;
 
   styles.active.background = Paint::solid(Color::Black);
   styles.active.foreground = Paint::solid(Color::White);
-  styles.active.border = Paint::solid(Color::Black);
-  styles.active.borderWidth = 1;
 
   styles.disabled.background = Paint::solid(Color::White);
   styles.disabled.foreground = Paint::dither(Color::LightGray);
-  styles.disabled.border = Paint::dither(Color::LightGray);
-  styles.disabled.borderWidth = 1;
   return styles;
 }
 
@@ -44,8 +34,6 @@ StyleSet defaultListRowStyles() {
 
   styles.focused.background = Paint::dither(Color::LightGray);
   styles.focused.foreground = Paint::solid(Color::Black);
-  styles.focused.border = Paint::solid(Color::Black);
-  styles.focused.borderWidth = 1;
 
   styles.active = styles.selected;
 
@@ -56,9 +44,6 @@ StyleSet defaultListRowStyles() {
 
 StyleSet defaultKeyStyles() {
   StyleSet styles = defaultButtonStyles();
-  styles.normal.borderWidth = 0;
-  styles.selected.borderWidth = 1;
-  styles.focused.borderWidth = 1;
   return styles;
 }
 
@@ -67,8 +52,6 @@ StyleSet defaultPopupStyles() {
   styles.explicitlySet = true;
   styles.normal.background = Paint::solid(Color::White);
   styles.normal.foreground = Paint::solid(Color::Black);
-  styles.normal.border = Paint::solid(Color::Black);
-  styles.normal.borderWidth = 2;
   styles.selected = styles.normal;
   styles.focused = styles.normal;
   styles.active = styles.normal;

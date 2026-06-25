@@ -1246,12 +1246,16 @@ void testCoverCarousel() {
   CHECK_EQ(slots[2].itemIndex, 3);
   CHECK_EQ(slots[1].content.width, 192);  // frame inset by contentInset 4
 
-  // Center frame gets the selected (thicker) chrome.
-  bool sawThickCenter = false;
+  // Default carousel chrome is borderless; the center slot is selected via fill.
+  bool sawSelectedCenterFill = false;
   for (size_t i = 0; i < draw.opCount; ++i) {
-    if (draw.ops[i].kind == FakeDrawTarget::Op::Stroke && draw.ops[i].rect.x == 140) sawThickCenter = true;
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Fill && draw.ops[i].rect.x == 140 &&
+        draw.ops[i].color == Color::Black) {
+      sawSelectedCenterFill = true;
+    }
   }
-  CHECK(sawThickCenter);
+  CHECK(sawSelectedCenterFill);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 
   // Tap a side cover -> that item; swipe left -> next item.
   InputSnapshot tap;
@@ -1544,6 +1548,24 @@ void testStyleSetUnset() {
   CHECK(plain.normal.borderWidth == 0);
 }
 
+void testDefaultStylesAreBorderless() {
+  StyleSet button = defaultButtonStyles();
+  CHECK(button.normal.border.kind == PaintKind::None);
+  CHECK(button.selected.border.kind == PaintKind::None);
+  CHECK(button.focused.border.kind == PaintKind::None);
+  CHECK(button.active.border.kind == PaintKind::None);
+  CHECK(button.disabled.border.kind == PaintKind::None);
+
+  StyleSet row = defaultListRowStyles();
+  CHECK(row.normal.border.kind == PaintKind::None);
+  CHECK(row.selected.border.kind == PaintKind::None);
+  CHECK(row.focused.border.kind == PaintKind::None);
+
+  StyleSet popup = defaultPopupStyles();
+  CHECK(popup.normal.border.kind == PaintKind::None);
+  CHECK(popup.selected.border.kind == PaintKind::None);
+}
+
 void testEReaderSettingsComponents() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -1672,7 +1694,7 @@ void testQwertyKeyboardComponent() {
   CHECK_EQ(interactions.data()[29].value, QWERTY_KEY_SPACE);
   CHECK_EQ(interactions.data()[30].action, 404);
   CHECK(draw.countKind(FakeDrawTarget::Op::Bitmap) >= 1u);
-  CHECK(draw.countKind(FakeDrawTarget::Op::Stroke) >= 31u);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 
   InputSnapshot tap;
   tap.touchReleased = true;
@@ -1701,7 +1723,7 @@ void testLocalizedKeyboardLayout() {
   CHECK_EQ(interactions.data()[19].value, 1201);  // Spanish ñ key has a stable non-ASCII key id.
   CHECK_EQ(interactions.data()[28].action, 412);
   CHECK_EQ(interactions.data()[31].action, 413);
-  CHECK(draw.countKind(FakeDrawTarget::Op::Stroke) >= 32u);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 }
 
 void testScreenKeyboardUsesResponsiveHeight() {
@@ -1872,7 +1894,7 @@ void testHeaderBorderEdges() {
   Screen<8> screen(frame, theme);
 
   screen.header("Top");
-  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Line), 1u);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Line), 0u);
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 
   FakeDrawTarget boxedDraw;
@@ -1881,6 +1903,9 @@ void testHeaderBorderEdges() {
   Screen<8> boxedScreen(boxedFrame, theme);
   HeaderProps headerProps;
   headerProps.title = "Top";
+  headerProps.styles = defaultPopupStyles();
+  headerProps.styles.normal.border = Paint::solid(Color::Black);
+  headerProps.styles.normal.borderWidth = 1;
   headerProps.borderEdges = EdgesAll;
   boxedScreen.header(headerProps);
   CHECK_EQ(boxedDraw.countKind(FakeDrawTarget::Op::Stroke), 1u);
@@ -1901,7 +1926,7 @@ void testPopupAutoSizeAndAlignment() {
   popupProps.text.align = TextAlign::Center;
   screen.popup(popupProps);
 
-  CHECK(draw.opCount >= 3);
+  CHECK(draw.opCount >= 2);
   CHECK(draw.ops[0].kind == FakeDrawTarget::Op::Fill);
   CHECK(draw.ops[0].rect.width < 180);
   CHECK(draw.ops[0].rect.x > 0);
@@ -1965,7 +1990,7 @@ void testScreenAnchoredLayout() {
   }
   CHECK(sawInsetFooterStart);
   CHECK(sawInsetFooterEnd);
-  CHECK_EQ(footerDraw.countKind(FakeDrawTarget::Op::Line), 2u);
+  CHECK_EQ(footerDraw.countKind(FakeDrawTarget::Op::Line), 0u);
   CHECK_EQ(footerDraw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 
   FakeDrawTarget boxedFooterDraw;
@@ -2119,6 +2144,7 @@ int main() {
   testButtonHitPadding();
   testInvertedDrawTarget();
   testStyleSetUnset();
+  testDefaultStylesAreBorderless();
   testEReaderSettingsComponents();
   testLvglParityControls();
   testQwertyKeyboardComponent();

@@ -38,7 +38,7 @@ struct FooterProps {
   uint8_t count = 0;
   int16_t sidePadding = 8;
   int16_t gap = 4;
-  uint8_t buttonBorderEdges = EdgeTop;
+  uint8_t buttonBorderEdges = EdgesNone;
 };
 
 template <size_t MaxInteractions>
@@ -240,6 +240,18 @@ class Screen {
       props.enabled = footer.actions[i].enabled;
       props.text = theme_.bodyText;
       props.styles = theme_.button;
+      if (footer.buttonBorderEdges != EdgesNone) {
+        props.styles.normal.border = Paint::solid(Color::Black);
+        props.styles.normal.borderWidth = 1;
+        props.styles.selected.border = Paint::solid(Color::Black);
+        props.styles.selected.borderWidth = 1;
+        props.styles.focused.border = Paint::solid(Color::Black);
+        props.styles.focused.borderWidth = 1;
+        props.styles.active.border = Paint::solid(Color::Black);
+        props.styles.active.borderWidth = 1;
+        props.styles.disabled.border = Paint::solid(Color::Black);
+        props.styles.disabled.borderWidth = 1;
+      }
       props.minTouchSize = theme_.minTouchSize;
       props.borderEdges = footer.buttonBorderEdges;
       ui::button(frame_, slot, props);

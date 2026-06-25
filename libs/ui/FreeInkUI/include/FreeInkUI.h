@@ -2687,10 +2687,9 @@ void coverCarousel(Frame<MaxInteractions>& frame, Rect rect, const CarouselProps
   StyleSet styles = props.frameStyles;
   if (styles.unset()) {
     styles.normal.background = Paint::solid(Color::White);
-    styles.normal.border = Paint::solid(Color::Black);
-    styles.normal.borderWidth = 1;
     styles.selected = styles.normal;
-    styles.selected.borderWidth = 3;
+    styles.selected.background = Paint::solid(Color::Black);
+    styles.selected.foreground = Paint::solid(Color::White);
   }
 
   for (int i = 0; i < 3; ++i) {
