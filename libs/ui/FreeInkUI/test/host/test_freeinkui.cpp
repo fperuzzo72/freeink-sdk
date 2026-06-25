@@ -1538,6 +1538,10 @@ void testStyleSetUnset() {
   StyleSet selectedOnly;
   selectedOnly.selected.background = Paint::solid(Color::Black);
   CHECK(!selectedOnly.unset());
+  StyleSet plain = plainStyles();
+  CHECK(!plain.unset());
+  CHECK(plain.normal.border.kind == PaintKind::None);
+  CHECK(plain.normal.borderWidth == 0);
 }
 
 void testEReaderSettingsComponents() {

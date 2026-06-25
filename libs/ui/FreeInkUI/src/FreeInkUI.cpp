@@ -5,6 +5,7 @@ namespace ui {
 
 StyleSet defaultButtonStyles() {
   StyleSet styles;
+  styles.explicitlySet = true;
   styles.normal.background = Paint::solid(Color::White);
   styles.normal.foreground = Paint::solid(Color::Black);
   styles.normal.border = Paint::solid(Color::Black);
@@ -34,6 +35,7 @@ StyleSet defaultButtonStyles() {
 
 StyleSet defaultListRowStyles() {
   StyleSet styles;
+  styles.explicitlySet = true;
   styles.normal.background = Paint::solid(Color::White);
   styles.normal.foreground = Paint::solid(Color::Black);
 
@@ -62,10 +64,22 @@ StyleSet defaultKeyStyles() {
 
 StyleSet defaultPopupStyles() {
   StyleSet styles;
+  styles.explicitlySet = true;
   styles.normal.background = Paint::solid(Color::White);
   styles.normal.foreground = Paint::solid(Color::Black);
   styles.normal.border = Paint::solid(Color::Black);
   styles.normal.borderWidth = 2;
+  styles.selected = styles.normal;
+  styles.focused = styles.normal;
+  styles.active = styles.normal;
+  styles.disabled = styles.normal;
+  return styles;
+}
+
+StyleSet plainStyles(Paint foreground) {
+  StyleSet styles;
+  styles.explicitlySet = true;
+  styles.normal.foreground = foreground;
   styles.selected = styles.normal;
   styles.focused = styles.normal;
   styles.active = styles.normal;

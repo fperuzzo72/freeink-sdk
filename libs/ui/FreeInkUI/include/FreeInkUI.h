@@ -396,12 +396,13 @@ struct StyleSet {
   BoxStyle focused{};
   BoxStyle active{};
   BoxStyle disabled{};
+  bool explicitlySet = false;
 
   // True when the caller never assigned any visible style, so components fall
   // back to their built-in defaults. Borders count too: an outline-only style
   // (transparent background) is still "set".
   bool unset() const {
-    return normal.background.kind == PaintKind::None && normal.border.kind == PaintKind::None &&
+    return !explicitlySet && normal.background.kind == PaintKind::None && normal.border.kind == PaintKind::None &&
            selected.background.kind == PaintKind::None && focused.background.kind == PaintKind::None;
   }
 
@@ -1699,6 +1700,7 @@ StyleSet defaultButtonStyles();
 StyleSet defaultListRowStyles();
 StyleSet defaultKeyStyles();
 StyleSet defaultPopupStyles();
+StyleSet plainStyles(Paint foreground = Paint::solid(Color::Black));
 ThemeTokens defaultThemeTokens(FontId smallFont = 0, FontId bodyFont = 0, FontId titleFont = 0);
 Rect centeredRect(Rect outer, Size inner);
 Rect ensureMinTouchRect(Rect visual, int16_t minSize, Rect bounds);
