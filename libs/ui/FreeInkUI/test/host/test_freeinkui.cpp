@@ -875,7 +875,14 @@ void testRoundedRaffSurfaces() {
   InteractionBuffer<16> interactions;
   Frame<16> frame(draw, device, input, interactions);
 
-  const TabItem tabs[3] = {{"Display", 0, false}, {"Reader", 1, true}, {"System", 2, false}};
+  TabItem tabs[3];
+  tabs[0].label = "Display";
+  tabs[0].value = 0;
+  tabs[1].label = "Reader";
+  tabs[1].value = 1;
+  tabs[1].selected = true;
+  tabs[2].label = "System";
+  tabs[2].value = 2;
   TabBarProps bar;
   bar.tabs = tabs;
   bar.count = 3;

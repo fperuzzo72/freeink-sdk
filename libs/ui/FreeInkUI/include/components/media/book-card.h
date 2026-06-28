@@ -6,6 +6,11 @@
 namespace freeink {
 namespace ui {
 
+enum class BookCardSelectionIndicator {
+  Card,
+  CoverFrame,
+};
+
 struct BookCardProps {
   const char* title = nullptr;
   const char* author = nullptr;
@@ -28,6 +33,13 @@ struct BookCardProps {
   int16_t textGap = 4;
   int16_t textProgressGap = 8;
   int16_t progressHeight = 4;
+  bool centerTextVertically = false;
+  BookCardSelectionIndicator selectionIndicator = BookCardSelectionIndicator::Card;
+  int16_t selectedCoverFrameGap = 3;
+  int16_t selectedCoverFrameWidth = 2;
+  uint8_t selectedCoverFrameRadius = 0;
+  bool (*coverPainter)(DrawTarget& target, Rect rect, const BookCardProps& props, void* userData) = nullptr;
+  void* coverPainterUserData = nullptr;
 };
 
 template <size_t MaxInteractions>
@@ -38,8 +50,14 @@ void bookCard(Frame<MaxInteractions>& frame, Rect rect, const BookCardProps& pro
               InputDefault, state);
   }
   state = frame.stateFor(props.action, props.value, state);
+  const bool selected = (state & StateSelected) != 0;
+  State cardState = state;
+  if (selected && props.selectionIndicator == BookCardSelectionIndicator::CoverFrame) {
+    cardState = static_cast<State>(static_cast<uint8_t>(cardState) & ~static_cast<uint8_t>(StateSelected));
+  }
   StyleSet styles = props.styles.unset() ? defaultListRowStyles() : props.styles;
-  const BoxStyle& style = styles.resolve(state);
+  const BoxStyle& style = styles.resolve(cardState);
+  const BoxStyle& selectedStyle = styles.resolve(state);
   frame.target().fill(rect, style.background, style.radius, style.corners);
   if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
     frame.target().stroke(rect, style.border, style.borderWidth, style.radius, style.corners);
@@ -50,15 +68,50 @@ void bookCard(Frame<MaxInteractions>& frame, Rect rect, const BookCardProps& pro
   const int16_t coverW = props.coverSize.width > content.width ? content.width : props.coverSize.width;
   const int16_t coverH = props.coverSize.height > content.height ? content.height : props.coverSize.height;
   Rect coverRect{content.x, static_cast<int16_t>(content.y + (content.height - coverH) / 2), coverW, coverH};
-  frame.target().fill(coverRect, Paint::dither(Color::LightGray));
-  if (cover) frame.target().bitmap(coverRect, cover, BitmapMode::Cover, style.foreground);
+  bool coverDrawn = false;
+  if (props.coverPainter) {
+    coverDrawn = props.coverPainter(frame.target(), coverRect, props, props.coverPainterUserData);
+  }
+  if (!coverDrawn) {
+    frame.target().fill(coverRect, Paint::dither(Color::LightGray));
+    if (cover) frame.target().bitmap(coverRect, cover, BitmapMode::Cover, style.foreground);
+  }
+  if (selected && props.selectionIndicator == BookCardSelectionIndicator::CoverFrame) {
+    const int16_t gap = props.selectedCoverFrameGap;
+    Rect frameRect{static_cast<int16_t>(coverRect.x - gap), static_cast<int16_t>(coverRect.y - gap),
+                   static_cast<int16_t>(coverRect.width + gap * 2),
+                   static_cast<int16_t>(coverRect.height + gap * 2)};
+    frame.target().stroke(frameRect,
+                          selectedStyle.border.kind != PaintKind::None ? selectedStyle.border
+                                                                        : Paint::solid(Color::Black),
+                          props.selectedCoverFrameWidth, props.selectedCoverFrameRadius);
+  }
   content.x = static_cast<int16_t>(coverRect.right() + props.gap);
   content.width = static_cast<int16_t>(rect.right() - props.padding.right - content.x);
   const int16_t progressH = props.progressHeight < 1 ? 1 : props.progressHeight;
   const int16_t progressY = static_cast<int16_t>(coverRect.bottom() - progressH);
   const int16_t textBottom = static_cast<int16_t>(progressY - props.textProgressGap);
 
+  int16_t textBlockH = 0;
+  if (props.title) {
+    TextStyle title = textStyleWithForeground(props.titleText, style.foreground);
+    title.maxLines = title.maxLines ? title.maxLines : 2;
+    textBlockH = static_cast<int16_t>(textBlockH + measureWrappedText(frame.target(), props.title, title, content.width).height);
+  }
+  if (props.author) {
+    if (textBlockH > 0) textBlockH = static_cast<int16_t>(textBlockH + props.textGap);
+    textBlockH = static_cast<int16_t>(textBlockH + frame.target().lineHeight(props.authorText.font));
+  }
+  if (props.meta) {
+    if (textBlockH > 0) textBlockH = static_cast<int16_t>(textBlockH + props.textGap);
+    textBlockH = static_cast<int16_t>(textBlockH + frame.target().lineHeight(props.metaText.font));
+  }
+
   int16_t y = content.y;
+  if (props.centerTextVertically && textBlockH > 0) {
+    const int16_t textAreaH = static_cast<int16_t>(textBottom - content.y);
+    if (textAreaH > textBlockH) y = static_cast<int16_t>(content.y + (textAreaH - textBlockH) / 2);
+  }
   if (props.title) {
     TextStyle title = textStyleWithForeground(props.titleText, style.foreground);
     title.maxLines = title.maxLines ? title.maxLines : 2;

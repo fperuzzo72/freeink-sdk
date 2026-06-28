@@ -14,6 +14,14 @@ struct CoverGridItem {
   bool enabled = true;
 };
 
+using CoverGridCoverPainter = bool (*)(DrawTarget& target, Rect rect, const CoverGridItem& item, uint16_t index,
+                                       void* userData);
+
+enum class CoverGridSelectionIndicator {
+  Cell,
+  CoverFrame,
+};
+
 struct CoverGridProps {
   const CoverGridItem* items = nullptr;
   uint16_t count = 0;
@@ -23,29 +31,66 @@ struct CoverGridProps {
   uint16_t inputMask = InputDefault | InputPrev | InputNext;
   TextStyle titleText{};
   StyleSet cellStyles{};
+  CoverGridSelectionIndicator selectionIndicator = CoverGridSelectionIndicator::Cell;
   uint8_t columns = 3;
   Size coverSize{72, 104};
   int16_t rowHeight = 132;
   int16_t gap = 8;
+  int16_t rowGap = -1;
+  Insets cellInset{};
+  Insets labelInset{};
   int16_t labelHeight = 20;
+  int16_t labelGap = 2;
   int16_t minTouchSize = 44;
+  bool scrollIndicator = true;
+  int16_t scrollIndicatorWidth = 3;
+  int16_t scrollIndicatorGap = 4;
+  int16_t selectedCoverFrameGap = 3;
+  int16_t selectedCoverFrameWidth = 2;
+  uint8_t selectedCoverFrameRadius = 0;
+  CoverGridCoverPainter coverPainter = nullptr;
+  void* coverPainterUserData = nullptr;
 };
 
 template <size_t MaxInteractions>
 void coverGrid(Frame<MaxInteractions>& frame, Rect rect, const CoverGridProps& props) {
   if (!props.items || props.count == 0 || props.columns == 0) return;
-  const int16_t cellW = static_cast<int16_t>((rect.width - (props.columns - 1) * props.gap) / props.columns);
-  const int16_t strideY = static_cast<int16_t>(props.rowHeight + props.gap);
-  const uint16_t rowsVisible = props.rowHeight > 0 ? static_cast<uint16_t>((rect.height + props.gap) / strideY) : 0;
+  const int16_t rowGap = props.rowGap >= 0 ? props.rowGap : props.gap;
+  const int16_t strideY = static_cast<int16_t>(props.rowHeight + rowGap);
+  const uint16_t rowsVisible = props.rowHeight > 0 ? static_cast<uint16_t>((rect.height + rowGap) / strideY) : 0;
   const uint16_t cellsVisible = static_cast<uint16_t>(rowsVisible * props.columns);
+  const bool overflows = cellsVisible > 0 && props.count > cellsVisible;
+  Rect gridRect = rect;
+  if (props.scrollIndicator && overflows && props.scrollIndicatorWidth > 0) {
+    gridRect.width =
+        static_cast<int16_t>(gridRect.width - props.scrollIndicatorWidth - props.scrollIndicatorGap);
+    Rect track{static_cast<int16_t>(rect.right() - props.scrollIndicatorWidth), rect.y,
+               props.scrollIndicatorWidth, rect.height};
+    frame.target().line(Point{track.x, track.y}, Point{track.x, static_cast<int16_t>(track.bottom() - 1)}, 1,
+                        Paint::solid(Color::Black));
+    int32_t thumbHeight = 0;
+    if (track.height > 0) {
+      thumbHeight = (static_cast<int32_t>(track.height) * cellsVisible) / props.count;
+      if (thumbHeight < props.scrollIndicatorWidth) thumbHeight = props.scrollIndicatorWidth;
+    }
+    const int16_t thumbH = static_cast<int16_t>(thumbHeight);
+    const int32_t scrollRange = props.count - cellsVisible;
+    const int16_t thumbY = static_cast<int16_t>(
+        track.y + (scrollRange > 0 ? (static_cast<int32_t>(track.height - thumbH) * props.topIndex) / scrollRange
+                                   : 0));
+    frame.target().fill(Rect{static_cast<int16_t>(track.x - props.scrollIndicatorWidth), thumbY,
+                             props.scrollIndicatorWidth, thumbH},
+                        Paint::solid(Color::Black));
+  }
+  const int16_t cellW = static_cast<int16_t>((gridRect.width - (props.columns - 1) * props.gap) / props.columns);
   uint16_t top = props.topIndex;
   if (top >= props.count) top = 0;
   for (uint16_t visible = 0; visible < cellsVisible && top + visible < props.count; ++visible) {
     const uint16_t index = static_cast<uint16_t>(top + visible);
     const uint8_t col = static_cast<uint8_t>(visible % props.columns);
     const uint16_t row = static_cast<uint16_t>(visible / props.columns);
-    Rect cell{static_cast<int16_t>(rect.x + col * (cellW + props.gap)),
-              static_cast<int16_t>(rect.y + row * strideY), cellW, props.rowHeight};
+    Rect cell{static_cast<int16_t>(gridRect.x + col * (cellW + props.gap)),
+              static_cast<int16_t>(gridRect.y + row * strideY), cellW, props.rowHeight};
     const CoverGridItem& item = props.items[index];
     State state = item.state;
     if (props.selectedIndex == static_cast<int16_t>(index)) state |= StateSelected;
@@ -55,23 +100,51 @@ void coverGrid(Frame<MaxInteractions>& frame, Rect rect, const CoverGridProps& p
                 props.inputMask, state);
     }
     state = frame.stateFor(props.action, item.actionValue, state);
+    const bool selected = (state & StateSelected) != 0;
+    State cellState = state;
+    if (selected && props.selectionIndicator == CoverGridSelectionIndicator::CoverFrame) {
+      cellState = static_cast<State>(static_cast<uint8_t>(cellState) & ~static_cast<uint8_t>(StateSelected));
+    }
     StyleSet styles = props.cellStyles.unset() ? defaultListRowStyles() : props.cellStyles;
-    const BoxStyle& style = styles.resolve(state);
+    const BoxStyle& style = styles.resolve(cellState);
+    const BoxStyle& selectedStyle = styles.resolve(state);
     frame.target().fill(cell, style.background, style.radius, style.corners);
     if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
       frame.target().stroke(cell, style.border, style.borderWidth, style.radius, style.corners);
     }
-    Rect coverRect{static_cast<int16_t>(cell.x + (cell.width - props.coverSize.width) / 2), cell.y,
+    Rect content = cell.inset(props.cellInset);
+    if (content.empty()) content = cell;
+    Rect coverRect{static_cast<int16_t>(content.x + (content.width - props.coverSize.width) / 2), content.y,
                    props.coverSize.width, props.coverSize.height};
-    frame.target().fill(coverRect, Paint::dither(Color::LightGray));
-    const BitmapRef cover = item.cover ? item.cover : resolveBitmap(frame.assets(), item.coverAsset);
-    if (cover) frame.target().bitmap(coverRect, cover, BitmapMode::Cover, style.foreground);
+    bool coverDrawn = false;
+    if (props.coverPainter) {
+      coverDrawn = props.coverPainter(frame.target(), coverRect, item, index, props.coverPainterUserData);
+    }
+    if (!coverDrawn) {
+      frame.target().fill(coverRect, Paint::dither(Color::LightGray));
+      const BitmapRef cover = item.cover ? item.cover : resolveBitmap(frame.assets(), item.coverAsset);
+      if (cover) frame.target().bitmap(coverRect, cover, BitmapMode::Cover, style.foreground);
+    }
+    if (selected && props.selectionIndicator == CoverGridSelectionIndicator::CoverFrame) {
+      const int16_t gap = props.selectedCoverFrameGap;
+      Rect frameRect{static_cast<int16_t>(coverRect.x - gap), static_cast<int16_t>(coverRect.y - gap),
+                     static_cast<int16_t>(coverRect.width + gap * 2), static_cast<int16_t>(coverRect.height + gap * 2)};
+      frame.target().stroke(frameRect, selectedStyle.border.kind != PaintKind::None ? selectedStyle.border
+                                                                                    : Paint::solid(Color::Black),
+                            props.selectedCoverFrameWidth, props.selectedCoverFrameRadius);
+    }
     if (item.title && props.labelHeight > 0) {
       TextStyle title = textStyleWithForeground(props.titleText, style.foreground);
       title.align = TextAlign::Center;
       title.maxLines = title.maxLines > 0 ? title.maxLines : 1;
-      frame.target().text(Rect{cell.x, static_cast<int16_t>(coverRect.bottom() + 2), cell.width, props.labelHeight},
-                          item.title, title);
+      Rect labelRect{content.x, static_cast<int16_t>(coverRect.bottom() + props.labelGap), content.width,
+                     props.labelHeight};
+      labelRect = labelRect.inset(props.labelInset);
+      if (!labelRect.empty()) {
+        const int16_t reservedHeight = static_cast<int16_t>(frame.target().lineHeight(title.font) * title.maxLines);
+        if (reservedHeight > 0 && reservedHeight < labelRect.height) labelRect.height = reservedHeight;
+        frame.target().text(labelRect, item.title, title);
+      }
     }
   }
 }

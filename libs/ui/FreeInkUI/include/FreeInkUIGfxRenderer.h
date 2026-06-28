@@ -240,6 +240,23 @@ class GfxRendererTarget final : public DrawTarget {
   }
 };
 
+template <size_t MaxInteractions = 1>
+class GfxRendererFrame {
+ public:
+  GfxRendererFrame(const GfxRenderer& renderer, const int smallFontId = 0, const int bodyFontId = 0,
+                   const int titleFontId = 0)
+      : target(renderer), frame(target, target.deviceContext(), input, interactions) {
+    target.setFont(GfxRendererTarget::FONT_SMALL, smallFontId);
+    target.setFont(GfxRendererTarget::FONT_BODY, bodyFontId);
+    target.setFont(GfxRendererTarget::FONT_TITLE, titleFontId);
+  }
+
+  GfxRendererTarget target;
+  InputSnapshot input{};
+  InteractionBuffer<MaxInteractions> interactions;
+  Frame<MaxInteractions> frame;
+};
+
 }  // namespace ui
 }  // namespace freeink
 

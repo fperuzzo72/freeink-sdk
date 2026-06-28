@@ -11,6 +11,7 @@
 // code runs on firmware and in host-side unit tests.
 
 #include "FreeInkUICore.h"
+#include "FreeInkUILayout.h"
 
 #include "components/controls/button.h"
 #include "components/controls/header.h"
