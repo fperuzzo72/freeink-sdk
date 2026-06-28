@@ -555,7 +555,7 @@ constexpr BoardProfile XTEINK_X4 = {Board::XteinkX4,
                                     800,
                                     480,
                                     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-                                    0,  // displaySpiHz: 0 -> SSD1677 driver default (40 MHz)
+                                    5000000,  // displaySpiHz: stock X4 display bus speed
                                     {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
                                     {0, 1, 2, 3, 4, 5, 3, false},
                                     0,

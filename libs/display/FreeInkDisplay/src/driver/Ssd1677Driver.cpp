@@ -42,15 +42,30 @@ constexpr uint8_t SCAN_TB_FLIP = 0x01;        // OR into the scan byte for mirro
 }  // namespace
 
 const Ssd1677Config& ssd1677DefaultConfig() {
-  // Xteink X4 / GDEQ0426T82 defaults. A board variant supplies its own struct
-  // (e.g. de-link could bump the last booster byte for contrast, set its own
-  // scan direction, or swap in tuned grayscale LUTs) without touching the driver.
+  // Xteink X4 / GDEQ0426T82 defaults. The stock X4 firmware's B/W update paths
+  // use absolute SSD1677 sequences rather than the incremental 0x1C assembly:
+  // INIT:  0C=AE C7 C3 C0 80, 3C=80
+  // FULL:  3C=C0, 22=F7, 20, ~1800 ms
+  // HALF:  3C=C0, 1A=5A, 22=D7, 20
+  // PART:  3C=C0, 22=FC, 20, ~500 ms
+  // If we want boot/sleep HALF_REFRESH to do the visible full-screen alternating
+  // flash, set halfSeqOverride to 0. HALF then falls back to fullSeqOverride
+  // (0xF7), and the first boot paint also promotes to FULL instead of HALF.
+  // Keep those as the default X4 path; weaker partial selection shows heavy
+  // ghosting on some panels.
   static const Ssd1677Config cfg = {
-      {0xAE, 0xC7, 0xC3, 0xC0, 0x40},  // booster soft-start
+      {0xAE, 0xC7, 0xC3, 0xC0, 0x80},  // booster soft-start
       DRIVER_OUTPUT_SCAN,
+      0x80,  // borderWaveformInit: stock X4 init border
       0x5A,  // HALF refresh temperature
       lut_grayscale,
       lut_grayscale_revert,
+      0xF7,  // fullSeqOverride: stock X4 full update sequence
+      0xFC,  // fastSeqOverride: stock X4 partial update sequence
+      0xD7,  // halfSeqOverride: stock X4 warmed/full-clean update sequence
+      0xC0,  // borderWaveformFull: stock X4 border
+      0xC0,  // borderWaveformFast: stock X4 border
+      0xC0,  // borderWaveformHalf: stock X4 border
   };
   return cfg;
 }
@@ -67,13 +82,16 @@ static const Ssd1677Config& ssd1677StickyConfig() {
   static const Ssd1677Config cfg = {
       {0xAE, 0xC7, 0xC3, 0xC0, 0x80},  // booster soft-start (matches Seeed's panel driver)
       DRIVER_OUTPUT_SCAN,
+      0x01,  // borderWaveformInit: vendor FULL/partial-clear border
       0x5A,  // halfRefreshTemp (unused once fullSeqOverride loads temperature itself)
       lut_grayscale,
       lut_grayscale_revert,
       0xF7,  // fullSeqOverride: vendor FULL update sequence
       0xFF,  // fastSeqOverride: vendor PARTIAL/DU update sequence (the actual fast path)
+      0x00,  // halfSeqOverride: use fullSeqOverride
       0x01,  // borderWaveformFull: vendor FULL/partial-clear border
       0x80,  // borderWaveformFast: vendor PARTIAL/DU border (stops the dark edge ring)
+      0x00,  // borderWaveformHalf: use borderWaveformFull
   };
   return cfg;
 }
@@ -125,7 +143,7 @@ void Ssd1677Driver::initController(EpdBus& bus) {
   bus.data(_mirrorY ? (_cfg.driverOutputScan | SCAN_TB_FLIP) : _cfg.driverOutputScan);
 
   bus.cmd(CMD_BORDER_WAVEFORM);
-  bus.data(0x01);
+  bus.data(_cfg.borderWaveformInit);
 
   setRamArea(bus, 0, 0, _w, _h);
 
@@ -201,15 +219,25 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff) {
   // doesn't trigger some panels' DU waveform (they then run the full waveform on
   // every "fast" refresh); these values fix that. Skipped while a custom grayscale
   // LUT is active (that path needs the 0x0C sequence with the loaded LUT).
-  const uint8_t seqOverride = (mode == RefreshMode::Fast) ? _cfg.fastSeqOverride : _cfg.fullSeqOverride;
+  const uint8_t seqOverride = (mode == RefreshMode::Fast) ? _cfg.fastSeqOverride
+                              : (mode == RefreshMode::Half && _cfg.halfSeqOverride != 0)
+                                  ? _cfg.halfSeqOverride
+                                  : _cfg.fullSeqOverride;
   if (seqOverride != 0 && !_customLutActive) {
     // Track the border waveform to the refresh mode (vendor parity): a partial/DU
     // (fast) refresh leaves the border driven dark if it keeps the full-refresh
     // border, producing a black ring around the page. 0 = leave the init value.
-    const uint8_t border = (mode == RefreshMode::Fast) ? _cfg.borderWaveformFast : _cfg.borderWaveformFull;
+    const uint8_t border = (mode == RefreshMode::Fast) ? _cfg.borderWaveformFast
+                           : (mode == RefreshMode::Half && _cfg.borderWaveformHalf != 0)
+                               ? _cfg.borderWaveformHalf
+                               : _cfg.borderWaveformFull;
     if (border != 0) {
       bus.cmd(CMD_BORDER_WAVEFORM);
       bus.data(border);
+    }
+    if (mode == RefreshMode::Half) {
+      bus.cmd(CMD_WRITE_TEMP);
+      bus.data(_cfg.halfRefreshTemp);
     }
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
     bus.data(seqOverride);
@@ -268,7 +296,7 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // fast pages that follow.
   if (!turnOff) {
     if (_needsInitialFull) {
-      mode = RefreshMode::Full;
+      mode = (_cfg.halfSeqOverride != 0) ? RefreshMode::Half : RefreshMode::Full;
       _needsInitialFull = false;
     } else if (!_isScreenOn && _cfg.fullSeqOverride == 0) {
       // X4-class cold start: panel asleep -> a (warmed) HALF full-clear. Override
@@ -300,9 +328,12 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
 
   refresh(bus, mode, turnOff);
 
-  // Single-buffer: sync RED with the just-shown frame for the next fast diff.
+  // Stock X4 syncs both controller RAM planes after activation. Do the same in
+  // single-buffer mode so the next differential update starts from a matched
+  // BW/RED baseline instead of assuming BW survived the refresh unchanged.
   if (prev == nullptr) {
     setRamArea(bus, 0, 0, _w, _h);
+    writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
   }
 }
@@ -349,6 +380,7 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
 
   if (prev == nullptr) {
     setRamArea(bus, x, y, w, h);
+    writeRam(bus, CMD_WRITE_RAM_BW, windowBuffer.data(), windowBufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, windowBuffer.data(), windowBufferSize);
   }
 }

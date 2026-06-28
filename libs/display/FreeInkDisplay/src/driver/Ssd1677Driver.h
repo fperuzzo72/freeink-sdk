@@ -19,6 +19,7 @@ namespace freeink {
 struct Ssd1677Config {
   uint8_t booster[5];               // booster soft-start (CMD 0x0C)
   uint8_t driverOutputScan;         // CMD 0x01 base scan byte (0x02); mirrorY ORs TB
+  uint8_t borderWaveformInit;        // CMD 0x3C value written during controller init
   uint8_t halfRefreshTemp;          // temperature byte written for HALF refresh
   const unsigned char* grayLut;     // 110-byte custom LUT for grayscale display
   const unsigned char* grayRevertLut;  // 110-byte custom LUT to revert grayscale
@@ -30,14 +31,16 @@ struct Ssd1677Config {
   // makes fast refreshes use the panel's real DU waveform instead of running the
   // full waveform every time. (e.g. Sticky: full 0xF7 / fast 0xFF, from Seeed's
   // SSD1677 driver.) Ignored while a custom grayscale LUT is active.
-  uint8_t fullSeqOverride = 0;  // FULL and HALF (cold/first) refreshes
+  uint8_t fullSeqOverride = 0;  // FULL refreshes
   uint8_t fastSeqOverride = 0;  // FAST (UI) refreshes
+  uint8_t halfSeqOverride = 0;  // HALF refreshes; 0 falls back to fullSeqOverride
   // Border waveform (CMD 0x3C) re-written per refresh in the seqOverride path so
   // it tracks the refresh mode (vendor parity); without this a partial/DU refresh
   // leaves the border driven dark (Sticky's black ring). 0 = keep the init value.
   // Only consulted when fullSeqOverride / fastSeqOverride are set.
-  uint8_t borderWaveformFull = 0;  // FULL and HALF refreshes
+  uint8_t borderWaveformFull = 0;  // FULL refreshes
   uint8_t borderWaveformFast = 0;  // FAST (UI / page-turn) refreshes
+  uint8_t borderWaveformHalf = 0;  // HALF refreshes; 0 falls back to borderWaveformFull
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
