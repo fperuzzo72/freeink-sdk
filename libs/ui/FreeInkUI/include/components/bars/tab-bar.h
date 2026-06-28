@@ -14,6 +14,16 @@ struct TabItem {
   bool enabled = true;
 };
 
+inline TabItem tabItem(const int value, const bool selected = false, const bool enabled = true,
+                       const char* label = nullptr) {
+  TabItem item;
+  item.label = label;
+  item.value = clampI16(value, -32768);
+  item.selected = selected;
+  item.enabled = enabled;
+  return item;
+}
+
 using TabIconPainter = bool (*)(DrawTarget& target, Rect rect, const TabItem& tab, uint8_t index, void* userData);
 
 struct TabBarProps {

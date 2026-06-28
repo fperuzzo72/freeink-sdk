@@ -988,6 +988,59 @@ StyleSet defaultKeyStyles();
 StyleSet defaultPopupStyles();
 StyleSet plainStyles(Paint foreground = Paint::solid(Color::Black));
 ThemeTokens defaultThemeTokens(FontId smallFont = 0, FontId bodyFont = 0, FontId titleFont = 0);
+inline int16_t clampI16(const int value, const int minValue = 0, const int maxValue = 32767) {
+  if (value < minValue) return static_cast<int16_t>(minValue);
+  if (value > maxValue) return static_cast<int16_t>(maxValue);
+  return static_cast<int16_t>(value);
+}
+inline uint8_t clampU8(const int value, const int minValue = 0, const int maxValue = 255) {
+  if (value < minValue) return static_cast<uint8_t>(minValue);
+  if (value > maxValue) return static_cast<uint8_t>(maxValue);
+  return static_cast<uint8_t>(value);
+}
+inline uint8_t clampRadius(const int radius, const int maxRadius = 12) { return clampU8(radius, 0, maxRadius); }
+inline Rect makeRect(const int x, const int y, const int width, const int height) {
+  return Rect{clampI16(x, -32768), clampI16(y, -32768), clampI16(width), clampI16(height)};
+}
+inline Size makeSize(const int width, const int height) { return Size{clampI16(width), clampI16(height)}; }
+inline Insets makeInsets(const int all) {
+  const int16_t value = clampI16(all);
+  return Insets{value, value, value, value};
+}
+inline Insets makeInsets(const int top, const int right, const int bottom, const int left) {
+  return Insets{clampI16(top), clampI16(right), clampI16(bottom), clampI16(left)};
+}
+inline StyleSet selectedOutlineListRowStyles(const int radius = 0) {
+  StyleSet styles = defaultListRowStyles();
+  styles.selected.background = Paint::solid(Color::White);
+  styles.selected.foreground = Paint::solid(Color::Black);
+  styles.selected.border = Paint::solid(Color::Black);
+  styles.selected.borderWidth = 1;
+  styles.selected.radius = clampRadius(radius);
+  return styles;
+}
+inline StyleSet selectedPlainListRowStyles() {
+  StyleSet styles = defaultListRowStyles();
+  styles.selected.background = Paint::solid(Color::White);
+  styles.selected.foreground = Paint::solid(Color::Black);
+  styles.selected.border = Paint::none();
+  styles.selected.borderWidth = 0;
+  return styles;
+}
+inline StyleSet outlinedButtonStyles(const int radius = 0, const Color selectedBackground = Color::LightGray) {
+  StyleSet styles = defaultButtonStyles();
+  styles.normal.background = Paint::solid(Color::White);
+  styles.normal.foreground = Paint::solid(Color::Black);
+  styles.normal.border = Paint::solid(Color::Black);
+  styles.normal.borderWidth = 1;
+  styles.normal.radius = clampRadius(radius);
+  styles.selected.background = Paint::solid(selectedBackground);
+  styles.selected.foreground = Paint::solid(Color::Black);
+  styles.selected.border = Paint::solid(Color::Black);
+  styles.selected.borderWidth = 1;
+  styles.selected.radius = clampRadius(radius);
+  return styles;
+}
 Rect centeredRect(Rect outer, Size inner);
 Rect ensureMinTouchRect(Rect visual, int16_t minSize, Rect bounds);
 // Number of rows that fully fit in the rect at the given row height/gap.

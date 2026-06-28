@@ -14,6 +14,16 @@ struct CoverGridItem {
   bool enabled = true;
 };
 
+inline CoverGridItem coverGridItem(const char* title, const int actionValue, const bool enabled = true,
+                                   State state = StateNormal) {
+  CoverGridItem item;
+  item.title = title;
+  item.actionValue = clampI16(actionValue, -32768);
+  item.enabled = enabled;
+  item.state = state;
+  return item;
+}
+
 using CoverGridCoverPainter = bool (*)(DrawTarget& target, Rect rect, const CoverGridItem& item, uint16_t index,
                                        void* userData);
 
@@ -51,6 +61,22 @@ struct CoverGridProps {
   CoverGridCoverPainter coverPainter = nullptr;
   void* coverPainterUserData = nullptr;
 };
+
+inline uint16_t coverGridVisibleCells(Rect rect, const uint8_t columns, const int16_t rowHeight, const int16_t rowGap) {
+  if (columns == 0 || rowHeight <= 0) return 0;
+  const int16_t gap = rowGap > 0 ? rowGap : 0;
+  const int16_t strideY = static_cast<int16_t>(rowHeight + gap);
+  const uint16_t rowsVisible = static_cast<uint16_t>((rect.height + gap) / strideY);
+  return static_cast<uint16_t>(rowsVisible * columns);
+}
+
+inline uint16_t coverGridTopIndexFor(const uint16_t selectedIndex, const uint16_t count, const uint8_t columns,
+                                     const uint16_t pageItems) {
+  if (count == 0 || columns == 0 || pageItems == 0) return 0;
+  const uint16_t selected = selectedIndex < count ? selectedIndex : static_cast<uint16_t>(count - 1);
+  const uint16_t rowStart = static_cast<uint16_t>((selected / columns) * columns);
+  return static_cast<uint16_t>((rowStart / pageItems) * pageItems);
+}
 
 template <size_t MaxInteractions>
 void coverGrid(Frame<MaxInteractions>& frame, Rect rect, const CoverGridProps& props) {
