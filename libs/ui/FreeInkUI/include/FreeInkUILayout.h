@@ -50,8 +50,8 @@ struct LayoutRect {
 };
 
 inline int16_t layoutBasis(LayoutLength length,
-                           int16_t (*resolveToken)(uint16_t, void *),
-                           void *user) {
+                           int16_t (*resolveToken)(uint16_t, void*),
+                           void* user) {
   if (length.kind == LayoutLengthKind::Fixed)
     return length.value > 0 ? length.value : 0;
   if (length.kind == LayoutLengthKind::Token && resolveToken) {
@@ -70,9 +70,9 @@ inline LayoutRect layoutRectFromUi(Rect rect) {
 // rects without heap allocation or retained widget state.
 template <typename LengthAt, typename Emit>
 inline void layoutLinear(LayoutRect rect, Axis axis, int16_t gap, uint8_t count,
-                         LengthAt &&lengthAt, Emit &&emit,
-                         int16_t (*resolveToken)(uint16_t, void *) = nullptr,
-                         void *user = nullptr) {
+                         LengthAt&& lengthAt, Emit&& emit,
+                         int16_t (*resolveToken)(uint16_t, void*) = nullptr,
+                         void* user = nullptr) {
   if (count == 0 || rect.empty())
     return;
   if (gap < 0)
@@ -120,9 +120,9 @@ inline void layoutLinear(LayoutRect rect, Axis axis, int16_t gap, uint8_t count,
 
 template <typename LengthAt, typename Emit>
 inline void layoutLinear(Rect rect, Axis axis, int16_t gap, uint8_t count,
-                         LengthAt &&lengthAt, Emit &&emit,
-                         int16_t (*resolveToken)(uint16_t, void *) = nullptr,
-                         void *user = nullptr) {
+                         LengthAt&& lengthAt, Emit&& emit,
+                         int16_t (*resolveToken)(uint16_t, void*) = nullptr,
+                         void* user = nullptr) {
   layoutLinear(
       layoutRectFromUi(rect), axis, gap, count, lengthAt,
       [&](uint8_t i, LayoutRect slot) {
@@ -133,7 +133,7 @@ inline void layoutLinear(Rect rect, Axis axis, int16_t gap, uint8_t count,
 }
 
 struct LayoutNode {
-  const char *id = nullptr;
+  const char* id = nullptr;
   Axis axis = Axis::Column;
   int16_t gap = 0;
   LayoutLength length = LayoutLength::flexible();
@@ -142,9 +142,9 @@ struct LayoutNode {
 };
 
 template <typename Emit>
-inline void layoutTree(const LayoutNode &node, LayoutRect rect, Emit &&emit,
-                       int16_t (*resolveToken)(uint16_t, void *) = nullptr,
-                       void *user = nullptr) {
+inline void layoutTree(const LayoutNode& node, LayoutRect rect, Emit&& emit,
+                       int16_t (*resolveToken)(uint16_t, void*) = nullptr,
+                       void* user = nullptr) {
   if (!node.children || node.childCount == 0) {
     if (node.id && node.id[0] != '\0')
       emit(node.id, rect);
@@ -161,17 +161,17 @@ inline void layoutTree(const LayoutNode &node, LayoutRect rect, Emit &&emit,
 }
 
 template <typename Emit>
-inline void layoutTree(const LayoutNode &node, Rect rect, Emit &&emit,
-                       int16_t (*resolveToken)(uint16_t, void *) = nullptr,
-                       void *user = nullptr) {
+inline void layoutTree(const LayoutNode& node, Rect rect, Emit&& emit,
+                       int16_t (*resolveToken)(uint16_t, void*) = nullptr,
+                       void* user = nullptr) {
   layoutTree(
       node, layoutRectFromUi(rect),
-      [&](const char *id, LayoutRect slot) {
+      [&](const char* id, LayoutRect slot) {
         emit(id, Rect{static_cast<int16_t>(slot.x), static_cast<int16_t>(slot.y),
                       static_cast<int16_t>(slot.width), static_cast<int16_t>(slot.height)});
       },
       resolveToken, user);
 }
 
-} // namespace ui
-} // namespace freeink
+}  // namespace ui
+}  // namespace freeink

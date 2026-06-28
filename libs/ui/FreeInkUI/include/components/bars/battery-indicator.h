@@ -55,7 +55,7 @@ struct BatteryIndicatorProps {
   uint8_t barRadius = 0;
   // Optional pre-formatted label (e.g. "82%"), drawn left of the glyph. The
   // component never formats text itself; the app owns strings.
-  const char *label = nullptr;
+  const char* label = nullptr;
   TextStyle text{};
   Color color = Color::Black;
   // Glyph size; the glyph is right-aligned and vertically centered in the
@@ -69,8 +69,8 @@ struct BatteryIndicatorProps {
 };
 
 template <size_t MaxInteractions>
-void batteryIndicator(Frame<MaxInteractions> &frame, Rect rect,
-                      const BatteryIndicatorProps &props) {
+void batteryIndicator(Frame<MaxInteractions>& frame, Rect rect,
+                      const BatteryIndicatorProps& props) {
   const bool isBar = props.style == BatteryIndicatorStyle::Bar;
   const int16_t minGlyphH = isBar ? 1 : 6;
   const int16_t minGlyphW = isBar ? 1 : 8;
@@ -225,5 +225,5 @@ void batteryIndicator(Frame<MaxInteractions> &frame, Rect rect,
   }
 }
 
-} // namespace ui
-} // namespace freeink
+}  // namespace ui
+}  // namespace freeink
