@@ -26,6 +26,7 @@ inline CoverGridItem coverGridItem(const char* title, const int actionValue, con
 
 using CoverGridCoverPainter = bool (*)(DrawTarget& target, Rect rect, const CoverGridItem& item, uint16_t index,
                                        void* userData);
+using CoverGridItemProvider = CoverGridItem (*)(uint16_t index, void* userData);
 
 enum class CoverGridSelectionIndicator {
   Cell,
@@ -34,6 +35,8 @@ enum class CoverGridSelectionIndicator {
 
 struct CoverGridProps {
   const CoverGridItem* items = nullptr;
+  CoverGridItemProvider itemProvider = nullptr;
+  void* itemProviderUserData = nullptr;
   uint16_t count = 0;
   uint16_t topIndex = 0;
   int16_t selectedIndex = -1;
@@ -80,7 +83,7 @@ inline uint16_t coverGridTopIndexFor(const uint16_t selectedIndex, const uint16_
 
 template <size_t MaxInteractions>
 void coverGrid(Frame<MaxInteractions>& frame, Rect rect, const CoverGridProps& props) {
-  if (!props.items || props.count == 0 || props.columns == 0) return;
+  if ((!props.items && !props.itemProvider) || props.count == 0 || props.columns == 0) return;
   const int16_t rowGap = props.rowGap >= 0 ? props.rowGap : props.gap;
   const int16_t strideY = static_cast<int16_t>(props.rowHeight + rowGap);
   const uint16_t rowsVisible = props.rowHeight > 0 ? static_cast<uint16_t>((rect.height + rowGap) / strideY) : 0;
@@ -117,7 +120,9 @@ void coverGrid(Frame<MaxInteractions>& frame, Rect rect, const CoverGridProps& p
     const uint16_t row = static_cast<uint16_t>(visible / props.columns);
     Rect cell{static_cast<int16_t>(gridRect.x + col * (cellW + props.gap)),
               static_cast<int16_t>(gridRect.y + row * strideY), cellW, props.rowHeight};
-    const CoverGridItem& item = props.items[index];
+    const CoverGridItem providedItem =
+        props.itemProvider ? props.itemProvider(index, props.itemProviderUserData) : CoverGridItem{};
+    const CoverGridItem& item = props.itemProvider ? providedItem : props.items[index];
     State state = item.state;
     if (props.selectedIndex == static_cast<int16_t>(index)) state |= StateSelected;
     if (!item.enabled) state |= StateDisabled;
