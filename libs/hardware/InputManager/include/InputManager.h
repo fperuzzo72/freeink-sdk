@@ -125,6 +125,25 @@ class InputManager {
   // no press is pending (or async polling was never started).
   bool popPress(uint8_t& button);
 
+  // --- Diagnostics -----------------------------------------------------------
+  // A live sample of one button-group ADC pin: the raw reading plus the BTN_*
+  // it currently classifies as (-1 = no band matched). On the Xteink ADC ladder
+  // the six buttons are resistor dividers multiplexed onto two ADC pins
+  // (Back/Confirm/Left/Right on group 1, Up/Down on group 2); X3 and X4 share
+  // this pinout. A button-test or calibration screen uses this to spot a drifted
+  // divider whose reading no longer lands in the band the firmware expects —
+  // visible from the raw value regardless of how it classifies.
+  struct ButtonAdcSample {
+    int pin;     // GPIO sampled (BUTTON_ADC_PIN_1 / BUTTON_ADC_PIN_2)
+    int raw;     // raw analogRead() value, or -1 if this board has no ADC ladder
+    int button;  // classified BTN_* index, or -1 for no match
+  };
+
+  // Sample both button-group ADC pins now (synchronous analogRead). Safe to call
+  // alongside async polling. On boards without the Xteink ADC ladder both
+  // samples report raw = -1, button = -1.
+  void readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group2);
+
  private:
   static ButtonHook s_buttonHook;
 

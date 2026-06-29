@@ -101,6 +101,21 @@ int InputManager::getButtonFromADC(const int adcValue, const int ranges[], const
   return -1;
 }
 
+void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group2) {
+  group1 = {BUTTON_ADC_PIN_1, -1, -1};
+  group2 = {BUTTON_ADC_PIN_2, -1, -1};
+  if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
+    return;
+  }
+
+  group1.raw = analogRead(BUTTON_ADC_PIN_1);
+  group1.button = getButtonFromADC(group1.raw, ADC_RANGES_1, NUM_BUTTONS_1);
+
+  group2.raw = analogRead(BUTTON_ADC_PIN_2);
+  const int b2 = getButtonFromADC(group2.raw, ADC_RANGES_2, NUM_BUTTONS_2);
+  group2.button = b2 >= 0 ? b2 + 4 : -1;  // map group-2 local 0/1 to BTN_UP / BTN_DOWN
+}
+
 uint8_t InputManager::getState() {
   uint8_t state = 0;
 
