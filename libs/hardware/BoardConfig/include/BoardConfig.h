@@ -173,13 +173,13 @@
 // On-board I2C sensors. Each lib (Rtc / EnvironmentSensor / Imu) compiles its
 // I2C driver only when its flag is set; otherwise it links stub bodies.
 #ifndef FREEINK_CAP_RTC
-#define FREEINK_CAP_RTC (FREEINK_DEVICE_STICKY)
+#define FREEINK_CAP_RTC (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY)
 #endif
 #ifndef FREEINK_CAP_TEMP_HUMIDITY
 #define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
 #endif
 #ifndef FREEINK_CAP_IMU
-#define FREEINK_CAP_IMU (FREEINK_DEVICE_STICKY)
+#define FREEINK_CAP_IMU (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY)
 #endif
 // LEDC PWM buzzer (tone beeper). The Buzzer lib drives the AudioConfig.buzzer
 // pin; on for boards that wire one (Sticky GPIO48, Murphy GPIO46). Separate from
@@ -413,6 +413,9 @@ struct MicConfig {
   bool enableActiveHigh;
 };
 
+enum class RtcType : uint8_t { None, Pcf8563, Ds3231 };
+enum class ImuType : uint8_t { None, Lsm6ds3, Qmi8658 };
+
 // On-board I2C sensors sharing one bus (e.g. the Sticky's RTC + temp/humidity +
 // IMU on SDA1/SCL0, the same bus as its fuel gauge). Each addr is 0 when that
 // sensor is absent; the matching sensor lib reads its addr from here.
@@ -420,10 +423,12 @@ struct SensorsConfig {
   int8_t i2cSda;
   int8_t i2cScl;
   uint32_t i2cHz;
-  uint8_t rtcAddr;           // PCF8563 = 0x51; 0 = none
+  uint8_t rtcAddr;           // PCF8563 = 0x51, DS3231 = 0x68; 0 = none
   uint8_t tempHumidityAddr;  // SHT40 = 0x44; 0 = none
-  uint8_t imuAddr;           // LSM6DS3TR-C = 0x6A; 0 = none
+  uint8_t imuAddr;           // LSM6DS3TR-C = 0x6A, QMI8658 = 0x6B/0x6A; 0 = none
   uint8_t i2cBus = 0;        // 0 = Wire, 1 = Wire1 on multi-bus SoCs
+  RtcType rtcType = RtcType::None;
+  ImuType imuType = ImuType::None;
 };
 
 // How the panel is mounted relative to the driver's native scan. Any board injects
@@ -462,7 +467,7 @@ struct BoardProfile {
   MicConfig mic = {MicInput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true};
   // On-board I2C sensors (RTC / temp+humidity / IMU). Defaulted to "none"; a
   // board with sensors sets the bus pins + each present sensor's address.
-  SensorsConfig sensors = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0};
+  SensorsConfig sensors = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0, RtcType::None, ImuType::None};
   // UI scale multiplier the firmware applies to its theme metrics and chrome fonts.
   // 1.0 keeps the original button-era pixel sizes. Touch devices bump this so rows,
   // buttons, and tap targets are finger-sized: these panels are ~220-235 PPI, so a
@@ -511,7 +516,7 @@ constexpr LedConfig M5_PAPERCOLOR_LEDS = {21, 2, LedColorOrder::GRB, true};  // 
 // Defaults matching the BoardProfile member initializers, so a profile can set a
 // trailing field (e.g. uiScale) positionally without spelling out the literals.
 constexpr MicConfig NO_MIC = {MicInput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true};
-constexpr SensorsConfig NO_SENSORS = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0};
+constexpr SensorsConfig NO_SENSORS = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0, RtcType::None, ImuType::None};
 
 // Murphy M3 audio, recovered from the OEM firmware: ES8388-compatible codec at
 // 7-bit I2C 0x10 on the shared touch bus (SDA=13/SCL=12, 100 kHz), I2S master
@@ -597,7 +602,9 @@ constexpr BoardProfile XTEINK_X3 = {
     NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
-    {20, 0, 400000, 0x55, 0}};  // BQ27220 fuel gauge (0x55) on SDA20/SCL0; no charger IC
+    {20, 0, 400000, 0x55, 0},  // BQ27220 fuel gauge (0x55) on SDA20/SCL0; no charger IC
+    NO_MIC,
+    {20, 0, 400000, 0x68, 0, 0x6B, 0, RtcType::Ds3231, ImuType::Qmi8658}};
 
 // --- M5Stack PaperColor — ESP32-S3, ED2208 color panel, M5PM1 PMIC -----------
 constexpr BoardProfile M5STACK_PAPER_COLOR = {Board::M5StackPaperColor,
@@ -850,7 +857,7 @@ constexpr BoardProfile STICKY = {
     {MicInput::Pdm, 19, 20, 38, true},
     // Sensors on the shared sensor I2C bus (SDA1/SCL0, same as the fuel gauge):
     // PCF8563 RTC (0x51), SHT40 temp/humidity (0x44), LSM6DS3TR-C IMU (0x6A).
-    {1, 0, 400000, 0x51, 0x44, 0x6A, 1},
+    {1, 0, 400000, 0x51, 0x44, 0x6A, 1, RtcType::Pcf8563, ImuType::Lsm6ds3},
     1.2f};  // uiScale: touch device, 3.97" 800x480 — bump chrome to finger size
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
