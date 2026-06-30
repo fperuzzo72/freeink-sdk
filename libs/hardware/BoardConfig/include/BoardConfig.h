@@ -149,6 +149,13 @@
 #ifndef FREEINK_BLE_HID_SHOW_UNNAMED_DEVICES
 #define FREEINK_BLE_HID_SHOW_UNNAMED_DEVICES 0
 #endif
+// Security policy for BLE HID host pairing. Default to Just Works bonding
+// because many page-turner remotes have no input/display capability and reject
+// mandatory MITM/passkey pairing. Firmware that specifically wants keyboard
+// passkey pairing can opt in with -DFREEINK_BLE_HID_REQUIRE_MITM=1.
+#ifndef FREEINK_BLE_HID_REQUIRE_MITM
+#define FREEINK_BLE_HID_REQUIRE_MITM 0
+#endif
 
 // I2C fuel-gauge battery backend. Compiled in when a build contains a gauge
 // device (X3's BQ27220, or LilyGo's BQ27220+BQ25896). Selection is then *runtime*
