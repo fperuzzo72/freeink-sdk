@@ -46,7 +46,11 @@ int SecureClient::connect(const char* host, uint16_t port) {
   stop();
   if (!_transport.connect(host, port)) return 0;
 
-  WOLFSSL_METHOD* method = wolfTLSv1_3_client_method();
+  // Negotiate the highest mutually supported version rather than pinning TLS 1.3:
+  // self-hosted / Let's Encrypt nginx often tops out at TLS 1.2, and a 1.3-only
+  // client fails those handshakes outright. v23 still selects 1.3 when the peer
+  // offers it (WOLFSSL_TLS13 is enabled) and falls back to 1.2 otherwise.
+  WOLFSSL_METHOD* method = wolfSSLv23_client_method();
   auto* ctx = wolfSSL_CTX_new(method);
   if (!ctx) { _transport.stop(); return 0; }
   _ctx = ctx;
