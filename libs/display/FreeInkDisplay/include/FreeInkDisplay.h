@@ -114,6 +114,12 @@ class FreeInkDisplay {
   // Power management
   void deepSleep();
 
+  // Optional hooks fired around long BUSY waits (~0.3-2 s per refresh), so host
+  // firmware can apply its own power policy (e.g. reduce the CPU clock) for the
+  // wait window. Forwards to the bus, which owns every driver's busy-polling.
+  // See EpdBus::setBusyWaitHooks for firing semantics.
+  void setBusyWaitHooks(void (*beginHook)(), void (*endHook)()) { _bus.setBusyWaitHooks(beginHook, endHook); }
+
   // Access to frame buffer
   uint8_t* getFrameBuffer() const { return frameBuffer; }
 

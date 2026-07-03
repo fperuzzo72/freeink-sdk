@@ -61,6 +61,17 @@ class EpdBus {
   void waitBusy(const char* tag = nullptr);
   void waitBusy(BusyPolarity p, const char* tag = nullptr);
 
+  // Optional hooks fired around long BUSY waits. A refresh takes ~0.3-2 s during
+  // which the CPU only polls the BUSY pin; these let host firmware save power in
+  // that window (e.g. reduce the CPU clock) without the SDK knowing the policy.
+  // The begin hook fires once a wait exceeds BUSY_WAIT_HOOK_THRESHOLD_MS (so
+  // short command waits never pay for it); the matching end hook fires when the
+  // wait completes. Plain function pointers; both default to disabled.
+  void setBusyWaitHooks(void (*beginHook)(), void (*endHook)()) {
+    _busyWaitBeginHook = beginHook;
+    _busyWaitEndHook = endHook;
+  }
+
   // Stream `plane` bottom-to-top (gates are physically reversed), widthBytes per
   // row, optionally bit-inverting. Replaces the per-driver mirror lambdas.
   void writeMirroredPlane(const uint8_t* plane, uint16_t height, uint16_t widthBytes, bool invert);
@@ -79,6 +90,11 @@ class EpdBus {
   BusyPolarity busyPolarity() const { return _busy; }
 
  private:
+  // Busy-wait hooks (see setBusyWaitHooks)
+  static constexpr unsigned long BUSY_WAIT_HOOK_THRESHOLD_MS = 20;
+  void (*_busyWaitBeginHook)() = nullptr;
+  void (*_busyWaitEndHook)() = nullptr;
+
   EpdPins _pins{-1, -1, -1, -1, -1, -1};
   SPISettings _spi;
   BusyPolarity _busy = BusyPolarity::ActiveHigh;

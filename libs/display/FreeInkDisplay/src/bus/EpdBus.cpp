@@ -121,10 +121,18 @@ void EpdBus::waitBusy(const char* tag) { waitBusy(_busy, tag); }
 
 void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
   const unsigned long start = millis();
+  // The begin hook fires lazily, only once the wait has proven long (see
+  // setBusyWaitHooks); hookFired guarantees the end hook is balanced with it.
+  bool hookFired = false;
+  bool x3SawLow = false;
 
   if (p == BusyPolarity::ActiveHigh) {
     while (digitalRead(_pins.busy) == HIGH) {
       delay(1);
+      if (!hookFired && _busyWaitBeginHook != nullptr && millis() - start > BUSY_WAIT_HOOK_THRESHOLD_MS) {
+        hookFired = true;
+        _busyWaitBeginHook();
+      }
       if (millis() - start > 30000) break;
     }
   } else if (p == BusyPolarity::ActiveLow) {
@@ -141,24 +149,33 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
     if (busy) {
       do {
         delay(10);
+        if (!hookFired && _busyWaitBeginHook != nullptr && millis() - start > BUSY_WAIT_HOOK_THRESHOLD_MS) {
+          hookFired = true;
+          _busyWaitBeginHook();
+        }
         if (millis() - start > 30000) break;
       } while (digitalRead(_pins.busy) == LOW);
     }
   } else {  // X3TwoPhase: wait for the LOW edge, then wait back to HIGH
-    bool sawLow = false;
     while (digitalRead(_pins.busy) == HIGH) {
       delay(1);
       if (millis() - start > 1000) break;
     }
     if (digitalRead(_pins.busy) == LOW) {
-      sawLow = true;
+      x3SawLow = true;
       while (digitalRead(_pins.busy) == LOW) {
         delay(1);
+        if (!hookFired && _busyWaitBeginHook != nullptr && millis() - start > BUSY_WAIT_HOOK_THRESHOLD_MS) {
+          hookFired = true;
+          _busyWaitBeginHook();
+        }
         if (millis() - start > 30000) break;
       }
     }
-    if (!sawLow) return;
   }
+
+  if (hookFired && _busyWaitEndHook != nullptr) _busyWaitEndHook();
+  if (p == BusyPolarity::X3TwoPhase && !x3SawLow) return;
 
   if (tag && Serial) {
     Serial.printf("[%lu]   Wait complete: %s (%lu ms)\n", millis(), tag, millis() - start);
