@@ -120,6 +120,13 @@ class FreeInkDisplay {
   // See EpdBus::setBusyWaitHooks for firing semantics.
   void setBusyWaitHooks(void (*beginHook)(), void (*endHook)()) { _bus.setBusyWaitHooks(beginHook, endHook); }
 
+  // Optional slice hook replacing the BUSY poll delay once a wait has proven
+  // long, so host firmware can sleep through the refresh instead of polling.
+  // See EpdBus::setBusyWaitSliceHook for the contract.
+  void setBusyWaitSliceHook(bool (*sliceHook)(int8_t busyPin, uint8_t busyLevel)) {
+    _bus.setBusyWaitSliceHook(sliceHook);
+  }
+
   // Access to frame buffer
   uint8_t* getFrameBuffer() const { return frameBuffer; }
 
