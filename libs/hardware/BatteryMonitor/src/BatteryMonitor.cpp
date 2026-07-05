@@ -20,6 +20,7 @@
 // Addresses/pins come from BoardConfig::ACTIVE.batteryGauge.
 namespace {
 constexpr uint8_t BQ27220_VOLTAGE = 0x08;          // battery voltage, mV (u16 LE)
+constexpr uint8_t BQ27220_CURRENT = 0x0C;          // average current, signed mA (i16 LE)
 constexpr uint8_t BQ27220_STATE_OF_CHARGE = 0x2C;  // SoC, percent (u16 LE)
 constexpr uint8_t BQ25896_REG_STATUS = 0x0B;       // CHRG_STAT in bits [4:3]
 
@@ -64,6 +65,36 @@ bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
   if (w.requestFrom(addr, static_cast<uint8_t>(1), static_cast<uint8_t>(true)) < 1) return false;
   out = w.read();
   return true;
+}
+
+// Charging state for an I2C-gauge board, from the active board's gauge config.
+// Two sources, in order of preference:
+//   1. A dedicated charger IC (BQ25896): CHRG_STAT in REG0B[4:3] — 01 pre-charge
+//      or 10 fast-charge means charging. Used by LilyGo T5 S3.
+//   2. Gauge-native fallback (BQ27220 Current(), signed mA): current flowing INTO
+//      the battery (> 0) means charging. Lets boards with a gauge but NO charger
+//      IC — e.g. Xteink X3 — still report charge status. Current() is used rather
+//      than the BatteryStatus DSG bit because DSG also clears during rest, so it
+//      can't tell "charging" from "idle"; the current sign can.
+// `known` is set false only when neither source responds (transient I2C failure or
+// a board with neither gaugeAddr nor chargerAddr).
+bool readGaugeCharging(bool& known) {
+  const auto& g = BoardConfig::ACTIVE.batteryGauge;
+  if (g.chargerAddr != 0) {
+    uint8_t status = 0;
+    if (readReg8(g.chargerAddr, BQ25896_REG_STATUS, status)) {
+      known = true;
+      const uint8_t chrg = (status >> 3) & 0x03;
+      return chrg == 0x01 || chrg == 0x02;
+    }
+  }
+  uint16_t raw = 0;
+  if (readReg16(g.gaugeAddr, BQ27220_CURRENT, raw)) {
+    known = true;
+    return static_cast<int16_t>(raw) > 0;
+  }
+  known = false;
+  return false;
 }
 }  // namespace
 #endif  // FREEINK_BATTERY_I2C_GAUGE
@@ -165,15 +196,12 @@ BatteryMonitor::Status BatteryMonitor::readStatus() const {
       status.millivoltsKnown = true;
       status.millivolts = mv;
     }
-    const uint8_t chargerAddr = BoardConfig::ACTIVE.batteryGauge.chargerAddr;
-    if (chargerAddr != 0) {
-      uint8_t charger = 0;
-      if (readReg8(chargerAddr, BQ25896_REG_STATUS, charger)) {
-        const uint8_t chrg = (charger >> 3) & 0x03;
-        status.chargingKnown = true;
-        status.charging = chrg == 0x01 || chrg == 0x02;
-      }
-    }
+    // Charging: from a dedicated charger IC when present, else the gauge's own
+    // Current() sign — so gauge-only boards (X3) report it too.
+    bool chargingKnown = false;
+    const bool charging = readGaugeCharging(chargingKnown);
+    status.chargingKnown = chargingKnown;
+    status.charging = charging;
     return status;
   }
 #endif
@@ -233,14 +261,13 @@ double BatteryMonitor::readVolts() const {
 
 bool BatteryMonitor::isCharging() const {
 #if FREEINK_BATTERY_I2C_GAUGE
-  // Gauge boards with a charger IC: BQ25896 REG0B CHRG_STAT[4:3] = 01 pre-charge,
-  // 10 fast charge. chargerAddr 0 (e.g. X3 has no charger IC) -> not reported.
+  // Gauge boards: prefer a charger IC's status (BQ25896), else fall back to the
+  // gauge's own Current() sign, so a board with a gauge but no charger IC (e.g.
+  // X3) still reports charging. Unknown/failed reads report false.
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
-    const uint8_t chargerAddr = BoardConfig::ACTIVE.batteryGauge.chargerAddr;
-    uint8_t status = 0;
-    if (!readReg8(chargerAddr, BQ25896_REG_STATUS, status)) return false;
-    const uint8_t chrg = (status >> 3) & 0x03;
-    return chrg == 0x01 || chrg == 0x02;
+    bool known = false;
+    const bool charging = readGaugeCharging(known);
+    return known && charging;
   }
 #endif
   if (hasM5Pm1Backend()) {
