@@ -89,6 +89,8 @@ static const Ssd1677Config& ssd1677StickyConfig() {
       0x01,  // borderWaveformFull: vendor FULL/partial-clear border
       0x80,  // borderWaveformFast: vendor PARTIAL/DU border (stops the dark edge ring)
       0x00,  // borderWaveformHalf: use borderWaveformFull
+      0x80,  // borderWaveformGray: hold at VCOM; follow-LUT (0x01) drives the border
+             // black under the grayscale LUT (black frame on every AA/cover refresh)
   };
   return cfg;
 }
@@ -478,6 +480,15 @@ void Ssd1677Driver::setCustomLut(EpdBus& bus, bool enabled, const unsigned char*
 
   bus.cmd(CMD_WRITE_VCOM);  // VCOM
   bus.data(pgm_read_byte(&data[109]));
+
+  // The border register keeps its last value across refreshes; a follow-LUT value
+  // (Sticky's 0x01) would now track the loaded grayscale LUT and drive the border
+  // black. Park it while the custom LUT is active; the next normal refresh restores
+  // the per-mode border via the seqOverride path.
+  if (_cfg.borderWaveformGray != 0) {
+    bus.cmd(CMD_BORDER_WAVEFORM);
+    bus.data(_cfg.borderWaveformGray);
+  }
 
   _customLutActive = true;
 }

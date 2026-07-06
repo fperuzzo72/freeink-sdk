@@ -41,6 +41,11 @@ struct Ssd1677Config {
   uint8_t borderWaveformFull = 0;  // FULL refreshes
   uint8_t borderWaveformFast = 0;  // FAST (UI / page-turn) refreshes
   uint8_t borderWaveformHalf = 0;  // HALF refreshes; 0 falls back to borderWaveformFull
+  // Border waveform while a custom (grayscale/revert) LUT is loaded. A follow-LUT
+  // border value (0x0X) makes the border track a row of the loaded LUT; under the
+  // grayscale LUT that drives the border black on every AA refresh. 0x80 (VCOM)
+  // holds it undriven at a defined potential. 0 = leave the register untouched.
+  uint8_t borderWaveformGray = 0;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
