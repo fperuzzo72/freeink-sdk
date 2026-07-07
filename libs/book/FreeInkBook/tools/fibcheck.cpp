@@ -157,7 +157,7 @@ int main(int argc, char** argv) {
     Arena layoutArena(scratchBuf, sizeof(scratchBuf));
     StatsSink sink;
     uint32_t pages = 0;
-    const BookStatus ls = ChapterLayout::layout(source, *entry, params, layoutArena, sink, &pages);
+    const BookStatus ls = ChapterLayout::layout(source, book.zip(), *entry, entry->name, params, layoutArena, sink, &pages);
     if (layoutArena.highWater() > maxHighWater) maxHighWater = layoutArena.highWater();
     totalPages += pages;
     if (ls == BookStatus::Ok) {

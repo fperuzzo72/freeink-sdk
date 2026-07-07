@@ -57,9 +57,21 @@ struct PageTextRun {
   uint8_t styleFlags;  // StyleFlags bits
 };
 
+// One placed image. `href` is the container path of the image entry,
+// arena-owned with the same lifetime as the page's text.
+struct PageImage {
+  const char* href;
+  int16_t x;
+  int16_t y;        // top edge
+  uint16_t width;   // placement size (aspect-preserving, never upscaled)
+  uint16_t height;
+};
+
 struct Page {
   const PageTextRun* runs;
   uint16_t runCount;
+  const PageImage* images;
+  uint16_t imageCount;
   uint32_t pageIndex;  // 0-based within the chapter
   // Chapter character offset (codepoints of extracted text) of this page's
   // first text run. Whitespace collapse and entity resolution are layout-
@@ -81,12 +93,13 @@ class PageSink {
 class ChapterLayout {
  public:
   // Streams `entry` (an XHTML content document) through layout, delivering
-  // pages to `sink`. All working memory comes from `scratch` and is released
-  // before returning. `pageCountOut` (optional) receives the number of pages
-  // delivered.
-  static BookStatus layout(BookSource& source, const ZipEntry& entry,
-                           const LayoutParams& params, Arena& scratch, PageSink& sink,
-                           uint32_t* pageCountOut = nullptr);
+  // pages to `sink`. `zip` and `chapterHref` (the entry's own container
+  // path) let img elements resolve and probe their targets. All working
+  // memory comes from `scratch` and is released before returning.
+  // `pageCountOut` (optional) receives the number of pages delivered.
+  static BookStatus layout(BookSource& source, const ZipCatalog& zip, const ZipEntry& entry,
+                           const char* chapterHref, const LayoutParams& params, Arena& scratch,
+                           PageSink& sink, uint32_t* pageCountOut = nullptr);
 };
 
 }  // namespace book

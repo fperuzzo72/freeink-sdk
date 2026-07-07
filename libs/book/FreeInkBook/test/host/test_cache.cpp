@@ -186,7 +186,7 @@ uint32_t buildCache(HostFileSource& source, Book& book, HostCacheStorage& cache,
   const ZipEntry* entry = book.zip().find(book.spineItem(1)->href);
   CHECK(entry != nullptr);
   uint32_t pages = 0;
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, *entry, params, scratch, writer,
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, book.zip(), *entry, entry->name, params, scratch, writer,
                                                   &pages)),
            static_cast<int>(BookStatus::Ok));
   CHECK(writer.finish());
@@ -226,7 +226,7 @@ void testRoundtripAndStaleness(HostCacheStorage& cache) {
   {
     const size_t marked = scratch.mark();
     const ZipEntry* entry = book.zip().find(book.spineItem(1)->href);
-    CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, *entry, params, scratch, direct,
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, book.zip(), *entry, entry->name, params, scratch, direct,
                                                     nullptr)),
              static_cast<int>(BookStatus::Ok));
     scratch.release(marked);

@@ -13,12 +13,18 @@
     <item id="ch2" href="./text/../text/ch2.xhtml" media-type="application/xhtml+xml"/>
     <item id="ch3" href="text/ch3.xhtml" media-type="application/xhtml+xml"/>
     <item id="ch4" href="text/ch4.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch5" href="text/ch5.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch6" href="text/ch6.xhtml" media-type="application/xhtml+xml"/>
     <item id="css" href="styles.css" media-type="text/css"/>
+    <item id="img1" href="images/pattern.png" media-type="image/png"/>
+    <item id="img2" href="images/pattern.jpg" media-type="image/jpeg"/>
   </manifest>
   <spine toc="ncx">
     <itemref idref="ch1"/>
     <itemref idref="ch2"/>
     <itemref idref="ch3"/>
     <itemref idref="ch4"/>
+    <itemref idref="ch5"/>
+    <itemref idref="ch6"/>
   </spine>
 </package>

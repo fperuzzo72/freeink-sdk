@@ -6,6 +6,7 @@
 #include <FreeInkBook.h>
 #include <cache/PageCache.h>
 #include <layout/ChapterLayout.h>
+#include <render/ImageRenderer.h>
 
 #include <cstdio>
 #include <cstring>
@@ -177,7 +178,7 @@ void testSmallChapter() {
   const ZipEntry* entry = opened.book.zip().find(opened.book.spineItem(0)->href);
   CHECK(entry != nullptr);
   uint32_t pages = 0;
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                   opened.scratch, sink, &pages)),
            static_cast<int>(BookStatus::Ok));
 
@@ -206,7 +207,7 @@ void testStylesEntitiesAndBreaks() {
 
   const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch3.xhtml");
   CHECK(entry != nullptr);
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                   opened.scratch, sink, nullptr)),
            static_cast<int>(BookStatus::Ok));
 
@@ -254,7 +255,7 @@ void testMemoryIndependence() {
     Arena layoutArena{scratchBuf, sizeof(scratchBuf)};  // fresh, isolated measurement
     CollectSink sink(params, font);
     uint32_t pages = 0;
-    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                     layoutArena, sink, &pages)),
              static_cast<int>(BookStatus::Ok));
     highWater[round] = layoutArena.highWater();
@@ -283,7 +284,7 @@ void testEarlyStop() {
   const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
   CHECK(entry != nullptr);
   uint32_t pages = 0;
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                   opened.scratch, sink, &pages)),
            static_cast<int>(BookStatus::Ok));
   CHECK_EQ(pages, 1u);  // sink declined more — layout stopped promptly
@@ -364,7 +365,7 @@ void testStyledChapter() {
   CollectSink sink(params, font);
   const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch4.xhtml");
   CHECK(entry != nullptr);
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                   opened.scratch, sink, nullptr)),
            static_cast<int>(BookStatus::Ok));
   CHECK_EQ(sink.geometryViolations, 0);
@@ -397,7 +398,7 @@ void testStyledChapter() {
     char text[64 * 1024];
     uint32_t textUsed = 0;
   } rs;
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                   opened.scratch, rs, nullptr)),
            static_cast<int>(BookStatus::Ok));
 
@@ -475,7 +476,7 @@ void testHyphenation(const Hyphenator& hyphenator) {
 
   CollectSink sink(params, font);
   const ZipEntry* entry = opened.book.zip().find(opened.book.spineItem(0)->href);
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                   opened.scratch, sink, nullptr)),
            static_cast<int>(BookStatus::Ok));
   CHECK_EQ(sink.geometryViolations, 0);
@@ -507,10 +508,10 @@ void testKerningAffectsMeasurement() {
   CollectSink plainSink(plain, plainFont);
   uint32_t kernedPages = 0;
   uint32_t plainPages = 0;
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, kerned,
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, kerned,
                                                   opened.scratch, kernedSink, &kernedPages)),
            static_cast<int>(BookStatus::Ok));
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, plain,
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, plain,
                                                   opened.scratch, plainSink, &plainPages)),
            static_cast<int>(BookStatus::Ok));
   CHECK_EQ(kernedSink.geometryViolations, 0);
@@ -562,7 +563,7 @@ void testWidowOrphan() {
   } ls;
 
   const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                   opened.scratch, ls, nullptr)),
            static_cast<int>(BookStatus::Ok));
   CHECK(ls.count > 100);
@@ -603,6 +604,252 @@ void testWidowOrphan() {
   CHECK_EQ(widowViolations, 0);
 }
 
+// --- Phase 5: CJK ---------------------------------------------------------------
+
+// Fullwidth CJK advances, halfwidth Latin — the shape real CJK fonts have.
+class CjkFakeFont : public FakeFont {
+ public:
+  int16_t advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) override {
+    if (codepoint >= 0x2E80) return static_cast<int16_t>(sizePx);
+    return FakeFont::advance(codepoint, sizePx, styleFlags);
+  }
+};
+
+void testCjk() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  CjkFakeFont font;
+  LayoutParams params = stickyParams(font);
+  // "-strict" selects strict kinsoku (UAX #14 CJ→NS): small kana and the
+  // prolonged sound mark may not start lines either. Plain "ja" gives
+  // normal kinsoku, where only closing punctuation is prohibited.
+  params.language = "ja-strict";
+  params.defaultAlign = TextAlign::Justify;
+
+  struct LineSink : PageSink {
+    bool onPage(const Page& page) override {
+      int16_t lastY = -1;
+      for (uint16_t r = 0; r < page.runCount; ++r) {
+        const PageTextRun& run = page.runs[r];
+        if (run.baselineY != lastY) {
+          if (count < kMax) {
+            firstCp[count] = decodeFirst(run.text);
+            rightEdge[count] = 0;
+            sizes[count] = run.sizePx;
+            ++count;
+          }
+          lastY = run.baselineY;
+        }
+        if (count > 0) {
+          int32_t width = 0;
+          uint32_t i = 0;
+          while (i < run.len) {
+            const uint8_t b = static_cast<uint8_t>(run.text[i]);
+            uint32_t cp = b;
+            uint32_t extra = b >= 0xF0 ? 3 : b >= 0xE0 ? 2 : b >= 0xC0 ? 1 : 0;
+            if (extra == 1) cp = b & 0x1F;
+            if (extra == 2) cp = b & 0x0F;
+            if (extra == 3) cp = b & 0x07;
+            for (uint32_t k = 0; k < extra; ++k) {
+              cp = (cp << 6) | (static_cast<uint8_t>(run.text[i + 1 + k]) & 0x3F);
+            }
+            i += 1 + extra;
+            width += cp >= 0x2E80 ? run.sizePx : run.sizePx / 2;
+          }
+          const int32_t edge = run.x + width;
+          if (edge > rightEdge[count - 1]) rightEdge[count - 1] = edge;
+        }
+      }
+      return true;
+    }
+    static uint32_t decodeFirst(const char* text) {
+      const uint8_t b = static_cast<uint8_t>(text[0]);
+      uint32_t cp = b;
+      uint32_t extra = b >= 0xF0 ? 3 : b >= 0xE0 ? 2 : b >= 0xC0 ? 1 : 0;
+      if (extra == 1) cp = b & 0x1F;
+      if (extra == 2) cp = b & 0x0F;
+      if (extra == 3) cp = b & 0x07;
+      for (uint32_t k = 0; k < extra; ++k) {
+        cp = (cp << 6) | (static_cast<uint8_t>(text[1 + k]) & 0x3F);
+      }
+      return cp;
+    }
+    enum : uint32_t { kMax = 512 };
+    uint32_t firstCp[kMax];
+    int32_t rightEdge[kMax];
+    uint16_t sizes[kMax];
+    uint32_t count = 0;
+  } ls;
+
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch6.xhtml");
+  CHECK(entry != nullptr);
+  uint32_t pages = 0;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                  entry->name, params, opened.scratch, ls,
+                                                  &pages)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(pages >= 1);
+  CHECK(ls.count > 6);  // three paragraphs of fullwidth text wrap plenty
+
+  // Kinsoku: no line may start with a closing/prohibited character. These
+  // arrive via libunibreak's UAX #14 classes (CL/NS) — this asserts the
+  // engine actually honors them end to end.
+  static const uint32_t kProhibited[] = {0x3002, 0x3001, 0x300D, 0x300F, 0xFF01, 0xFF1F,
+                                         0x30FC, 0x3063, 0x3083, 0x3085, 0x3087};
+  int kinsokuViolations = 0;
+  for (uint32_t l = 0; l < ls.count; ++l) {
+    for (uint32_t p : kProhibited) {
+      if (ls.firstCp[l] == p) { ++kinsokuViolations; std::printf("  kinsoku violation: line %u starts with U+%04X\n", l, p); }
+    }
+  }
+  CHECK_EQ(kinsokuViolations, 0);
+
+  // Inter-character justification: body lines (16 px) that wrapped must end
+  // exactly at the right margin even though CJK text has no spaces.
+  const int32_t rightEdge = params.pageWidth - params.marginRight;
+  int flushLines = 0;
+  for (uint32_t l = 0; l + 1 < ls.count; ++l) {
+    if (ls.sizes[l] == 16 && ls.rightEdge[l] == rightEdge) ++flushLines;
+  }
+  CHECK(flushLines >= 3);
+}
+
+// --- Phase 4b: images ---------------------------------------------------------
+
+struct ImageCollectSink : PageSink {
+  bool onPage(const Page& page) override {
+    for (uint16_t m = 0; m < page.imageCount && count < 8; ++m) {
+      images[count] = page.images[m];
+      std::snprintf(hrefs[count], sizeof(hrefs[count]), "%s", page.images[m].href);
+      images[count].href = hrefs[count];
+      pageOf[count] = page.pageIndex;
+      ++count;
+    }
+    for (uint16_t r = 0; r < page.runCount; ++r) {
+      if (textLen + page.runs[r].len + 1 < sizeof(text)) {
+        std::memcpy(text + textLen, page.runs[r].text, page.runs[r].len);
+        textLen += page.runs[r].len;
+        text[textLen] = '\0';
+      }
+    }
+    return true;
+  }
+  PageImage images[8];
+  char hrefs[8][256];
+  uint32_t pageOf[8];
+  uint32_t count = 0;
+  char text[16 * 1024];
+  uint32_t textLen = 0;
+};
+
+struct GrayCapture {
+  uint8_t pixels[800 * 480];
+  uint16_t width = 0;
+  uint16_t rows = 0;
+  static bool onRow(void* user, uint16_t y, const uint8_t* gray, uint16_t width) {
+    GrayCapture* self = static_cast<GrayCapture*>(user);
+    self->width = width;
+    if (y + 1u > self->rows) self->rows = y + 1u;
+    if (static_cast<uint32_t>(y) * width + width <= sizeof(self->pixels)) {
+      std::memcpy(self->pixels + static_cast<uint32_t>(y) * width, gray, width);
+    }
+    return true;
+  }
+};
+
+void testImages() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  ImageCollectSink sink;
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch5.xhtml");
+  CHECK(entry != nullptr);
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                  entry->name, params, opened.scratch, sink,
+                                                  nullptr)),
+           static_cast<int>(BookStatus::Ok));
+
+  // Two placed images (PNG + JPEG); the GIF was skipped without failing.
+  CHECK_EQ(sink.count, 2u);
+  CHECK(std::strstr(sink.text, "Text before the picture.") != nullptr);
+  CHECK(std::strstr(sink.text, "Text at the end.") != nullptr);
+
+  // 64x48 fits without scaling; centered in the 752 px content box.
+  const PageImage& png = sink.images[0];
+  CHECK(std::strcmp(png.href, "OEBPS/images/pattern.png") == 0);
+  CHECK_EQ(png.width, 64);
+  CHECK_EQ(png.height, 48);
+  CHECK_EQ(png.x, 24 + (752 - 64) / 2);
+
+  // Render the PNG at its natural size and verify known pixels: left half is
+  // a gradient (0 at x=0), right half black top / white bottom.
+  {
+    const size_t marked = opened.scratch.mark();
+    static GrayCapture cap;
+    CHECK_EQ(static_cast<int>(ImageRenderer::render(opened.source, opened.book.zip(), png,
+                                                    opened.scratch, GrayCapture::onRow, &cap)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK_EQ(cap.width, 64);
+    CHECK_EQ(cap.rows, 48);
+    CHECK_EQ(cap.pixels[0], 0);                       // gradient start
+    CHECK(cap.pixels[31] > 240);                      // gradient end
+    CHECK(cap.pixels[10 * 64 + 48] < 16);             // right half, top: black
+    CHECK(cap.pixels[40 * 64 + 48] > 240);            // right half, bottom: white
+    opened.scratch.release(marked);
+  }
+
+  // Render scaled to half size — dimensions and pattern still hold.
+  {
+    PageImage half = png;
+    half.width = 32;
+    half.height = 24;
+    const size_t marked = opened.scratch.mark();
+    static GrayCapture cap;
+    cap = GrayCapture{};
+    CHECK_EQ(static_cast<int>(ImageRenderer::render(opened.source, opened.book.zip(), half,
+                                                    opened.scratch, GrayCapture::onRow, &cap)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK_EQ(cap.width, 32);
+    CHECK_EQ(cap.rows, 24);
+    CHECK(cap.pixels[5 * 32 + 24] < 16);              // top right: black
+    CHECK(cap.pixels[20 * 32 + 24] > 240);            // bottom right: white
+    opened.scratch.release(marked);
+  }
+
+  // JPEG render (sips-converted twin of the pattern): lossy, so tolerances.
+  const PageImage& jpg = sink.images[1];
+  if (std::strstr(jpg.href, ".jpg") != nullptr && jpg.width == 64) {
+    const size_t marked = opened.scratch.mark();
+    static GrayCapture cap;
+    cap = GrayCapture{};
+    const BookStatus st = ImageRenderer::render(opened.source, opened.book.zip(), jpg,
+                                                opened.scratch, GrayCapture::onRow, &cap);
+    if (st == BookStatus::Ok) {  // skipped when no JPEG converter existed
+      CHECK_EQ(cap.rows, 48);
+      CHECK(cap.pixels[10 * 64 + 48] < 60);
+      CHECK(cap.pixels[40 * 64 + 48] > 200);
+    }
+    opened.scratch.release(marked);
+  }
+
+  // Dither helper: solid black and solid white rows.
+  {
+    uint8_t gray[16];
+    uint8_t bits[2];
+    std::memset(gray, 0, sizeof(gray));
+    ditherRowOrdered(gray, 16, 0, bits);
+    CHECK_EQ(bits[0], 0xFF);
+    CHECK_EQ(bits[1], 0xFF);
+    std::memset(gray, 255, sizeof(gray));
+    ditherRowOrdered(gray, 16, 0, bits);
+    CHECK_EQ(bits[0], 0x00);
+    CHECK_EQ(bits[1], 0x00);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -639,6 +886,8 @@ int main(int argc, char** argv) {
   testHyphenation(hyphenator);
   testKerningAffectsMeasurement();
   testWidowOrphan();
+  testImages();
+  testCjk();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

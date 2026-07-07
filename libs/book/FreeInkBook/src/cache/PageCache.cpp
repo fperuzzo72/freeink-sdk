@@ -10,7 +10,7 @@ namespace book {
 
 namespace {
 
-constexpr uint16_t kFormatVersion = 1;
+constexpr uint16_t kFormatVersion = 2;  // v2: image records per page
 constexpr uint32_t kHeaderSize = 12;
 constexpr uint32_t kFooterSize = 12;
 constexpr uint32_t kMaxBlobSize = 128 * 1024;  // sanity bound on one page
@@ -125,7 +125,7 @@ bool PageCacheWriter::onPage(const Page& page) {
   uint8_t head[8];
   putU32(head, page.charStart);
   putU16(head + 4, page.runCount);
-  putU16(head + 6, 0);
+  putU16(head + 6, page.imageCount);
   if (!writeRaw(head, sizeof(head))) return false;
 
   for (uint16_t r = 0; r < page.runCount; ++r) {
@@ -139,6 +139,18 @@ bool PageCacheWriter::onPage(const Page& page) {
     putU16(rec + 8, run.len);
     if (!writeRaw(rec, sizeof(rec))) return false;
     if (!writeRaw(run.text, run.len)) return false;
+  }
+  for (uint16_t m = 0; m < page.imageCount; ++m) {
+    const PageImage& img = page.images[m];
+    const uint16_t hrefLen = static_cast<uint16_t>(strlen(img.href));
+    uint8_t rec[10];
+    putU16(rec, static_cast<uint16_t>(img.x));
+    putU16(rec + 2, static_cast<uint16_t>(img.y));
+    putU16(rec + 4, img.width);
+    putU16(rec + 6, img.height);
+    putU16(rec + 8, hrefLen);
+    if (!writeRaw(rec, sizeof(rec))) return false;
+    if (!writeRaw(img.href, hrefLen)) return false;
   }
   return true;
 }
@@ -260,8 +272,11 @@ BookStatus PageCacheReader::readPage(uint32_t pageIndex, Arena& scratch, Page* o
 
   const uint32_t charStart = getU32(blob);
   const uint16_t runCount = getU16(blob + 4);
+  const uint16_t imageCount = getU16(blob + 6);
   PageTextRun* runs = scratch.allocArray<PageTextRun>(runCount);
   if (runs == nullptr && runCount != 0) return BookStatus::OutOfMemory;
+  PageImage* images = scratch.allocArray<PageImage>(imageCount);
+  if (images == nullptr && imageCount != 0) return BookStatus::OutOfMemory;
 
   uint32_t pos = 8;
   for (uint16_t r = 0; r < runCount; ++r) {
@@ -277,9 +292,30 @@ BookStatus PageCacheReader::readPage(uint32_t pageIndex, Arena& scratch, Page* o
     run.text = reinterpret_cast<const char*>(blob + pos);  // in-place, no copy
     pos += run.len;
   }
+  for (uint16_t m = 0; m < imageCount; ++m) {
+    if (pos + 10 > blobLen) return BookStatus::Stale;
+    PageImage& img = images[m];
+    img.x = static_cast<int16_t>(getU16(blob + pos));
+    img.y = static_cast<int16_t>(getU16(blob + pos + 2));
+    img.width = getU16(blob + pos + 4);
+    img.height = getU16(blob + pos + 6);
+    const uint16_t hrefLen = getU16(blob + pos + 8);
+    pos += 10;
+    if (pos + hrefLen + 1 > blobLen + 1 || pos + hrefLen > blobLen) return BookStatus::Stale;
+    // NUL-terminate in place: hrefs are stored back to back, so borrow one
+    // byte of the following record via a scratch copy instead.
+    char* href = static_cast<char*>(scratch.alloc(hrefLen + 1, 1));
+    if (href == nullptr) return BookStatus::OutOfMemory;
+    memcpy(href, blob + pos, hrefLen);
+    href[hrefLen] = '\0';
+    img.href = href;
+    pos += hrefLen;
+  }
 
   out->runs = runs;
   out->runCount = runCount;
+  out->images = images;
+  out->imageCount = imageCount;
   out->pageIndex = pageIndex;
   out->charStart = charStart;
   return BookStatus::Ok;
