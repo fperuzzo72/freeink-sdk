@@ -34,14 +34,20 @@ class XmlHandler {
     (void)text;
     (void)len;
   }
+
+  // A handler may set this to end the parse early (e.g. the page sink has
+  // seen enough); the parse then returns Ok. Checked between chunks.
+  bool stopParse = false;
 };
 
 class XmlSax {
  public:
   // Streams one ZIP entry through the handler. Inflate and parse buffers are
-  // taken from `scratch` and released before returning.
+  // taken from `scratch` and released before returning. With
+  // `filterHtmlEntities` the bytes pass through EntityFilter first — use for
+  // content documents (chapters); package documents parse strictly.
   static BookStatus parseEntry(BookSource& source, const ZipEntry& entry, Arena& scratch,
-                               XmlHandler& handler);
+                               XmlHandler& handler, bool filterHtmlEntities = false);
 };
 
 }  // namespace book

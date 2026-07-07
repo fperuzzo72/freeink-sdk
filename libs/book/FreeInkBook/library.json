@@ -8,7 +8,7 @@
   "platforms": "*",
   "frameworks": "*",
   "build": {
-    "flags": ["-I third_party/expat", "-I third_party/miniz"]
+    "flags": ["-I third_party/expat", "-I third_party/miniz", "-I third_party/libunibreak"]
   },
   "export": {"exclude": ["test"]}
 }

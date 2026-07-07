@@ -25,19 +25,22 @@ make_epub "$BUILD_DIR/fixtures/ncxonly" ncxonly.epub -9
 head -c 4096 /dev/zero > "$BUILD_DIR/fixtures/garbage.bin"
 
 # --- build ------------------------------------------------------------------
-CC_FLAGS="-O1 -std=c99 -I../../include -I../../third_party/expat -I../../third_party/miniz"
-for src in miniz_impl expat_xmlparse expat_xmlrole expat_xmltok; do
+INCLUDES="-I../../include -I../../third_party/expat -I../../third_party/miniz -I../../third_party/libunibreak"
+CC_FLAGS="-O1 -std=c99 $INCLUDES"
+for src in miniz_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl; do
   cc $CC_FLAGS -c "../../src/vendor/$src.c" -o "$BUILD_DIR/obj/$src.o"
 done
 
-c++ -std=c++17 -Wall -Wextra -Werror \
-  -I../../include -I../../third_party/expat -I../../third_party/miniz \
-  ../../src/FreeInkBook.cpp \
-  ../../src/epub/ZipCatalog.cpp \
-  ../../src/epub/XmlSax.cpp \
-  ../../src/epub/PackageParsers.cpp \
-  test_freeinkbook.cpp \
-  "$BUILD_DIR"/obj/*.o \
+CORE_SRCS="../../src/FreeInkBook.cpp ../../src/epub/ZipCatalog.cpp ../../src/epub/XmlSax.cpp \
+  ../../src/epub/PackageParsers.cpp ../../src/text/EntityFilter.cpp ../../src/layout/ChapterLayout.cpp"
+
+c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
+  $CORE_SRCS test_freeinkbook.cpp "$BUILD_DIR"/obj/*.o \
   -o "$BUILD_DIR/test_freeinkbook"
 
+c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
+  $CORE_SRCS test_layout.cpp "$BUILD_DIR"/obj/*.o \
+  -o "$BUILD_DIR/test_layout"
+
 "$BUILD_DIR/test_freeinkbook" "$BUILD_DIR/fixtures"
+"$BUILD_DIR/test_layout" "$BUILD_DIR/fixtures"

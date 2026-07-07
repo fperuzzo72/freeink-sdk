@@ -4,6 +4,10 @@
 
 #include <expat.h>
 
+#include <new>
+
+#include "text/EntityFilter.h"
+
 namespace freeink {
 namespace book {
 
@@ -26,7 +30,7 @@ void XMLCALL characterData(void* userData, const XML_Char* text, int len) {
 }  // namespace
 
 BookStatus XmlSax::parseEntry(BookSource& source, const ZipEntry& entry, Arena& scratch,
-                              XmlHandler& handler) {
+                              XmlHandler& handler, bool filterHtmlEntities) {
   const size_t marked = scratch.mark();
 
   ZipEntryReader reader;
@@ -37,7 +41,15 @@ BookStatus XmlSax::parseEntry(BookSource& source, const ZipEntry& entry, Arena& 
   }
 
   char* buf = static_cast<char*>(scratch.alloc(kParseChunk, 1));
-  if (buf == nullptr) {
+  EntityFilter* filter = nullptr;
+  if (filterHtmlEntities) {
+    filter = static_cast<EntityFilter*>(scratch.alloc(sizeof(EntityFilter), alignof(EntityFilter)));
+    if (filter != nullptr) {
+      filter = new (filter) EntityFilter();
+      filter->reset();
+    }
+  }
+  if (buf == nullptr || (filterHtmlEntities && filter == nullptr)) {
     scratch.release(marked);
     return BookStatus::OutOfMemory;
   }
@@ -53,7 +65,8 @@ BookStatus XmlSax::parseEntry(BookSource& source, const ZipEntry& entry, Arena& 
 
   status = BookStatus::Ok;
   for (;;) {
-    const int32_t n = reader.read(buf, kParseChunk);
+    const int32_t n = filter != nullptr ? filter->read(reader, buf, kParseChunk)
+                                        : reader.read(buf, kParseChunk);
     if (n < 0) {
       status = BookStatus::IoError;
       break;
@@ -62,7 +75,7 @@ BookStatus XmlSax::parseEntry(BookSource& source, const ZipEntry& entry, Arena& 
       status = BookStatus::ParseError;
       break;
     }
-    if (n == 0) break;
+    if (n == 0 || handler.stopParse) break;
   }
 
   XML_ParserFree(parser);
