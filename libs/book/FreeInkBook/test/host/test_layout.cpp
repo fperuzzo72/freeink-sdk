@@ -4,6 +4,7 @@
 // memory invariant are all verified with no device or font files.
 
 #include <FreeInkBook.h>
+#include <cache/PageCache.h>
 #include <layout/ChapterLayout.h>
 
 #include <cstdio>
@@ -90,11 +91,14 @@ class CollectSink : public PageSink {
       if (run.x < params_.marginLeft) ++geometryViolations;
       int32_t width = 0;
       uint32_t i = 0;
+      uint32_t prevCp = 0;
       while (i < run.len) {
         uint32_t cp = static_cast<uint8_t>(run.text[i]);
         uint32_t extra = cp >= 0xF0 ? 3 : cp >= 0xE0 ? 2 : cp >= 0xC0 ? 1 : 0;
         i += 1 + extra;
         width += font_.advance(cp, run.sizePx, run.styleFlags);
+        if (prevCp != 0) width += font_.kerning(prevCp, cp, run.sizePx, run.styleFlags);
+        prevCp = cp;
       }
       if (run.x + width > params_.pageWidth - params_.marginRight) ++geometryViolations;
       if (run.baselineY > params_.pageHeight - params_.marginBottom) ++geometryViolations;
@@ -259,10 +263,11 @@ void testMemoryIndependence() {
 
   std::printf("  layout high water: small %zu B, big %zu B (%u pages)\n", highWater[0],
               highWater[1], bigPages);
-  // Ceiling anatomy: ~24 KB fixed layout buffers + 24 KB page sub-arena +
-  // ~50 KB parse/inflate state. All O(1) in chapter size.
+  // Ceiling anatomy: ~40 KB fixed layout buffers (paragraph text + breaks +
+  // line records + run table) + 24 KB page sub-arena + ~50 KB parse/inflate
+  // state. All O(1) in chapter size.
   CHECK(bigPages > 10);                             // the big chapter really paginated
-  CHECK(highWater[1] < 112 * 1024);                 // absolute ceiling
+  CHECK(highWater[1] < 144 * 1024);                 // absolute ceiling
   CHECK(highWater[1] <= highWater[0] + 16 * 1024);  // O(page), not O(chapter)
 }
 
@@ -284,19 +289,356 @@ void testEarlyStop() {
   CHECK_EQ(pages, 1u);  // sink declined more — layout stopped promptly
 }
 
+// --- Phase 4: CSS, justification, hyphenation, kerning, widow/orphan --------
+
+void testCssUnit() {
+  uint8_t buf[32 * 1024];
+  Arena arena(buf, sizeof(buf));
+  CssStylesheetBuilder builder;
+  CHECK(builder.begin(arena));
+  const char css[] =
+      "/* c */ p, h1 { text-align: justify; margin-top: 1em }\n"
+      ".big { font-size: 150% }\n"
+      "p.deep { font-weight: 700; text-indent: 2em }\n"
+      "@media print { p { text-indent: 99em } }\n"
+      "div > p { font-style: italic }\n"
+      "#id, p:first-child { font-size: 99em }\n";
+  builder.addText(css, sizeof(css) - 1);
+  const CssStylesheet sheet = builder.finish();
+  CHECK(sheet.ruleCount >= 4);
+  CHECK(sheet.contentHash != 0);
+
+  CssDecl p = cascadeFor(sheet, "p", nullptr, nullptr);
+  CHECK(p.align == TextAlign::Justify);
+  CHECK_EQ(p.marginTopPct, 100);
+  CHECK_EQ(p.sizePct, 0);  // #id and :first-child rules were skipped
+
+  CssDecl pBig = cascadeFor(sheet, "p", "big", nullptr);
+  CHECK_EQ(pBig.sizePct, 150);
+
+  CssDecl pDeep = cascadeFor(sheet, "p", "other deep", nullptr);
+  CHECK_EQ(pDeep.weightBold, 1);
+  CHECK_EQ(pDeep.textIndentPct, 200);
+
+  CssDecl h1 = cascadeFor(sheet, "h1", "big", nullptr);
+  CHECK(h1.align == TextAlign::Justify);
+  CHECK_EQ(h1.sizePct, 150);
+
+  // "div > p" matches its rightmost simple selector (p).
+  CHECK_EQ(cascadeFor(sheet, "p", nullptr, nullptr).styleItalic, 1);
+
+  const CssDecl inlineDecl = parseInlineStyle("font-weight:bold; font-size: 2em");
+  CssDecl withInline = cascadeFor(sheet, "p", "big", &inlineDecl);
+  CHECK_EQ(withInline.sizePct, 200);  // inline beats class
+  CHECK_EQ(withInline.weightBold, 1);
+}
+
+// Builds the fixture book's stylesheet the way an app would: every manifest
+// item with media-type text/css.
+CssStylesheet buildBookStylesheet(OpenedBook& opened, Arena& arena) {
+  CssStylesheetBuilder builder;
+  CHECK(builder.begin(arena));
+  for (size_t m = 0; m < opened.book.manifestCount(); ++m) {
+    const ManifestItem* item = opened.book.manifestItem(m);
+    if (std::strcmp(item->mediaType, "text/css") != 0) continue;
+    const ZipEntry* entry = opened.book.zip().find(item->href);
+    CHECK(entry != nullptr);
+    CHECK_EQ(static_cast<int>(builder.addSheet(opened.source, *entry, opened.scratch)),
+             static_cast<int>(BookStatus::Ok));
+  }
+  return builder.finish();
+}
+
+void testStyledChapter() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  static uint8_t sheetBuf[32 * 1024];
+  Arena sheetArena(sheetBuf, sizeof(sheetBuf));
+  const CssStylesheet sheet = buildBookStylesheet(opened, sheetArena);
+  CHECK(sheet.ruleCount >= 5);
+  params.stylesheet = &sheet;
+
+  CollectSink sink(params, font);
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch4.xhtml");
+  CHECK(entry != nullptr);
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+                                                  opened.scratch, sink, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(sink.geometryViolations, 0);
+
+  // display:none removed the hidden span entirely.
+  CHECK(std::strstr(sink.text, "INVISIBLE-MARKER") == nullptr);
+  CHECK(std::strstr(sink.text, "Visible before.") != nullptr);
+  CHECK(std::strstr(sink.text, "Visible after.") != nullptr);
+
+  const int16_t rightEdge = params.pageWidth - params.marginRight;
+
+  // Per-run assertions need the raw runs — re-walk them via a second layout
+  // with a recording sink.
+  struct RunSink : PageSink {
+    bool onPage(const Page& page) override {
+      for (uint16_t r = 0; r < page.runCount && count < 512; ++r) {
+        runs[count] = page.runs[r];
+        char* copy = text + textUsed;
+        std::memcpy(copy, page.runs[r].text, page.runs[r].len);
+        copy[page.runs[r].len] = '\0';
+        textUsed += page.runs[r].len + 1;
+        runText[count] = copy;
+        ++count;
+      }
+      return true;
+    }
+    PageTextRun runs[512];
+    const char* runText[512];
+    uint32_t count = 0;
+    char text[64 * 1024];
+    uint32_t textUsed = 0;
+  } rs;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+                                                  opened.scratch, rs, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+
+  auto findRun = [&](const char* prefix) -> const PageTextRun* {
+    for (uint32_t r = 0; r < rs.count; ++r) {
+      if (std::strncmp(rs.runText[r], prefix, std::strlen(prefix)) == 0) return &rs.runs[r];
+    }
+    return nullptr;
+  };
+  auto lineRightEdge = [&](const PageTextRun* first) -> int32_t {
+    // Right edge of the last run sharing first's baseline.
+    int32_t edge = 0;
+    for (uint32_t r = 0; r < rs.count; ++r) {
+      if (rs.runs[r].baselineY != first->baselineY) continue;
+      int32_t width = 0;
+      uint32_t i = 0;
+      while (i < rs.runs[r].len) {
+        const uint32_t cp = static_cast<uint8_t>(rs.runText[r][i]);
+        i += cp >= 0xF0 ? 4 : cp >= 0xE0 ? 3 : cp >= 0xC0 ? 2 : 1;
+        width += font.advance(cp, rs.runs[r].sizePx, rs.runs[r].styleFlags);
+      }
+      if (rs.runs[r].x + width > edge) edge = rs.runs[r].x + width;
+    }
+    return edge;
+  };
+
+  // h2.plain: size scaled (160% of 16 = 25) but CSS stripped the bold.
+  const PageTextRun* h2 = findRun("Styled");
+  CHECK(h2 != nullptr);
+  CHECK_EQ(h2->sizePx, 25);
+  CHECK((h2->styleFlags & StyleBold) == 0);
+
+  // p { text-indent: 1.2em } → first line starts at margin + 19 px.
+  const PageTextRun* just = findRun("JUSTIFY-MARKER");
+  CHECK(just != nullptr);
+  CHECK_EQ(just->x, params.marginLeft + 19);
+  // body { text-align: justify } → the first (non-last) line of the long
+  // paragraph ends exactly at the right margin.
+  CHECK_EQ(lineRightEdge(just), rightEdge);
+
+  // Right and center alignment.
+  const PageTextRun* right = findRun("RIGHT-MARKER");
+  CHECK(right != nullptr);
+  CHECK_EQ(lineRightEdge(right), rightEdge);
+  CHECK(right->x > params.marginLeft + 100);  // clearly shifted right
+
+  const PageTextRun* center = findRun("CENTER-MARKER");
+  CHECK(center != nullptr);
+  const int32_t centerEdge = lineRightEdge(center);
+  const int32_t leftGap = center->x - params.marginLeft;
+  const int32_t rightGap = rightEdge - centerEdge;
+  CHECK(leftGap > 0 && rightGap > 0);
+  CHECK(leftGap - rightGap >= -1 && leftGap - rightGap <= 1);
+
+  // .note span: 87% of 16 → 13 px, italic — a second size on the page.
+  const PageTextRun* note = findRun("NOTE-MARKER");
+  CHECK(note != nullptr);
+  CHECK_EQ(note->sizePx, 13);
+  CHECK((note->styleFlags & StyleItalic) != 0);
+
+  // Inline style attribute.
+  const PageTextRun* inlineBold = findRun("INLINE-BOLD-MARKER");
+  CHECK(inlineBold != nullptr);
+  CHECK((inlineBold->styleFlags & StyleBold) != 0);
+}
+
+void testHyphenation(const Hyphenator& hyphenator) {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  params.pageWidth = 240;  // narrow column forces breaks inside words
+  params.hyphenator = &hyphenator;
+
+  CollectSink sink(params, font);
+  const ZipEntry* entry = opened.book.zip().find(opened.book.spineItem(0)->href);
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+                                                  opened.scratch, sink, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(sink.geometryViolations, 0);
+  // The narrow column hyphenated something ("par-ticular", "wa-tery", ...).
+  CHECK(std::strstr(sink.text, "- ") != nullptr);
+
+  // Same layout without the hyphenator must produce different (worse) fill —
+  // and a different generation hash.
+  LayoutParams plain = params;
+  plain.hyphenator = nullptr;
+  CHECK(layoutGenerationHash(params, 1) != layoutGenerationHash(plain, 1));
+}
+
+void testKerningAffectsMeasurement() {
+  class KerningFont : public FakeFont {
+   public:
+    int16_t kerning(uint32_t, uint32_t, uint16_t, uint8_t) override { return -1; }
+  };
+
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+  KerningFont kernFont;
+  FakeFont plainFont;
+  LayoutParams kerned = stickyParams(kernFont);
+  LayoutParams plain = stickyParams(plainFont);
+
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+  CollectSink kernedSink(kerned, kernFont);
+  CollectSink plainSink(plain, plainFont);
+  uint32_t kernedPages = 0;
+  uint32_t plainPages = 0;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, kerned,
+                                                  opened.scratch, kernedSink, &kernedPages)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, plain,
+                                                  opened.scratch, plainSink, &plainPages)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(kernedSink.geometryViolations, 0);
+  // Tighter kerned text packs more per line, so fewer or equal pages.
+  CHECK(kernedPages <= plainPages);
+  CHECK(kernedSink.textLen >= plainSink.textLen - 8);  // same content either way
+}
+
+// Widow/orphan control, observed through first-line indents: with
+// p { text-indent: 1.5em } every paragraph-opening line starts at
+// margin + 24 while continuation lines start at the margin. A paragraph
+// split may leave neither a single opening line at a page bottom (orphan)
+// nor a single continuation line at a page top (widow).
+void testWidowOrphan() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  static uint8_t sheetBuf[24 * 1024];
+  Arena sheetArena(sheetBuf, sizeof(sheetBuf));
+  CssStylesheetBuilder builder;
+  CHECK(builder.begin(sheetArena));
+  const char css[] = "p { text-indent: 1.5em; margin-bottom: 0.2em }";
+  builder.addText(css, sizeof(css) - 1);
+  static CssStylesheet sheet;
+  sheet = builder.finish();
+  params.stylesheet = &sheet;
+
+  struct LineSink : PageSink {
+    struct Line {
+      uint32_t page;
+      int16_t x;
+      uint16_t sizePx;
+    };
+    bool onPage(const Page& page) override {
+      int16_t lastBaseline = -1;
+      for (uint16_t r = 0; r < page.runCount; ++r) {
+        if (page.runs[r].baselineY != lastBaseline && count < kMax) {
+          lines[count++] = {page.pageIndex, page.runs[r].x, page.runs[r].sizePx};
+          lastBaseline = page.runs[r].baselineY;
+        }
+      }
+      return true;
+    }
+    enum : uint32_t { kMax = 4096 };
+    Line lines[kMax];
+    uint32_t count = 0;
+  } ls;
+
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, *entry, params,
+                                                  opened.scratch, ls, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(ls.count > 100);
+
+  // Walk body lines (sizePx == 16; the h1 is larger), grouping paragraphs by
+  // indented first lines.
+  const int16_t indentX = 24 + 24;  // margin + 1.5em
+  int orphanViolations = 0;
+  int widowViolations = 0;
+  uint32_t paraStart = 0;
+  bool inPara = false;
+  for (uint32_t i = 0; i < ls.count; ++i) {
+    if (ls.lines[i].sizePx != 16) continue;
+    const bool opensParagraph = ls.lines[i].x == indentX;
+    if (opensParagraph) {
+      paraStart = i;
+      inPara = true;
+    } else if (inPara) {
+      // Continuation line: a page break inside the paragraph must not leave
+      // exactly one line on either side.
+      if (ls.lines[i].page != ls.lines[i - 1].page) {
+        uint32_t before = 0;
+        for (uint32_t b = paraStart; b < i; ++b) {
+          if (ls.lines[b].sizePx == 16) ++before;
+        }
+        if (before == 1) ++orphanViolations;
+        uint32_t after = 1;
+        for (uint32_t a = i + 1; a < ls.count && ls.lines[a].sizePx == 16 &&
+                                 ls.lines[a].x != indentX && ls.lines[a].page == ls.lines[i].page;
+             ++a) {
+          ++after;
+        }
+        if (after == 1) ++widowViolations;
+      }
+    }
+  }
+  CHECK_EQ(orphanViolations, 0);
+  CHECK_EQ(widowViolations, 0);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2) {
-    std::printf("usage: %s <fixtures-build-dir>\n", argv[0]);
+  if (argc < 3) {
+    std::printf("usage: %s <fixtures-build-dir> <hyph-en-us.fibh>\n", argv[0]);
     return 2;
   }
   fixturesDir = argv[1];
+
+  static uint8_t hyphBuf[96 * 1024];
+  Hyphenator hyphenator;
+  {
+    FILE* f = std::fopen(argv[2], "rb");
+    CHECK(f != nullptr);
+    const size_t n = f != nullptr ? std::fread(hyphBuf, 1, sizeof(hyphBuf), f) : 0;
+    if (f != nullptr) std::fclose(f);
+    CHECK(hyphenator.init(hyphBuf, static_cast<uint32_t>(n)));
+  }
+  // Hyphenator sanity: known dictionary splits.
+  {
+    uint8_t pos[8];
+    const uint8_t n = hyphenator.breakPositions("hyphenation", 11, pos, 8);
+    CHECK_EQ(n, 2);
+    CHECK_EQ(pos[0], 2);  // hy-phen-ation
+    CHECK_EQ(pos[1], 6);
+  }
 
   testSmallChapter();
   testStylesEntitiesAndBreaks();
   testMemoryIndependence();
   testEarlyStop();
+  testCssUnit();
+  testStyledChapter();
+  testHyphenation(hyphenator);
+  testKerningAffectsMeasurement();
+  testWidowOrphan();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

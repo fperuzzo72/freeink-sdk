@@ -32,6 +32,17 @@ class BookFont {
 
   // Distance from line top to baseline, in pixels.
   virtual int16_t ascent(uint16_t sizePx) = 0;
+
+  // Kerning adjustment applied between `left` and `right`, in pixels
+  // (usually zero or negative). Layout adds this during measurement so line
+  // breaks account for it; fonts without kerning data keep the default.
+  virtual int16_t kerning(uint32_t left, uint32_t right, uint16_t sizePx, uint8_t styleFlags) {
+    (void)left;
+    (void)right;
+    (void)sizePx;
+    (void)styleFlags;
+    return 0;
+  }
 };
 
 }  // namespace book

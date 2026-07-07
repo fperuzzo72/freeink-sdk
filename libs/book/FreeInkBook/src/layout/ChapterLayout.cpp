@@ -1,4 +1,12 @@
-// FreeInkBook — streaming SAX → block flow → lines → pages.
+// FreeInkBook — streaming SAX → block flow → measured lines → placed pages.
+//
+// Phase 4 shape: paragraphs are laid out in two phases. MEASURE breaks the
+// paragraph into line records (libunibreak opportunities, kerning-aware
+// widths, hyphenation at overflow); PLACE walks those records onto pages
+// with widow/orphan control and resolves alignment (including justification
+// as word-level runs with distributed space). Styles come from a per-element
+// stack fed by element defaults, the book stylesheet, and inline style
+// attributes. Memory remains O(paragraph + page).
 
 #include "layout/ChapterLayout.h"
 
@@ -18,12 +26,27 @@ namespace {
 // artifact for pathological paragraphs, never a failure).
 constexpr uint32_t kParTextCap = 8192;
 constexpr uint16_t kMaxSpans = 128;
-constexpr uint16_t kMaxRunsPerPage = 384;
+constexpr uint16_t kMaxRunsPerPage = 768;  // word-level runs when justified
+constexpr uint16_t kMaxLinesPerPar = 512;
 constexpr uint32_t kPageArenaCap = 24 * 1024;
+constexpr uint8_t kMaxElemDepth = 24;
+
+// LineRec flags.
+constexpr uint8_t kLineLast = 1u << 0;    // paragraph-final or hard break — never justify
+constexpr uint8_t kLineHyphen = 1u << 1;  // render a hyphen after the last run
 
 const char* localName(const char* qname) {
   const char* colon = strrchr(qname, ':');
   return colon != nullptr ? colon + 1 : qname;
+}
+
+const char* attrLocal(const char** atts, const char* local) {
+  for (int i = 0; atts != nullptr && atts[i] != nullptr; i += 2) {
+    const char* colon = strrchr(atts[i], ':');
+    const char* name = colon != nullptr ? colon + 1 : atts[i];
+    if (strcmp(name, local) == 0) return atts[i + 1];
+  }
+  return nullptr;
 }
 
 // Counts UTF-8 codepoints in text[0..len).
@@ -59,24 +82,57 @@ uint32_t decodeUtf8(const char* text, uint32_t len, uint32_t& i) {
   return cp;
 }
 
-struct BlockStyle {
-  uint16_t scalePct;      // font size as % of base
-  int16_t indentPx;       // left indent in units of baseSizePx/16
-  uint16_t spaceBeforePct;  // % of resolved size
-  uint16_t spaceAfterPct;
-  uint8_t styleFlags;     // headings render bold
-};
+bool isAsciiLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
 
-BlockStyle blockStyleFor(const char* local, uint16_t /*baseSizePx*/) {
-  if (strcmp(local, "h1") == 0) return {200, 0, 100, 50, StyleBold};
-  if (strcmp(local, "h2") == 0) return {160, 0, 90, 45, StyleBold};
-  if (strcmp(local, "h3") == 0) return {130, 0, 80, 40, StyleBold};
-  if (strcmp(local, "h4") == 0 || strcmp(local, "h5") == 0 || strcmp(local, "h6") == 0) {
-    return {115, 0, 70, 35, StyleBold};
+// User-agent defaults per element, expressed as CSS so the book's own CSS
+// cascades over them naturally. Margins are % of em.
+CssDecl elementDefaults(const char* local) {
+  CssDecl d;
+  if (strcmp(local, "h1") == 0) {
+    d.sizePct = 200;
+    d.weightBold = 1;
+    d.marginTopPct = 100;
+    d.marginBottomPct = 50;
+  } else if (strcmp(local, "h2") == 0) {
+    d.sizePct = 160;
+    d.weightBold = 1;
+    d.marginTopPct = 90;
+    d.marginBottomPct = 45;
+  } else if (strcmp(local, "h3") == 0) {
+    d.sizePct = 130;
+    d.weightBold = 1;
+    d.marginTopPct = 80;
+    d.marginBottomPct = 40;
+  } else if (strcmp(local, "h4") == 0 || strcmp(local, "h5") == 0 || strcmp(local, "h6") == 0) {
+    d.sizePct = 115;
+    d.weightBold = 1;
+    d.marginTopPct = 70;
+    d.marginBottomPct = 35;
+  } else if (strcmp(local, "blockquote") == 0) {
+    d.styleItalic = 1;
+    d.marginTopPct = 40;
+    d.marginBottomPct = 40;
+  } else if (strcmp(local, "li") == 0) {
+    d.marginTopPct = 10;
+    d.marginBottomPct = 10;
+  } else if (strcmp(local, "p") == 0 || strcmp(local, "div") == 0) {
+    d.marginBottomPct = 40;
+  } else if (strcmp(local, "b") == 0 || strcmp(local, "strong") == 0) {
+    d.weightBold = 1;
+  } else if (strcmp(local, "i") == 0 || strcmp(local, "em") == 0 || strcmp(local, "cite") == 0) {
+    d.styleItalic = 1;
+  } else if (strcmp(local, "small") == 0) {
+    d.sizePct = 87;
+  } else if (strcmp(local, "sub") == 0 || strcmp(local, "sup") == 0) {
+    d.sizePct = 75;  // no baseline shift yet
   }
-  if (strcmp(local, "blockquote") == 0) return {100, 32, 40, 40, StyleItalic};
-  if (strcmp(local, "li") == 0) return {100, 24, 10, 10, StyleNone};
-  return {100, 0, 0, 40, StyleNone};  // p, div, and friends
+  return d;
+}
+
+int16_t blockIndentFor(const char* local, uint16_t baseSizePx) {
+  if (strcmp(local, "blockquote") == 0) return static_cast<int16_t>(baseSizePx * 2);
+  if (strcmp(local, "li") == 0) return static_cast<int16_t>(baseSizePx * 3 / 2);
+  return 0;
 }
 
 bool isBlockElement(const char* local) {
@@ -106,6 +162,7 @@ class LayoutEngine : public XmlHandler {
     breaks_ = static_cast<char*>(scratch_.alloc(kParTextCap, 1));
     spans_ = scratch_.allocArray<Span>(kMaxSpans);
     runs_ = scratch_.allocArray<PageTextRun>(kMaxRunsPerPage);
+    lines_ = scratch_.allocArray<LineRec>(kMaxLinesPerPar);
     // Page-run text lives in its own sub-arena, NOT in `scratch_`: the XML
     // parse that drives this engine keeps its inflate window and parser
     // buffers live in `scratch_` for the whole chapter, and those are
@@ -113,19 +170,28 @@ class LayoutEngine : public XmlHandler {
     // shared arena would free the decompressor out from under the reader.
     void* pageBlock = scratch_.alloc(kPageArenaCap, alignof(max_align_t));
     if (parText_ == nullptr || breaks_ == nullptr || spans_ == nullptr || runs_ == nullptr ||
-        pageBlock == nullptr) {
+        lines_ == nullptr || pageBlock == nullptr) {
       return false;
     }
     pageArena_.init(pageBlock, kPageArenaCap);
     pageY_ = params_.marginTop;
-    beginParagraph(blockStyleFor("p", params_.baseSizePx));
+
+    ElemState root;
+    root.sizePct = 100;
+    root.flags = StyleNone;
+    root.align = params_.defaultAlign;
+    root.textIndentPct = 0;
+    root.displayNone = false;
+    stack_[0] = root;
+    stackTop_ = 0;
+
+    latchParagraph("p", CssDecl{});
     return true;
   }
 
   // --- XmlHandler ----------------------------------------------------------
 
   void onStartElement(const char* name, const char** atts) override {
-    (void)atts;
     if (failed_ || stopParse) return;
     const char* local = localName(name);
     if (isSuppressedElement(local)) {
@@ -134,24 +200,47 @@ class LayoutEngine : public XmlHandler {
     }
     if (strcmp(local, "body") == 0) {
       inBody_ = true;
+      // Books style body{} heavily (font-size, text-align); apply it as the
+      // root of the element stack.
+      if (params_.stylesheet != nullptr) {
+        CssDecl bodyDecl = elementDefaults("body");
+        bodyDecl.applyOver(cascadeFor(*params_.stylesheet, "body", attrLocal(atts, "class"),
+                                      nullptr));
+        pushState(bodyDecl);
+        latchParagraphFromStack();
+      }
       return;
     }
+    ++depth_;
     if (!inBody_ || suppress_ > 0) return;
+
+    // Resolve this element's style: defaults ← book CSS ← inline style.
+    CssDecl decl = elementDefaults(local);
+    const char* styleAttr = attrLocal(atts, "style");
+    CssDecl inlineDecl;
+    bool hasInline = false;
+    if (styleAttr != nullptr) {
+      inlineDecl = parseInlineStyle(styleAttr);
+      hasInline = true;
+    }
+    if (params_.stylesheet != nullptr) {
+      decl.applyOver(cascadeFor(*params_.stylesheet, local, attrLocal(atts, "class"),
+                                hasInline ? &inlineDecl : nullptr));
+    } else if (hasInline) {
+      decl.applyOver(inlineDecl);
+    }
+    pushState(decl);
 
     if (isBlockElement(local)) {
       flushParagraph();
-      beginParagraph(blockStyleFor(local, params_.baseSizePx));
+      latchParagraph(local, decl);
     } else if (strcmp(local, "br") == 0) {
       appendRaw('\n');
     } else if (strcmp(local, "hr") == 0) {
       flushParagraph();
-      advanceY(lineHeightFor(params_.baseSizePx));  // blank band; drawn rule in Phase 4
-    } else if (strcmp(local, "b") == 0 || strcmp(local, "strong") == 0) {
-      ++bold_;
-      noteStyleChange();
-    } else if (strcmp(local, "i") == 0 || strcmp(local, "em") == 0) {
-      ++italic_;
-      noteStyleChange();
+      advanceY(params_.font->lineHeight(params_.baseSizePx));
+    } else {
+      noteStyleChange();  // inline element may have changed flags/size
     }
   }
 
@@ -167,22 +256,23 @@ class LayoutEngine : public XmlHandler {
       inBody_ = false;
       return;
     }
+    if (depth_ > 0) --depth_;
     if (!inBody_ || suppress_ > 0) return;
+    popState();
 
     if (isBlockElement(local)) {
       flushParagraph();
-      beginParagraph(blockStyleFor("p", params_.baseSizePx));
-    } else if (strcmp(local, "b") == 0 || strcmp(local, "strong") == 0) {
-      if (bold_ > 0) --bold_;
-      noteStyleChange();
-    } else if (strcmp(local, "i") == 0 || strcmp(local, "em") == 0) {
-      if (italic_ > 0) --italic_;
+      // Text following the closed block flows in the parent's style with no
+      // extra spacing.
+      latchParagraphFromStack();
+    } else {
       noteStyleChange();
     }
   }
 
   void onText(const char* text, int len) override {
     if (failed_ || stopParse || !inBody_ || suppress_ > 0) return;
+    if (stack_[stackTop_].displayNone) return;
     for (int i = 0; i < len; ++i) {
       const char c = text[i];
       if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
@@ -213,183 +303,437 @@ class LayoutEngine : public XmlHandler {
   struct Span {
     uint16_t start;
     uint8_t flags;
+    uint16_t sizePct;
   };
 
-  uint8_t currentFlags() const {
-    uint8_t flags = paragraphStyle_.styleFlags;
-    if (bold_ > 0) flags |= StyleBold;
-    if (italic_ > 0) flags |= StyleItalic;
-    return flags;
+  struct LineRec {
+    uint32_t start;
+    uint32_t end;
+    int32_t naturalWidth;  // includes the hyphen when kLineHyphen is set
+    uint16_t spaceCount;
+    uint8_t flags;
+  };
+
+  struct ElemState {
+    uint16_t sizePct;
+    uint8_t flags;
+    TextAlign align;
+    int16_t textIndentPct;
+    bool displayNone;
+  };
+
+  struct ParaStyle {
+    uint16_t sizePct;
+    uint8_t baseFlags;
+    TextAlign align;
+    int16_t indentPx;
+    int16_t textIndentPct;
+    uint16_t spaceBeforePct;
+    uint16_t spaceAfterPct;
+  };
+
+  // --- style stack ----------------------------------------------------------
+
+  void pushState(const CssDecl& decl) {
+    const ElemState& parent = stack_[stackTop_];
+    ElemState next = parent;
+    if (decl.sizePct != 0) {
+      const uint32_t scaled = static_cast<uint32_t>(parent.sizePct) * decl.sizePct / 100;
+      next.sizePct = static_cast<uint16_t>(scaled < 25 ? 25 : (scaled > 400 ? 400 : scaled));
+    }
+    if (decl.weightBold == 1) next.flags |= StyleBold;
+    if (decl.weightBold == 0) next.flags &= static_cast<uint8_t>(~StyleBold);
+    if (decl.styleItalic == 1) next.flags |= StyleItalic;
+    if (decl.styleItalic == 0) next.flags &= static_cast<uint8_t>(~StyleItalic);
+    if (decl.align != TextAlign::Inherit) next.align = decl.align;
+    if (decl.textIndentPct >= 0) next.textIndentPct = decl.textIndentPct;
+    if (decl.displayNone == 1) next.displayNone = true;
+    if (stackTop_ + 1 < kMaxElemDepth) {
+      stack_[++stackTop_] = next;
+    } else {
+      ++stackOverflow_;  // deeper levels inherit the top unchanged
+    }
   }
+
+  void popState() {
+    if (stackOverflow_ > 0) {
+      --stackOverflow_;
+      return;
+    }
+    if (stackTop_ > 0) --stackTop_;
+  }
+
+  uint8_t currentFlags() const { return stack_[stackTop_].flags; }
+  uint16_t currentSizePct() const { return stack_[stackTop_].sizePct; }
+
+  // --- paragraph accumulation ------------------------------------------------
 
   void noteStyleChange() {
     if (spanCount_ == 0) return;  // paragraph text not started yet
     const uint8_t flags = currentFlags();
-    if (spans_[spanCount_ - 1].flags == flags) return;
-    if (spans_[spanCount_ - 1].start == parLen_) {
-      spans_[spanCount_ - 1].flags = flags;  // empty span — overwrite
+    const uint16_t sizePct = currentSizePct();
+    Span& last = spans_[spanCount_ - 1];
+    if (last.flags == flags && last.sizePct == sizePct) return;
+    if (last.start == parLen_) {
+      last.flags = flags;
+      last.sizePct = sizePct;
     } else if (spanCount_ < kMaxSpans) {
-      spans_[spanCount_++] = {static_cast<uint16_t>(parLen_), flags};
+      spans_[spanCount_++] = {static_cast<uint16_t>(parLen_), flags, sizePct};
     }
   }
 
   void appendRaw(char c) {
     if (parLen_ + 1 >= kParTextCap) {
       // Pathological paragraph: flush what we have and continue seamlessly.
-      const BlockStyle style = paragraphStyle_;
+      const ParaStyle style = para_;
       flushParagraph();
-      beginParagraph(style);
+      para_ = style;
+      para_.spaceBeforePct = 0;
+      continued_ = true;  // continuation lines get no first-line indent
     }
     if (spanCount_ == 0) {
-      spans_[spanCount_++] = {0, currentFlags()};
+      spans_[spanCount_++] = {0, currentFlags(), currentSizePct()};
     }
     parText_[parLen_++] = c;
   }
 
-  void beginParagraph(const BlockStyle& style) {
-    paragraphStyle_ = style;
+  void latchParagraph(const char* local, const CssDecl& decl) {
+    const ElemState& state = stack_[stackTop_];
+    para_.sizePct = state.sizePct;
+    para_.baseFlags = state.flags;
+    para_.align = state.align;
+    para_.indentPx = blockIndentFor(local, params_.baseSizePx);
+    para_.textIndentPct = state.textIndentPct;
+    para_.spaceBeforePct = decl.marginTopPct >= 0 ? static_cast<uint16_t>(decl.marginTopPct) : 0;
+    para_.spaceAfterPct =
+        decl.marginBottomPct >= 0 ? static_cast<uint16_t>(decl.marginBottomPct) : 0;
     parLen_ = 0;
     spanCount_ = 0;
     pendingSpace_ = false;
   }
 
-  uint16_t resolvedSize() const {
-    const uint32_t size = static_cast<uint32_t>(params_.baseSizePx) * paragraphStyle_.scalePct / 100;
+  void latchParagraphFromStack() {
+    const ElemState& state = stack_[stackTop_];
+    para_.sizePct = state.sizePct;
+    para_.baseFlags = state.flags;
+    para_.align = state.align;
+    para_.indentPx = 0;
+    para_.textIndentPct = 0;
+    para_.spaceBeforePct = 0;
+    para_.spaceAfterPct = 0;
+    parLen_ = 0;
+    spanCount_ = 0;
+    pendingSpace_ = false;
+  }
+
+  uint16_t paragraphSizePx() const {
+    const uint32_t size = static_cast<uint32_t>(params_.baseSizePx) * para_.sizePct / 100;
     return static_cast<uint16_t>(size < 8 ? 8 : size);
   }
 
-  int16_t lineHeightFor(uint16_t sizePx) const { return params_.font->lineHeight(sizePx); }
+  uint16_t spanSizePx(const Span& span) const {
+    const uint32_t size = static_cast<uint32_t>(params_.baseSizePx) * span.sizePct / 100;
+    return static_cast<uint16_t>(size < 8 ? 8 : size);
+  }
 
-  uint8_t flagsAt(uint32_t byteOffset) const {
-    uint8_t flags = spans_[0].flags;
-    for (uint16_t s = 0; s < spanCount_ && spans_[s].start <= byteOffset; ++s) {
-      flags = spans_[s].flags;
-    }
-    return flags;
+  const Span& spanAt(uint32_t byteOffset) const {
+    uint16_t found = 0;
+    for (uint16_t s = 0; s < spanCount_ && spans_[s].start <= byteOffset; ++s) found = s;
+    return spans_[found];
   }
 
   void advanceY(int16_t dy) {
     if (pageY_ > params_.marginTop) pageY_ += dy;  // no leading gaps at page top
   }
 
-  void flushParagraph() {
-    if (parLen_ == 0) return;
-    const uint16_t sizePx = resolvedSize();
-    const int16_t lineHeight = lineHeightFor(sizePx);
-    advanceY(static_cast<int16_t>(lineHeight * paragraphStyle_.spaceBeforePct / 100));
+  // --- measure phase ----------------------------------------------------------
 
+  int32_t advanceFor(uint32_t cp, uint32_t prevCp, const Span& span) const {
+    if (cp == '\n') return 0;
+    const uint16_t sizePx = spanSizePx(span);
+    int32_t adv = params_.font->advance(cp, sizePx, span.flags);
+    if (prevCp != 0) adv += params_.font->kerning(prevCp, cp, sizePx, span.flags);
+    return adv;
+  }
+
+  // Width of parText_[from..to) with kerning, resetting kerning at `from`.
+  int32_t measureRange(uint32_t from, uint32_t to) const {
+    int32_t width = 0;
+    uint32_t prev = 0;
+    uint32_t i = from;
+    while (i < to) {
+      const uint32_t charStart = i;
+      const uint32_t cp = decodeUtf8(parText_, to, i);
+      width += advanceFor(cp, prev, spanAt(charStart));
+      prev = cp;
+    }
+    return width;
+  }
+
+  // Attempts to hyphenate the word starting at `wordStart` so that a prefix
+  // (plus a hyphen) fits in `budget` measured from `lineStart`. Returns the
+  // byte split position, or 0 if hyphenation does not help.
+  uint32_t tryHyphenBreak(uint32_t lineStart, uint32_t wordStart, int32_t budget) {
+    if (params_.hyphenator == nullptr || !params_.hyphenator->ready()) return 0;
+    uint32_t wordEnd = wordStart;
+    while (wordEnd < parLen_ && isAsciiLetter(parText_[wordEnd])) ++wordEnd;
+    const uint32_t wordLen = wordEnd - wordStart;
+    if (wordLen < 5) return 0;
+
+    uint8_t positions[16];
+    const uint8_t n = params_.hyphenator->breakPositions(parText_ + wordStart, wordLen,
+                                                         positions, sizeof(positions));
+    if (n == 0) return 0;
+
+    const int32_t prefixWidth = measureRange(lineStart, wordStart);
+    const Span& span = spanAt(wordStart);
+    const int32_t hyphenWidth =
+        params_.font->advance('-', spanSizePx(span), span.flags);
+    for (int i = n - 1; i >= 0; --i) {
+      const uint32_t split = wordStart + positions[i];
+      if (split <= lineStart) continue;
+      const int32_t width = prefixWidth + measureRange(wordStart, split) + hyphenWidth;
+      if (width <= budget) return split;
+    }
+    return 0;
+  }
+
+  void measureParagraphLines() {
+    lineCount_ = 0;
     set_linebreaks_utf8(reinterpret_cast<const utf8_t*>(parText_), parLen_, params_.language,
                         breaks_);
 
-    const int16_t maxWidth = params_.pageWidth - params_.marginLeft - params_.marginRight -
-                             paragraphStyle_.indentPx;
+    const int32_t baseMaxWidth =
+        params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx;
+    const uint16_t sizePx = paragraphSizePx();
+    const int32_t textIndentPx =
+        static_cast<int32_t>(sizePx) * (para_.textIndentPct > 0 ? para_.textIndentPct : 0) / 100;
+
     uint32_t lineStart = 0;
     uint32_t i = 0;
     int32_t lineWidth = 0;
-    uint32_t lastBreakEnd = 0;  // byte end of the last allowed break, 0 = none
+    uint32_t prevCp = 0;
+    uint32_t lastBreakEnd = 0;
+    uint32_t wordStart = 0;
 
-    while (i < parLen_ && !failed_ && !stopParse) {
+    while (i < parLen_ && lineCount_ + 1 < kMaxLinesPerPar) {
+      const int32_t maxWidth = baseMaxWidth - (lineCount_ == 0 && !continued_ ? textIndentPx : 0);
       const uint32_t charStart = i;
       const uint32_t cp = decodeUtf8(parText_, parLen_, i);
-      const uint8_t flags = flagsAt(charStart);
-      const int32_t adv =
-          cp == '\n' ? 0 : params_.font->advance(cp, sizePx, flags);
+      const int32_t adv = advanceFor(cp, prevCp, spanAt(charStart));
 
       if (cp != '\n' && lineWidth + adv > maxWidth && charStart > lineStart) {
-        // Break at the last opportunity, or force mid-word if there was none.
-        const uint32_t breakEnd = lastBreakEnd > lineStart ? lastBreakEnd : charStart;
-        emitLine(lineStart, breakEnd, sizePx, lineHeight);
+        // Try a hyphen inside the overflowing word first; it beats breaking
+        // at the previous space when it fits meaningfully more text.
+        uint32_t breakEnd = 0;
+        uint8_t flags = 0;
+        const uint32_t hyphenAt =
+            tryHyphenBreak(lineStart, wordStart > lineStart ? wordStart : lineStart, maxWidth);
+        if (hyphenAt > lineStart &&
+            (lastBreakEnd <= lineStart || hyphenAt > lastBreakEnd)) {
+          breakEnd = hyphenAt;
+          flags = kLineHyphen;
+        } else if (lastBreakEnd > lineStart) {
+          breakEnd = lastBreakEnd;
+        } else {
+          breakEnd = charStart;  // force mid-word, no opportunity at all
+        }
+        recordLine(lineStart, breakEnd, flags);
         lineStart = breakEnd;
         while (lineStart < parLen_ && parText_[lineStart] == ' ') ++lineStart;
         i = lineStart;
         lineWidth = 0;
+        prevCp = 0;
         lastBreakEnd = 0;
+        wordStart = lineStart;
         continue;
       }
       lineWidth += adv;
+      prevCp = cp;
 
       const char brk = breaks_[i - 1];  // opportunity after this character
       if (brk == LINEBREAK_MUSTBREAK) {
-        emitLine(lineStart, i, sizePx, lineHeight);
+        recordLine(lineStart, i, kLineLast);
         lineStart = i;
         lineWidth = 0;
+        prevCp = 0;
         lastBreakEnd = 0;
+        wordStart = i;
       } else if (brk == LINEBREAK_ALLOWBREAK) {
         lastBreakEnd = i;
+        wordStart = i;
+        while (wordStart < parLen_ && parText_[wordStart] == ' ') ++wordStart;
       }
     }
-    if (lineStart < parLen_ && !failed_ && !stopParse) {
-      emitLine(lineStart, parLen_, sizePx, lineHeight);
+    if (lineStart < parLen_ && lineCount_ < kMaxLinesPerPar) {
+      recordLine(lineStart, parLen_, kLineLast);
+    }
+    if (lineCount_ > 0) lines_[lineCount_ - 1].flags |= kLineLast;
+  }
+
+  void recordLine(uint32_t start, uint32_t end, uint8_t flags) {
+    while (end > start && (parText_[end - 1] == ' ' || parText_[end - 1] == '\n')) --end;
+    LineRec& rec = lines_[lineCount_++];
+    rec.start = start;
+    rec.end = end;
+    rec.flags = flags;
+    rec.spaceCount = 0;
+    for (uint32_t b = start; b < end; ++b) {
+      if (parText_[b] == ' ') ++rec.spaceCount;
+    }
+    rec.naturalWidth = measureRange(start, end);
+    if (flags & kLineHyphen) {
+      const Span& span = spanAt(end > start ? end - 1 : start);
+      rec.naturalWidth += params_.font->advance('-', spanSizePx(span), span.flags);
+    }
+  }
+
+  // --- place phase -------------------------------------------------------------
+
+  void flushParagraph() {
+    if (parLen_ == 0) {
+      continued_ = false;
+      return;
+    }
+    const uint16_t sizePx = paragraphSizePx();
+    const int16_t lineHeight = params_.font->lineHeight(sizePx);
+    advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceBeforePct / 100));
+
+    measureParagraphLines();
+
+    uint32_t idx = 0;
+    while (idx < lineCount_ && !failed_ && !stopParse) {
+      const int32_t availPx = (params_.pageHeight - params_.marginBottom) - pageY_;
+      uint32_t avail = availPx > 0 ? static_cast<uint32_t>(availPx / lineHeight) : 0;
+      const uint32_t remaining = lineCount_ - idx;
+      const bool hasContent = runCount_ > 0 || pageY_ > params_.marginTop;
+
+      if (avail == 0) {
+        if (!hasContent) break;  // page too short for even one line — give up
+        emitPage();
+        continue;
+      }
+      uint32_t take = avail < remaining ? avail : remaining;
+
+      // Widow control first: never carry a runt to the next page, shrinking
+      // this page's share if needed. Then orphan control on the result: if
+      // the shrunken share would leave a runt at this page's bottom, push the
+      // whole paragraph to the next page instead. (A 3-line paragraph with
+      // 2 lines of room goes 0+3, not 2+1 or 1+2.)
+      while (take < remaining && remaining - take < params_.widowLines && take > 1) --take;
+      if (idx == 0 && take < remaining && take < params_.orphanLines && hasContent) {
+        emitPage();
+        continue;
+      }
+
+      for (uint32_t l = 0; l < take && !failed_ && !stopParse; ++l) {
+        placeLine(lines_[idx + l], sizePx, lineHeight, idx + l == 0);
+      }
+      idx += take;
+      if (idx < lineCount_ && !stopParse) emitPage();
     }
 
-    advanceY(static_cast<int16_t>(lineHeight * paragraphStyle_.spaceAfterPct / 100));
+    advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceAfterPct / 100));
     parCharBase_ += countChars(parText_, parLen_);
     parLen_ = 0;
     spanCount_ = 0;
     pendingSpace_ = false;
+    continued_ = false;
   }
 
-  void emitLine(uint32_t start, uint32_t end, uint16_t sizePx, int16_t lineHeight) {
-    // Trim what a rendered line never shows.
-    while (end > start && (parText_[end - 1] == ' ' || parText_[end - 1] == '\n')) --end;
-
-    if (pageY_ + lineHeight > params_.pageHeight - params_.marginBottom) emitPage();
-    if (failed_ || stopParse) return;
-
-    if (end == start) {  // blank line (e.g. double <br/>)
+  void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine) {
+    if (rec.end == rec.start) {  // blank line (e.g. double <br/>)
       pageY_ += lineHeight;
       return;
     }
-
     if (runCount_ == 0) {
-      pageCharStart_ = parCharBase_ + countChars(parText_, start);
+      pageCharStart_ = parCharBase_ + countChars(parText_, rec.start);
     }
 
-    int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
-    int16_t x = static_cast<int16_t>(params_.marginLeft + paragraphStyle_.indentPx);
+    const int32_t baseMaxWidth =
+        params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx;
+    const int32_t textIndentPx =
+        firstLine && !continued_ && para_.textIndentPct > 0
+            ? static_cast<int32_t>(sizePx) * para_.textIndentPct / 100
+            : 0;
+    const int32_t maxWidth = baseMaxWidth - textIndentPx;
+    const int32_t leftover = maxWidth - rec.naturalWidth;
 
-    // Slice the line into same-style runs.
-    uint32_t segStart = start;
-    while (segStart < end && !failed_) {
-      if (runCount_ >= kMaxRunsPerPage) {
-        // Pathologically dense page — flush it and continue the line on a
-        // fresh one rather than dropping content.
-        emitPage();
-        if (stopParse) return;
-        baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
+    int32_t x = params_.marginLeft + para_.indentPx + textIndentPx;
+    const bool justify = para_.align == TextAlign::Justify && !(rec.flags & kLineLast) &&
+                         rec.spaceCount > 0 && leftover > 0;
+    if (para_.align == TextAlign::Right) {
+      x += leftover;
+    } else if (para_.align == TextAlign::Center) {
+      x += leftover / 2;
+    }
+    const int32_t perSpace = justify ? leftover / rec.spaceCount : 0;
+    int32_t spaceRemainder = justify ? leftover % rec.spaceCount : 0;
+
+    int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
+
+    // Slice into runs: at style-span changes always; additionally at spaces
+    // when justifying (spaces become adjustable gaps between word runs).
+    uint32_t segStart = rec.start;
+    while (segStart < rec.end && !failed_) {
+      // Skip spaces between runs when justifying (their width is added as gap).
+      if (justify && parText_[segStart] == ' ') {
+        const Span& span = spanAt(segStart);
+        x += params_.font->advance(' ', spanSizePx(span), span.flags) + perSpace;
+        if (spaceRemainder > 0) {
+          ++x;
+          --spaceRemainder;
+        }
+        ++segStart;
+        continue;
       }
 
-      const uint8_t flags = flagsAt(segStart);
+      const Span& span = spanAt(segStart);
       uint32_t segEnd = segStart;
       int32_t segWidth = 0;
-      while (segEnd < end) {
+      uint32_t prevCp = 0;
+      while (segEnd < rec.end) {
         const uint32_t charStart = segEnd;
-        if (flagsAt(charStart) != flags) break;
-        const uint32_t cp = decodeUtf8(parText_, end, segEnd);
-        segWidth += params_.font->advance(cp, sizePx, flags);
+        if (&spanAt(charStart) != &span) break;
+        if (justify && parText_[charStart] == ' ') break;
+        const uint32_t cp = decodeUtf8(parText_, rec.end, segEnd);
+        segWidth += advanceFor(cp, prevCp, span);
+        prevCp = cp;
       }
 
+      const bool lastSeg = segEnd >= rec.end;
+      const bool addHyphen = lastSeg && (rec.flags & kLineHyphen) != 0;
       const uint32_t segLen = segEnd - segStart;
-      char* copy = static_cast<char*>(pageArena_.alloc(segLen, 1));
-      if (copy == nullptr) {
-        // Page text arena full — flush the page and continue on a fresh one.
+      const uint32_t copyLen = segLen + (addHyphen ? 1u : 0u);
+
+      if (runCount_ >= kMaxRunsPerPage) {
         emitPage();
         if (stopParse) return;
         baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
-        copy = static_cast<char*>(pageArena_.alloc(segLen, 1));
+      }
+      char* copy = static_cast<char*>(pageArena_.alloc(copyLen, 1));
+      if (copy == nullptr) {
+        emitPage();  // page text arena full — flush and continue on a fresh page
+        if (stopParse) return;
+        baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
+        copy = static_cast<char*>(pageArena_.alloc(copyLen, 1));
         if (copy == nullptr) {
           failed_ = true;
           return;
         }
       }
       memcpy(copy, parText_ + segStart, segLen);
+      if (addHyphen) {
+        copy[segLen] = '-';
+        segWidth += params_.font->advance('-', spanSizePx(span), span.flags);
+      }
       runs_[runCount_++] = {copy,
-                            static_cast<uint16_t>(segLen),
-                            x,
+                            static_cast<uint16_t>(copyLen),
+                            static_cast<int16_t>(x),
                             baselineY,
-                            sizePx,
-                            flags};
-      x = static_cast<int16_t>(x + segWidth);
+                            spanSizePx(span),
+                            span.flags};
+      x += segWidth;
       segStart = segEnd;
     }
     pageY_ += lineHeight;
@@ -412,17 +756,22 @@ class LayoutEngine : public XmlHandler {
   char* breaks_ = nullptr;
   Span* spans_ = nullptr;
   PageTextRun* runs_ = nullptr;
+  LineRec* lines_ = nullptr;
   Arena pageArena_;
 
   uint32_t parLen_ = 0;
   uint16_t spanCount_ = 0;
-  BlockStyle paragraphStyle_{100, 0, 0, 40, StyleNone};
+  uint32_t lineCount_ = 0;
+  ParaStyle para_{100, StyleNone, TextAlign::Left, 0, 0, 0, 40};
   bool pendingSpace_ = false;
+  bool continued_ = false;
 
+  ElemState stack_[kMaxElemDepth];
+  uint8_t stackTop_ = 0;
+  int stackOverflow_ = 0;
+  int depth_ = 0;
   int suppress_ = 0;
   bool inBody_ = false;
-  int bold_ = 0;
-  int italic_ = 0;
 
   uint16_t runCount_ = 0;
   int16_t pageY_ = 0;

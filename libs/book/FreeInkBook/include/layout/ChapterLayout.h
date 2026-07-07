@@ -20,7 +20,9 @@
 #include "BookFont.h"
 #include "BookStorage.h"
 #include "BookTypes.h"
+#include "css/Css.h"
 #include "epub/ZipCatalog.h"
+#include "text/Hyphenator.h"
 
 namespace freeink {
 namespace book {
@@ -35,6 +37,13 @@ struct LayoutParams {
   uint16_t baseSizePx = 16;      // the reader's chosen body size
   const char* language = "en";   // BCP 47, for UAX #14 tailoring
   BookFont* font = nullptr;
+
+  // Typography (Phase 4).
+  TextAlign defaultAlign = TextAlign::Left;      // body alignment when CSS is silent
+  uint8_t orphanLines = 2;                       // min paragraph lines at a page bottom
+  uint8_t widowLines = 2;                        // min paragraph lines carried over
+  const CssStylesheet* stylesheet = nullptr;     // book CSS (optional)
+  const Hyphenator* hyphenator = nullptr;        // soft hyphenation (optional)
 };
 
 // One horizontal run of same-styled text. `text` points into layout scratch

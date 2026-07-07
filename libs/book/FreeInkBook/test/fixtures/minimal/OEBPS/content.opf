@@ -12,10 +12,13 @@
     <item id="ch1" href="text/ch%201.xhtml" media-type="application/xhtml+xml"/>
     <item id="ch2" href="./text/../text/ch2.xhtml" media-type="application/xhtml+xml"/>
     <item id="ch3" href="text/ch3.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch4" href="text/ch4.xhtml" media-type="application/xhtml+xml"/>
+    <item id="css" href="styles.css" media-type="text/css"/>
   </manifest>
   <spine toc="ncx">
     <itemref idref="ch1"/>
     <itemref idref="ch2"/>
     <itemref idref="ch3"/>
+    <itemref idref="ch4"/>
   </spine>
 </package>

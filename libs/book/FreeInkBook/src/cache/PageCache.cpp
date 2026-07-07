@@ -53,6 +53,10 @@ uint32_t layoutGenerationHash(const LayoutParams& params, uint32_t fontFingerpri
   hash = hashMix(hash, static_cast<uint16_t>(params.marginBottom));
   hash = hashMix(hash, params.baseSizePx);
   hash = hashMix(hash, fontFingerprint);
+  hash = hashMix(hash, static_cast<uint32_t>(params.defaultAlign));
+  hash = hashMix(hash, static_cast<uint32_t>(params.orphanLines) << 8 | params.widowLines);
+  hash = hashMix(hash, params.stylesheet != nullptr ? params.stylesheet->contentHash : 0);
+  hash = hashMix(hash, params.hyphenator != nullptr && params.hyphenator->ready() ? 1u : 0u);
   for (const char* p = params.language; p != nullptr && *p != '\0'; ++p) {
     hash = hashMix(hash, static_cast<uint8_t>(*p));
   }
