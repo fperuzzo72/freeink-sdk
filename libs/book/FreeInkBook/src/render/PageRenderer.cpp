@@ -100,11 +100,17 @@ uint32_t decodeUtf8(const char* text, uint32_t len, uint32_t& i) {
   return cp;
 }
 
+// Blits decoded rows into the frame. Mono targets get Floyd–Steinberg error
+// diffusion (rows arrive strictly top-to-bottom, so the error rows carry
+// between callbacks) — tonal grays render as smooth stipple instead of the
+// ordered-dither crosshatch.
 struct ImageBlit {
   const FrameTarget* target;
   int16_t x;
   int16_t y;
-  uint8_t rowBits[128];  // (panel width / 8) headroom
+  int16_t* err;      // width+2 entries, index shifted by 1
+  int16_t* errNext;  // width+2 entries
+  uint16_t errWidth;
 
   static bool onRow(void* user, uint16_t rowY, const uint8_t* gray, uint16_t width) {
     ImageBlit* self = static_cast<ImageBlit*>(user);
@@ -118,20 +124,30 @@ struct ImageBlit {
       }
       return true;
     }
-    if (width > sizeof(self->rowBits) * 8) width = sizeof(self->rowBits) * 8;
-    ditherRowOrdered(gray, width, rowY, self->rowBits);
-    for (uint16_t px = 0; px < width; ++px) {
-      if (self->rowBits[px >> 3] & (0x80u >> (px & 7))) {
-        setBlack(t, self->x + px, self->y + rowY);
-      }
+    if (width > self->errWidth) width = self->errWidth;
+    for (uint16_t i = 0; i < width; ++i) {
+      int32_t v = gray[i] + self->err[i + 1];
+      if (v < 0) v = 0;
+      if (v > 255) v = 255;
+      const bool black = v < 128;
+      if (black) setBlack(t, self->x + i, self->y + rowY);
+      const int32_t residual = v - (black ? 0 : 255);
+      self->err[i + 2] = static_cast<int16_t>(self->err[i + 2] + residual * 7 / 16);
+      self->errNext[i] = static_cast<int16_t>(self->errNext[i] + residual * 3 / 16);
+      self->errNext[i + 1] = static_cast<int16_t>(self->errNext[i + 1] + residual * 5 / 16);
+      self->errNext[i + 2] = static_cast<int16_t>(self->errNext[i + 2] + residual / 16);
     }
+    memcpy(self->err, self->errNext, (self->errWidth + 2u) * sizeof(int16_t));
+    memset(self->errNext, 0, (self->errWidth + 2u) * sizeof(int16_t));
     return true;
   }
 };
 
 }  // namespace
 
-void PageRenderer::renderText(const Page& page, FontChain& fonts, const FrameTarget& target) {
+uint32_t PageRenderer::renderText(const Page& page, FontChain& fonts, const FrameTarget& target,
+                                  uint32_t* firstMissingOut) {
+  uint32_t missing = 0;
   for (uint16_t r = 0; r < page.runCount; ++r) {
     const PageTextRun& run = page.runs[r];
     int32_t penX = run.x;
@@ -140,14 +156,24 @@ void PageRenderer::renderText(const Page& page, FontChain& fonts, const FrameTar
     while (i < run.len) {
       const uint32_t cp = decodeUtf8(run.text, run.len, i);
       if (prev != 0) penX += fonts.kerning(prev, cp, run.sizePx, run.styleFlags);
-      RenderFont* font = fonts.fontFor(cp);
+      uint8_t faceFlags = 0;
+      RenderFont* font = fonts.fontFor(cp, run.styleFlags, &faceFlags);
       const GlyphBitmap* glyph = font != nullptr ? font->rasterize(cp, run.sizePx) : nullptr;
+      if (glyph == nullptr && cp != ' ' && cp != 0xA0) {
+        if (missing++ == 0 && firstMissingOut != nullptr) *firstMissingOut = cp;
+      }
       if (glyph != nullptr) {
-        for (uint16_t gy = 0; gy < glyph->height; ++gy) {
-          const uint8_t* srcRow = glyph->pixels + static_cast<uint32_t>(gy) * glyph->width;
-          const int32_t dy = run.baselineY + glyph->yoff + gy;
-          for (uint16_t gx = 0; gx < glyph->width; ++gx) {
-            inkPixel(target, penX + glyph->xoff + gx, dy, srcRow[gx]);
+        // Synthetic bold (double-strike, +1 px) when the run wants bold but
+        // no bold face is registered; advance stays the measured one.
+        const int strikes =
+            (run.styleFlags & StyleBold) != 0 && (faceFlags & StyleBold) == 0 ? 2 : 1;
+        for (int s = 0; s < strikes; ++s) {
+          for (uint16_t gy = 0; gy < glyph->height; ++gy) {
+            const uint8_t* srcRow = glyph->pixels + static_cast<uint32_t>(gy) * glyph->width;
+            const int32_t dy = run.baselineY + glyph->yoff + gy;
+            for (uint16_t gx = 0; gx < glyph->width; ++gx) {
+              inkPixel(target, penX + glyph->xoff + gx + s, dy, srcRow[gx]);
+            }
           }
         }
       }
@@ -155,6 +181,7 @@ void PageRenderer::renderText(const Page& page, FontChain& fonts, const FrameTar
       prev = cp;
     }
   }
+  return missing;
 }
 
 BookStatus PageRenderer::renderImages(const Page& page, BookSource& source,
@@ -163,9 +190,19 @@ BookStatus PageRenderer::renderImages(const Page& page, BookSource& source,
   BookStatus worst = BookStatus::Ok;
   for (uint16_t m = 0; m < page.imageCount; ++m) {
     const PageImage& image = page.images[m];
-    ImageBlit blit{&target, image.x, image.y, {}};
+    const size_t marked = scratch.mark();
+    int16_t* err = scratch.allocArray<int16_t>(image.width + 2u);
+    int16_t* errNext = scratch.allocArray<int16_t>(image.width + 2u);
+    if (err == nullptr || errNext == nullptr) {
+      scratch.release(marked);
+      return BookStatus::OutOfMemory;
+    }
+    memset(err, 0, (image.width + 2u) * sizeof(int16_t));
+    memset(errNext, 0, (image.width + 2u) * sizeof(int16_t));
+    ImageBlit blit{&target, image.x, image.y, err, errNext, image.width};
     const BookStatus status =
         ImageRenderer::render(source, zip, image, scratch, ImageBlit::onRow, &blit);
+    scratch.release(marked);
     // Unsupported formats leave their reserved space blank; real I/O errors
     // are reported (with the rest of the page still drawn).
     if (status != BookStatus::Ok && status != BookStatus::Unsupported) worst = status;

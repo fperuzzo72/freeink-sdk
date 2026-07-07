@@ -54,8 +54,11 @@ class PageRenderer {
  public:
   // Draws the page's text runs. Glyph advances and kerning replay exactly
   // what layout measured (same FontChain), so runs land on their recorded
-  // positions.
-  static void renderText(const Page& page, FontChain& fonts, const FrameTarget& target);
+  // positions. Returns the number of codepoints no chain font could
+  // rasterize (their advance still spaces the line — visible as gaps);
+  // `firstMissingOut` (optional) receives the first such codepoint.
+  static uint32_t renderText(const Page& page, FontChain& fonts, const FrameTarget& target,
+                             uint32_t* firstMissingOut = nullptr);
 
   // Draws the page's images (streaming decode + Bayer dither). `source`/
   // `zip` are the open book; scratch is released before returning.

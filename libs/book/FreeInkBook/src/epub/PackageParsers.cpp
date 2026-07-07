@@ -256,7 +256,9 @@ class PackageHandler : public XmlHandler {
           item.idHash = ZipCatalog::hashPath(id);
           item.href = resolveHref(arena_, opfDir_, href, nullptr);
           item.mediaType = mediaType != nullptr ? arena_.strdup(mediaType) : "";
-          item.isNav = hasToken(attrLocal(atts, "properties"), "nav");
+          const char* properties = attrLocal(atts, "properties");
+          item.isNav = hasToken(properties, "nav");
+          item.isCoverImage = hasToken(properties, "cover-image");
           if (item.id == nullptr || item.href == nullptr || item.mediaType == nullptr) {
             outOfMemory = true;
           } else {

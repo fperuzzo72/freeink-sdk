@@ -1098,6 +1098,25 @@ inline StyleSet outlinedButtonStyles(const int radius = 0, const Color selectedB
   styles.selected.radius = clampRadius(radius);
   return styles;
 }
+
+// Borderless controls for chrome-light apps: nothing drawn at rest (no box,
+// no border), a light fill for selected/pressed feedback. Set as
+// ThemeTokens.button (and pass to dropdowns/rows) for the "just text on
+// paper" look.
+inline StyleSet flatButtonStyles(const int radius = 0, const Color selectedBackground = Color::LightGray) {
+  StyleSet styles = defaultButtonStyles();
+  styles.normal.background = Paint{};
+  styles.normal.foreground = Paint::solid(Color::Black);
+  styles.normal.border = Paint{};
+  styles.normal.borderWidth = 0;
+  styles.normal.radius = clampRadius(radius);
+  styles.selected.background = Paint::solid(selectedBackground);
+  styles.selected.foreground = Paint::solid(Color::Black);
+  styles.selected.border = Paint{};
+  styles.selected.borderWidth = 0;
+  styles.selected.radius = clampRadius(radius);
+  return styles;
+}
 Rect centeredRect(Rect outer, Size inner);
 Rect ensureMinTouchRect(Rect visual, int16_t minSize, Rect bounds);
 // Number of rows that fully fit in the rect at the given row height/gap.

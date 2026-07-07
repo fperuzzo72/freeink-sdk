@@ -85,13 +85,16 @@ class TtfFont : public RenderFont {
   static constexpr uint32_t kGlyphSlots = 128;
 };
 
-// Per-codepoint fallback across up to four fonts. Metrics come from the
-// first font that has the glyph; line height and ascent come from the
-// primary so mixed-script lines share a stable baseline grid. Kerning
-// applies only when both codepoints resolve to the same font.
+// Style-aware per-codepoint fallback across up to eight faces. Faces
+// register with the style they provide (regular / bold / italic /
+// bold-italic); selection prefers an exact style match that has the glyph,
+// then a partial match, then regular, then anything with the glyph. Line
+// height and ascent come from the first registered face so mixed-style
+// lines share a stable baseline grid. Kerning applies only when both
+// codepoints resolve to the same face.
 class FontChain : public BookFont {
  public:
-  bool add(RenderFont* font);
+  bool add(RenderFont* font, uint8_t styleFlags = StyleNone);
 
   int16_t advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) override;
   int16_t lineHeight(uint16_t sizePx) override;
@@ -99,13 +102,23 @@ class FontChain : public BookFont {
   int16_t kerning(uint32_t left, uint32_t right, uint16_t sizePx,
                   uint8_t styleFlags) override;
 
-  // The font that will draw `codepoint` (primary when nobody has it — its
-  // .notdef box is the honest signal of a missing glyph).
-  RenderFont* fontFor(uint32_t codepoint);
+  // The face that will draw `codepoint` in `styleFlags`. `faceFlagsOut`
+  // (optional) receives the chosen face's registered style — renderers use
+  // it to synthesize bold when no real bold face exists.
+  RenderFont* fontFor(uint32_t codepoint, uint8_t styleFlags = StyleNone,
+                      uint8_t* faceFlagsOut = nullptr);
+
+  // Bitmask of styles with a registered face (for cache fingerprints).
+  uint8_t styleCoverage() const { return coverage_; }
 
  private:
-  RenderFont* fonts_[4] = {nullptr, nullptr, nullptr, nullptr};
+  struct Entry {
+    RenderFont* font;
+    uint8_t flags;
+  };
+  Entry entries_[8] = {};
   uint8_t count_ = 0;
+  uint8_t coverage_ = 0;
 };
 
 }  // namespace book

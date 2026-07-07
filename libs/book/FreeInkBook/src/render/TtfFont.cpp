@@ -164,36 +164,58 @@ const GlyphBitmap* TtfFont::rasterize(uint32_t codepoint, uint16_t sizePx) {
 
 // --- FontChain -----------------------------------------------------------------
 
-bool FontChain::add(RenderFont* font) {
-  if (font == nullptr || count_ >= 4) return false;
-  fonts_[count_++] = font;
+bool FontChain::add(RenderFont* font, uint8_t styleFlags) {
+  if (font == nullptr || count_ >= 8) return false;
+  entries_[count_++] = {font, static_cast<uint8_t>(styleFlags & (StyleBold | StyleItalic))};
+  coverage_ |= entries_[count_ - 1].flags == 0 ? 0x04 : entries_[count_ - 1].flags;
   return true;
 }
 
-RenderFont* FontChain::fontFor(uint32_t codepoint) {
+RenderFont* FontChain::fontFor(uint32_t codepoint, uint8_t styleFlags,
+                               uint8_t* faceFlagsOut) {
+  const uint8_t want = styleFlags & (StyleBold | StyleItalic);
+  RenderFont* best = nullptr;
+  uint8_t bestFlags = 0;
+  int bestScore = -1;
   for (uint8_t i = 0; i < count_; ++i) {
-    if (fonts_[i]->hasGlyph(codepoint)) return fonts_[i];
+    if (!entries_[i].font->hasGlyph(codepoint)) continue;
+    const uint8_t have = entries_[i].flags;
+    int score;
+    if (have == want) score = 3;                        // exact style
+    else if (have != 0 && (have & want) == have) score = 2;  // subset (bold for bold-italic)
+    else if (have == 0) score = 1;                      // regular fallback
+    else score = 0;                                     // wrong style, right glyph
+    if (score > bestScore) {
+      bestScore = score;
+      best = entries_[i].font;
+      bestFlags = have;
+    }
   }
-  return count_ > 0 ? fonts_[0] : nullptr;
+  if (best == nullptr && count_ > 0) {
+    best = entries_[0].font;
+    bestFlags = entries_[0].flags;
+  }
+  if (faceFlagsOut != nullptr) *faceFlagsOut = bestFlags;
+  return best;
 }
 
 int16_t FontChain::advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) {
-  RenderFont* font = fontFor(codepoint);
+  RenderFont* font = fontFor(codepoint, styleFlags);
   return font != nullptr ? font->advance(codepoint, sizePx, styleFlags) : 0;
 }
 
 int16_t FontChain::lineHeight(uint16_t sizePx) {
-  return count_ > 0 ? fonts_[0]->lineHeight(sizePx) : static_cast<int16_t>(sizePx);
+  return count_ > 0 ? entries_[0].font->lineHeight(sizePx) : static_cast<int16_t>(sizePx);
 }
 
 int16_t FontChain::ascent(uint16_t sizePx) {
-  return count_ > 0 ? fonts_[0]->ascent(sizePx) : static_cast<int16_t>(sizePx);
+  return count_ > 0 ? entries_[0].font->ascent(sizePx) : static_cast<int16_t>(sizePx);
 }
 
 int16_t FontChain::kerning(uint32_t left, uint32_t right, uint16_t sizePx,
                            uint8_t styleFlags) {
-  RenderFont* a = fontFor(left);
-  RenderFont* b = fontFor(right);
+  RenderFont* a = fontFor(left, styleFlags);
+  RenderFont* b = fontFor(right, styleFlags);
   if (a == nullptr || a != b) return 0;
   return a->kerning(left, right, sizePx, styleFlags);
 }

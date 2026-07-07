@@ -25,13 +25,13 @@ class BitmapBookFont : public book::RenderFont {
  public:
   explicit BitmapBookFont(const BitmapFont& font = kNotoSansFont) : font_(font) {}
 
-  bool hasGlyph(uint32_t codepoint) const override {
-    return codepoint >= font_.first && codepoint <= font_.last;
-  }
+  bool hasGlyph(uint32_t codepoint) const override { return glyphFor(codepoint) != nullptr; }
 
   int16_t advance(uint32_t codepoint, uint16_t, uint8_t) override {
     const FontGlyph* g = glyphFor(codepoint);
-    return g != nullptr ? g->xAdvance : font_.maxWidth;
+    if (g != nullptr) return g->xAdvance;
+    const FontGlyph* space = glyphFor(' ');  // modest gap for the truly missing
+    return space != nullptr ? space->xAdvance : font_.maxWidth;
   }
   int16_t lineHeight(uint16_t) override { return font_.yAdvance; }
   int16_t ascent(uint16_t) override { return font_.ascent; }
@@ -60,8 +60,22 @@ class BitmapBookFont : public book::RenderFont {
   }
 
  private:
-  const FontGlyph* glyphFor(uint32_t codepoint) const {
-    if (!hasGlyph(codepoint)) return nullptr;
+  // Books use typographic punctuation (’ “ ” – — …) that compact bitmap
+  // ranges rarely cover; degrade to the ASCII equivalent instead of a gap.
+  static uint32_t normalized(uint32_t cp) {
+    switch (cp) {
+      case 0x2018: case 0x2019: case 0x02BC: return 0x27;  // '
+      case 0x201C: case 0x201D: return 0x22;               // "
+      case 0x2013: case 0x2014: case 0x2212: return 0x2D;  // -
+      case 0x2026: return 0x2E;                            // . (of ...)
+      case 0x00A0: return 0x20;                            // nbsp
+      default: return cp;
+    }
+  }
+  const FontGlyph* glyphFor(uint32_t cp) const {
+    uint32_t codepoint = cp;
+    if (codepoint < font_.first || codepoint > font_.last) codepoint = normalized(codepoint);
+    if (codepoint < font_.first || codepoint > font_.last) return nullptr;
     return &font_.glyphs[codepoint - font_.first];
   }
 
