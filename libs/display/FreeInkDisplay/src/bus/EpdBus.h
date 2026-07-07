@@ -61,6 +61,14 @@ class EpdBus {
   void waitBusy(const char* tag = nullptr);
   void waitBusy(BusyPolarity p, const char* tag = nullptr);
 
+  // Instantaneous BUSY-pin read for non-blocking refresh polling. X3's
+  // two-phase wait can't be captured in a single read; its terminal state is
+  // HIGH, so LOW reports busy (X3 drivers don't use the async path today).
+  bool isBusy() const {
+    const int level = digitalRead(_pins.busy);
+    return _busy == BusyPolarity::ActiveHigh ? level == HIGH : level == LOW;
+  }
+
   // Optional hooks fired around long BUSY waits. A refresh takes ~0.3-2 s during
   // which the CPU only polls the BUSY pin; these let host firmware save power in
   // that window (e.g. reduce the CPU clock) without the SDK knowing the policy.

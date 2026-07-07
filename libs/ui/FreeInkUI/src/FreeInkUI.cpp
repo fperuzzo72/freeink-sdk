@@ -1,5 +1,18 @@
 #include <FreeInkUI.h>
 
+#if defined(ARDUINO_ARCH_ESP32)
+#include <Arduino.h>
+// FreeInkUI's render pipeline (screen builders + text layout) runs deeper
+// than Arduino's default 8 KB loopTask stack; the overflow shows up as a
+// "Stack canary watchpoint triggered (loopTask)" panic and a reboot
+// mid-interaction. Ship a roomier weak default so every FreeInkUI app gets
+// it for free. Apps still override with the standard
+// SET_LOOP_TASK_STACK_SIZE(...) macro — that strong definition beats this
+// weak one, and this weak one beats the core's 8 KB weak default because
+// app-side libraries link ahead of the Arduino framework archive.
+__attribute__((weak)) size_t getArduinoLoopTaskStackSize(void) { return 16 * 1024; }
+#endif
+
 namespace freeink {
 namespace ui {
 

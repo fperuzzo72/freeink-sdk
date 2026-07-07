@@ -162,6 +162,7 @@ void InputManager::beginAsync(const uint8_t taskPriority, const uint32_t pollMs,
   _asyncPollMs = pollMs;
   _asyncQueue = xQueueCreate(queueLen, sizeof(uint8_t));
   if (!_asyncQueue) return;
+  _asyncTapQueue = xQueueCreate(queueLen, sizeof(float) * 2);
   xTaskCreate(asyncTaskTrampoline, "fi_input", 4096, this, taskPriority, &_asyncTask);
 }
 
@@ -174,6 +175,10 @@ void InputManager::asyncPoll() {
     for (const uint8_t b : kButtons) {
       if (wasPressed(b)) xQueueSend(_asyncQueue, &b, 0);
     }
+    float tap[2];
+    if (_asyncTapQueue && wasTouchTap(tap[0], tap[1])) {
+      xQueueSend(_asyncTapQueue, tap, 0);
+    }
     vTaskDelay(pdMS_TO_TICKS(_asyncPollMs));
   }
 }
@@ -181,6 +186,15 @@ void InputManager::asyncPoll() {
 bool InputManager::popPress(uint8_t& button) {
   if (!_asyncQueue) return false;
   return xQueueReceive(_asyncQueue, &button, 0) == pdTRUE;
+}
+
+bool InputManager::popTouchTap(float& nx, float& ny) {
+  if (!_asyncTapQueue) return false;
+  float tap[2];
+  if (xQueueReceive(_asyncTapQueue, tap, 0) != pdTRUE) return false;
+  nx = tap[0];
+  ny = tap[1];
+  return true;
 }
 
 bool InputManager::isDigitalPressed(const int8_t pin) const {

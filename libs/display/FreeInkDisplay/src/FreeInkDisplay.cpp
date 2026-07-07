@@ -282,24 +282,67 @@ bool FreeInkDisplay::hasSecondaryBuffer() const { return frameBufferActive != nu
 // Panel operations (delegated to the active driver)
 // ============================================================================
 
+void FreeInkDisplay::syncPendingAsync() {
+  if (!_asyncPending) return;
+  _bus.waitBusy("async refresh");
+  _asyncPending = false;
+}
+
+bool FreeInkDisplay::refreshBusy() {
+  if (!_asyncPending) return false;
+  if (_bus.isBusy()) return true;
+  _asyncPending = false;
+  return false;
+}
+
 void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayBuffer mode=%d off=%d\n", (int)mode, (int)turnOffScreen);
 #endif
+  syncPendingAsync();
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   _driver->display(_bus, frameBuffer, nullptr, toInternal(mode), turnOffScreen);
+  // The blocking path resynced the controller's baseline from the live
+  // framebuffer; the async shadow no longer matches what is displayed.
+  _shadowValid = false;
 #else
   _driver->display(_bus, frameBuffer, frameBufferActive, toInternal(mode), turnOffScreen);
   swapBuffers();
 #endif
 }
 
+void FreeInkDisplay::displayBufferAsync(RefreshMode mode) {
+  syncPendingAsync();
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  if (_asyncShadow == nullptr) {
+    _asyncShadow = static_cast<uint8_t*>(malloc(bufferSize));
+    _shadowValid = false;
+  }
+  if (_asyncShadow == nullptr) {  // allocation failed: blocking fallback
+    displayBuffer(mode);
+    return;
+  }
+  // First async update after boot or a blocking display: the controller's RED
+  // plane still holds the displayed frame (single-buffer prev = nullptr path);
+  // from then on the shadow supplies the baseline on every update.
+  _driver->displayAsync(_bus, frameBuffer, _shadowValid ? _asyncShadow : nullptr, toInternal(mode));
+  memcpy(_asyncShadow, frameBuffer, bufferSize);
+  _shadowValid = true;
+#else
+  _driver->displayAsync(_bus, frameBuffer, frameBufferActive, toInternal(mode));
+  swapBuffers();
+#endif
+  _asyncPending = true;
+}
+
 void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayWindow %u,%u %ux%u\n", x, y, w, h);
 #endif
+  syncPendingAsync();
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   _driver->displayWindow(_bus, frameBuffer, nullptr, x, y, w, h, turnOffScreen);
+  _shadowValid = false;
 #else
   _driver->displayWindow(_bus, frameBuffer, frameBufferActive, x, y, w, h, turnOffScreen);
 #endif
@@ -309,6 +352,8 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");
 #endif
+  syncPendingAsync();
+  _shadowValid = false;
   _driver->displayGray(_bus, frameBuffer, turnOffScreen, lut, factoryMode);
 }
 
@@ -320,6 +365,8 @@ void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_
 }
 
 void FreeInkDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen) {
+  syncPendingAsync();
+  _shadowValid = false;
   _driver->displayGrayscaleBase(_bus, frameBuffer, toInternal(fallback), turnOffScreen);
 }
 
@@ -389,6 +436,7 @@ void FreeInkDisplay::setCustomLUT(bool enabled, const unsigned char* lutData) {
 }
 
 void FreeInkDisplay::deepSleep() {
+  syncPendingAsync();
   if (_driver) _driver->deepSleep(_bus);
 }
 

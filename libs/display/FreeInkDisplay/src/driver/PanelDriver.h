@@ -55,6 +55,16 @@ class PanelDriver {
     display(bus, fb, prev, RefreshMode::Fast, turnOff);
   }
 
+  // Non-blocking variant: load RAM and start the panel waveform, then return
+  // without waiting on BUSY. The panel refreshes from its own RAM copy, so the
+  // caller may redraw `fb` immediately; the facade polls the BUSY pin and
+  // guards against issuing another operation until the refresh completes.
+  // Default falls back to the blocking display() so drivers gain async
+  // support one at a time without breaking correctness.
+  virtual void displayAsync(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode) {
+    display(bus, fb, prev, mode, false);
+  }
+
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual bool supportsStripGrayscale() const { return false; }
   // Display `fb` as the base frame for a grayscale overlay that follows.

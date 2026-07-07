@@ -424,6 +424,26 @@ inline void present(EInkDisplay& display, const RefreshHint hint) {
   }
 }
 
+// Non-blocking present: starts the refresh and returns immediately — the
+// panel refreshes from its own RAM copy, so keep rendering into the
+// framebuffer while it runs. Pair with display.refreshBusy(): push the next
+// frame once the panel goes idle. This is what keeps touch and typing
+// responsive: a blocking present() is a 0.3-2 s blind window in which the
+// loop can't poll input.
+inline void presentAsync(EInkDisplay& display, const RefreshHint hint) {
+  switch (hint) {
+    case RefreshHint::Full:
+    case RefreshHint::Clean:
+      display.displayBufferAsync(EInkDisplay::FULL_REFRESH);
+      break;
+    case RefreshHint::Fast:
+      display.displayBufferAsync(EInkDisplay::FAST_REFRESH);
+      break;
+    case RefreshHint::None:
+      break;
+  }
+}
+
 }  // namespace ui
 }  // namespace freeink
 #endif  // __has_include(<EInkDisplay.h>)

@@ -134,12 +134,34 @@ that memory in `display.begin()`. Construct `DisplayTarget` and `FreeInkApp`
 after `display.begin()`; `display.getFrameBuffer()` is not valid at static-init
 time.
 
+The loop task gets room automatically: the render pipeline (screen builders +
+text layout) runs deeper than Arduino's default 8 KB `loopTask` stack (the
+overflow is a `Stack canary watchpoint triggered (loopTask)` panic and a
+reboot mid-interaction), so on ESP32 FreeInkUI ships a weak 16 KB default for
+`getArduinoLoopTaskStackSize()`. An app that needs a different size overrides
+it the standard way — `SET_LOOP_TASK_STACK_SIZE(24 * 1024);` at global scope
+in the sketch beats the SDK's weak default.
+
 `FreeInkApp` does not own your display refresh policy. `lastRenderRefreshHint()`
 describes the frame just drawn, while `invalidated()` / `refreshHint()` describe
 whether an action handler changed state and a follow-up render is needed.
 `present()` (from `FreeInkUIDisplayTarget.h`, compiled only when
 `EInkDisplay.h` is on the include path) is the standard hint-to-panel mapping;
 firmware with its own refresh policy can keep switching on the hint instead.
+
+For interactive apps prefer `presentAsync()` + `display.refreshBusy()`:
+`present()` blocks on the panel's BUSY pin for the whole waveform (~0.3–2 s),
+during which the loop can't poll input — typing feels sluggish and taps get
+lost. `presentAsync()` starts the refresh and returns (~25 ms); the panel
+refreshes from its own RAM copy, so the loop keeps polling input and rendering
+into the framebuffer, and pushes the newest frame once `refreshBusy()` goes
+false. Accumulate the strongest `RefreshHint` across renders between presents.
+
+Pair it with buffered input: `InputManager::beginAsync()` samples touch on its
+own task and queues completed taps (`popTouchTap`), so taps that land during a
+~200 ms render are never lost, and `FreeInkApp::route()` dispatches each
+queued tap against the last rendered frame without drawing — a fast typing
+burst costs one repaint, not one render per key.
 
 Frames do not clear the target on their own — without `setClearColor()` (or an
 app-side clear) the previous screen shows through wherever the new one doesn't

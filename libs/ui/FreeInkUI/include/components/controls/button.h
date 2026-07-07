@@ -68,7 +68,9 @@ void button(Frame<MaxInteractions>& frame, Rect rect, const ButtonProps& props) 
     Rect iconRect = centeredRect(content, Size{static_cast<int16_t>(icon.width), static_cast<int16_t>(icon.height)});
     frame.target().bitmap(iconRect, icon, BitmapMode::Center, style.foreground);
   } else if (props.label) {
-    frame.target().text(content, props.label, textStyleWithForeground(props.text, style.foreground));
+    TextStyle textStyle = textStyleWithForeground(props.text, style.foreground);
+    textStyle.align = TextAlign::Center;
+    frame.target().text(content, props.label, textStyle);
   }
 }
 

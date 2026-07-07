@@ -144,6 +144,12 @@ class InputManager {
   // no press is pending (or async polling was never started).
   bool popPress(uint8_t& button);
 
+  // Pop the next latched touch tap (normalized 0..1 panel-native coordinates,
+  // same frame as wasTouchTap). The async task queues every completed tap, so
+  // taps that land while the app thread renders or waits are never lost —
+  // drain and route them afterwards. Returns false when no tap is pending.
+  bool popTouchTap(float& nx, float& ny);
+
   // --- Diagnostics -----------------------------------------------------------
   // A live sample of one button-group ADC pin: the raw reading plus the BTN_*
   // it currently classifies as (-1 = no band matched). On the Xteink ADC ladder
@@ -167,6 +173,7 @@ class InputManager {
   static ButtonHook s_buttonHook;
 
   QueueHandle_t _asyncQueue = nullptr;
+  QueueHandle_t _asyncTapQueue = nullptr;
   TaskHandle_t _asyncTask = nullptr;
   uint32_t _asyncPollMs = 15;
   static void asyncTaskTrampoline(void* self);

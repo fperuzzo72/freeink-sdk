@@ -101,6 +101,19 @@ class FreeInkDisplay {
 #endif
 
   void displayBuffer(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
+
+  // Non-blocking refresh: pushes the frame, starts the panel waveform, and
+  // returns (~25 ms) while the panel refreshes on its own (~0.3-2 s). Poll
+  // refreshBusy(); the framebuffer is free to redraw the moment this returns
+  // (the panel refreshes from its own RAM copy). Any blocking display call
+  // waits out a pending async refresh first. In single-buffer mode this costs
+  // one extra frame buffer (lazily heap-allocated) holding the last-displayed
+  // frame as the differential baseline; if that allocation fails it falls
+  // back to the blocking path.
+  void displayBufferAsync(RefreshMode mode = FAST_REFRESH);
+  // True while an async refresh is still running on the panel.
+  bool refreshBusy();
+
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
@@ -175,10 +188,22 @@ class FreeInkDisplay {
 
  private:
   void selectDriver();
+  // Block until a pending async refresh completes (no-op when none is).
+  // Every blocking panel operation calls this before touching the bus.
+  void syncPendingAsync();
 
   EpdPins _pins;
   EpdBus _bus;
   PanelDriver* _driver = nullptr;
+
+  // Async refresh state: pending flag + (single-buffer mode) a lazily
+  // allocated shadow of the last-displayed frame, used as the differential
+  // baseline while the app redraws the live framebuffer. _shadowValid drops
+  // whenever a blocking display path runs (the controller RAM then holds the
+  // baseline again).
+  bool _asyncPending = false;
+  uint8_t* _asyncShadow = nullptr;
+  bool _shadowValid = false;
 
   enum class PanelSel : uint8_t { X4, X3, M5 };
   PanelSel _panelSel = PanelSel::X4;

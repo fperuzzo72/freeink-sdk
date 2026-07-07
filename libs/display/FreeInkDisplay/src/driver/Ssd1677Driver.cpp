@@ -204,7 +204,7 @@ void Ssd1677Driver::writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, u
   bus.data(data, static_cast<uint16_t>(size));
 }
 
-void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff) {
+void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool async) {
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   const uint32_t dbgStart = millis();
   const char* dbgMode = (mode == RefreshMode::Full) ? "FULL" : (mode == RefreshMode::Half) ? "HALF" : "FAST";
@@ -241,7 +241,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff) {
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
     bus.data(seqOverride);
     bus.cmd(CMD_MASTER_ACTIVATION);
-    bus.waitBusy("refresh");
+    if (!async) bus.waitBusy("refresh");
     // The sequence powered the panel down at the end, but keep the flag truthful
     // to intent: leave it "on" between active updates so display() doesn't force a
     // full HALF refresh next time (which would defeat fast refresh). turnOff marks
@@ -280,7 +280,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff) {
   bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
   bus.data(displayMode);
   bus.cmd(CMD_MASTER_ACTIVATION);
-  bus.waitBusy("refresh");
+  if (!async) bus.waitBusy("refresh");
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   // esp_rom_printf hits the always-on IDF console; Serial (HWCDC) drops on S3.
   esp_rom_printf("[SSD1677] %s refresh %ums (ctrl2=0x%x)\n", dbgMode, (unsigned)(millis() - dbgStart), displayMode);
@@ -288,6 +288,19 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff) {
 }
 
 void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  displayImpl(bus, fb, prev, mode, turnOff, /*async=*/false);
+}
+
+// Async: fire the refresh and return; the facade polls BUSY and guards the
+// next operation. Skips the single-buffer post-refresh baseline resync — the
+// facade supplies `prev` (its shadow of the last-displayed frame) on every
+// async update, so RED is rewritten fresh each time instead.
+void Ssd1677Driver::displayAsync(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode) {
+  displayImpl(bus, fb, prev, mode, /*turnOff=*/false, /*async=*/true);
+}
+
+void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
+                                bool async) {
   // The first paint after boot/wake must be a FULL refresh: a partial/DU refresh
   // only drives pixels that differ from the RED "old" plane, so it can't clear what
   // is physically on the panel at boot (the black boot screen) — that ghosts through
@@ -325,12 +338,14 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
     }
   }
 
-  refresh(bus, mode, turnOff);
+  refresh(bus, mode, turnOff, async);
 
   // Stock X4 syncs both controller RAM planes after activation. Do the same in
   // single-buffer mode so the next differential update starts from a matched
   // BW/RED baseline instead of assuming BW survived the refresh unchanged.
-  if (prev == nullptr) {
+  // (Async updates always come with a facade-owned prev, so this never runs
+  // while a refresh is still in flight.)
+  if (prev == nullptr && !async) {
     setRamArea(bus, 0, 0, _w, _h);
     writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);

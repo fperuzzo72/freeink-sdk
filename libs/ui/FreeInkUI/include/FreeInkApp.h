@@ -112,7 +112,7 @@ class Screen {
     if (themed.subtitleText.font == 0) themed.subtitleText = theme_.smallText;
     if (themed.styles.unset()) themed.styles = theme_.popup;
     if (themed.leadingStyles.unset()) themed.leadingStyles = theme_.button;
-    if (themed.trailingStyles.unset()) themed.trailingStyles = theme_.button;
+    if (themed.trailingStyles.unset()) themed.trailingStyles = plainStyles(Paint::solid(Color::Black));
     if (themed.trailingText.font == 0) themed.trailingText = theme_.bodyText;
     // Headers document a divider by default; give the themed style a border
     // when the theme's popup style ships without one (the built-in default).
@@ -494,6 +494,28 @@ class FreeInkApp {
       if (!flashSuppressed_) {
         interactions_.setFlash(lastEvent_.action, lastEvent_.value);
         flashTicks_ = 2;  // this frame + the invalidated repaint that gets pushed
+      }
+    }
+    return lastEvent_;
+  }
+
+  // Route input against the interactions the LAST rendered frame registered
+  // and dispatch the resulting action — without drawing. A full render costs
+  // real time (~100-200 ms on large panels), so firmware that buffers input
+  // (e.g. InputManager::beginAsync tap queues) drains the whole burst through
+  // route() and repaints once. Only valid while the screen content still
+  // matches the last render (a dispatched handler that navigates makes the
+  // remaining queued taps route against the old screen — same as taps landing
+  // just before a transition).
+  ActionEvent route(const InputSnapshot& input) {
+    lastEvent_ = interactions_.route(input);
+    if (lastEvent_) {
+      flashSuppressed_ = false;
+      dispatch(lastEvent_);
+      invalidate(RefreshHint::Fast);
+      if (!flashSuppressed_) {
+        interactions_.setFlash(lastEvent_.action, lastEvent_.value);
+        flashTicks_ = 2;
       }
     }
     return lastEvent_;
