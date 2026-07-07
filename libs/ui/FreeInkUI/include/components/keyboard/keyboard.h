@@ -99,8 +99,22 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     bp.minTouchSize = props.minTouchSize;
     bp.radius = props.keyRadius;
     bp.enabled = key.enabled && key.kind != KeyKind::Disabled;
-    if (key.kind == KeyKind::Delete) bp.icon = lucideDeleteIcon16();
     button(frame, keyRect, bp);
+
+    if (key.kind == KeyKind::Delete) {
+      // Size the delete glyph from the label font so it reads at the same
+      // weight as neighboring key labels; the 16px source art carries ~3px of
+      // internal margin, so the box runs slightly over the line height.
+      const Paint ink = styles.resolve(frame.stateFor(action, key.value, state)).foreground;
+      const int16_t lh = frame.target().lineHeight(keyText.font);
+      int16_t iconSize = static_cast<int16_t>(lh + lh / 8);
+      if (iconSize < 16) iconSize = 16;
+      const int16_t maxSize = keyRect.height < keyRect.width ? keyRect.height : keyRect.width;
+      if (iconSize > maxSize) iconSize = maxSize;
+      frame.target().bitmap(centeredRect(keyRect, Size{iconSize, iconSize}), lucideDeleteIcon16(),
+                            BitmapMode::Contain, ink);
+      return;
+    }
 
     if (key.kind != KeyKind::Space) return;
     const Paint ink = styles.resolve(frame.stateFor(action, key.value, state)).foreground;

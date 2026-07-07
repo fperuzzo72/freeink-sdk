@@ -331,7 +331,8 @@ The output contains an inline `settingsScreen(...)`-style function plus
 generated `ActionId` constants. Supported schema component types currently
 include `header`, `footer`, `list`, `button`, `settingRow`, `toggleRow`,
 `stepperRow`, `checkbox`, `slider`, `dropdown`, `table`, `radioGroup`,
-`qwertyKeyboard`, `spacer`, `popup`, and `optionDialog`. Components that consume
+`qwertyKeyboard`, `spacer`, `popup`, `optionDialog`, `statusBar`, `bookCard`,
+and `textArea`. Components that consume
 layout space can set `"anchor": "top"` or `"anchor": "bottom"`; omitted anchors use the
 component default (`footer` defaults bottom, most others default top). Modal
 overlays such as `popup` and `optionDialog` render centered over the screen. The
