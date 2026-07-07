@@ -1,0 +1,89 @@
+#pragma once
+
+// FreeInk SDK — ZIP container access for FreeInkBook.
+//
+// ZipCatalog parses the central directory of an EPUB container into the book
+// arena (entry names + fixed records; nothing else is retained). Item
+// contents are then read through ZipEntryReader, which streams stored or
+// deflated data in caller-sized chunks — an entry is never loaded whole.
+//
+// Out of scope for now (returns BookStatus::Unsupported): zip64 containers
+// and compression methods other than stored/deflate. Books that need zip64
+// exceed 4 GB and do not occur in practice.
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "BookArena.h"
+#include "BookStorage.h"
+#include "BookTypes.h"
+
+namespace freeink {
+namespace book {
+
+struct ZipEntry {
+  const char* name = nullptr;  // path inside the container, arena-owned
+  uint32_t nameHash = 0;       // FNV-1a of name
+  uint32_t compressedSize = 0;
+  uint32_t uncompressedSize = 0;
+  uint32_t localHeaderOffset = 0;
+  uint16_t method = 0;         // 0 = stored, 8 = deflate
+};
+
+class ZipCatalog {
+ public:
+  // Parses the central directory. Entry records and names are allocated from
+  // `arena` and remain valid until that arena resets.
+  BookStatus open(BookSource& source, Arena& arena);
+
+  const ZipEntry* find(const char* path) const;
+  size_t entryCount() const { return count_; }
+  const ZipEntry* entry(size_t index) const {
+    return index < count_ ? &entries_[index] : nullptr;
+  }
+  BookSource* source() const { return source_; }
+
+  static uint32_t hashPath(const char* path);
+
+ private:
+  BookSource* source_ = nullptr;
+  ZipEntry* entries_ = nullptr;
+  size_t count_ = 0;
+};
+
+// Streaming reader for one ZIP entry. For deflated entries the inflate state
+// (~11 KB decompressor + 32 KB window + 4 KB input buffer) is allocated from
+// the scratch arena passed to open(); release the arena mark after the last
+// read() to reclaim it. read() returns bytes produced, 0 at end of entry, or
+// a negative value on error.
+class ZipEntryReader {
+ public:
+  BookStatus open(BookSource& source, const ZipEntry& entry, Arena& scratch);
+  int32_t read(void* dst, uint32_t len);
+  uint32_t totalProduced() const { return produced_; }
+  const ZipEntry* entry() const { return entry_; }
+
+ private:
+  int32_t readStored(uint8_t* dst, uint32_t len);
+  int32_t readDeflated(uint8_t* dst, uint32_t len);
+
+  BookSource* source_ = nullptr;
+  const ZipEntry* entry_ = nullptr;
+  uint64_t dataOffset_ = 0;
+  uint32_t produced_ = 0;
+
+  // Deflate state (opaque here to keep miniz out of the public headers).
+  void* decompressor_ = nullptr;
+  uint8_t* window_ = nullptr;
+  uint8_t* inBuf_ = nullptr;
+  uint32_t inPos_ = 0;
+  uint32_t inAvail_ = 0;
+  uint32_t compConsumed_ = 0;
+  uint32_t windowPos_ = 0;   // next write position in the 32 KB window
+  uint32_t pendingPos_ = 0;  // start of decoded-but-undelivered bytes
+  uint32_t pendingLen_ = 0;
+  bool done_ = false;
+};
+
+}  // namespace book
+}  // namespace freeink
