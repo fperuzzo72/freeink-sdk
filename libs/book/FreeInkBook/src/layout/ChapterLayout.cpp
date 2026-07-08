@@ -22,6 +22,7 @@
 #include "epub/ImageProbe.h"
 #include "epub/PackageParsers.h"
 #include "epub/XmlSax.h"
+#include "text/arab_shaping.h"
 
 namespace freeink {
 namespace book {
@@ -159,9 +160,8 @@ bool crossesScripts(uint32_t a, uint32_t b) {
 // --- Bidi (UAX #9 subset for book text) ---------------------------------------
 //
 // Hebrew-class RTL: strong-R runs, embedded LTR words/numbers, mirrored
-// brackets. Levels 0-2 cover real books (base direction + one embedding);
-// Arabic REORDERS correctly here too but is unreadable without joining
-// shaping, which this engine does not do yet.
+// brackets. Levels 0-2 cover real books (base direction + one embedding).
+// Arabic additionally gets contextual joining forms (see shapeArabic below).
 
 enum : uint8_t { kBidiL = 0, kBidiR = 1, kBidiEN = 2, kBidiNeutral = 3 };
 
@@ -182,8 +182,9 @@ uint8_t bidiClass(uint32_t cp) {
 // Fills levels[byte] for every byte of text (continuation bytes copy their
 // lead). Returns true when the paragraph base direction is RTL (first strong
 // character is R). Levels: base 0/1; opposite-direction strong runs and
-// numbers inside RTL get base+1 (numbers in RTL → 2).
-bool computeBidiLevels(const char* text, uint32_t len, uint8_t* levels) {
+// numbers inside RTL get base+1 (numbers in RTL → 2). Sets *hasArabic when
+// any codepoint needs joining analysis (shapeArabic).
+bool computeBidiLevels(const char* text, uint32_t len, uint8_t* levels, bool* hasArabic) {
   // P2/P3: base = first strong.
   bool baseRtl = false;
   {
@@ -203,6 +204,7 @@ bool computeBidiLevels(const char* text, uint32_t len, uint8_t* levels) {
   while (i < len) {
     const uint32_t start = i;
     const uint32_t cp = decodeUtf8(text, len, i);
+    if (cp >= kArabJoinLo && cp <= kArabJoinHi) *hasArabic = true;
     const uint8_t cls = bidiClass(cp);
     uint8_t level;
     if (cls == kBidiR) level = 1;                       // R is always odd
@@ -270,6 +272,124 @@ void reverseUtf8(char* s, uint32_t len) {
     } else {
       ++i;
     }
+  }
+}
+
+// --- Arabic joining (contextual forms) -----------------------------------------
+//
+// Arabic letters connect: each takes an isolated/initial/medial/final glyph
+// depending on whether it actually joins its neighbors (Unicode ch. 9).
+// Every contextual glyph exists as a codepoint in the Presentation Forms
+// blocks, so shaping is a substitution — resolved here once per paragraph,
+// applied in decodeShaped() during measurement, and baked into page-run text
+// exactly like ligatures. The renderer needs no shaping logic; it does need
+// a font with Presentation Forms coverage (BookFont::covers guards each
+// substitution, so fonts without them degrade to today's isolated letters).
+//
+// The resolved form is packed into the levels array above the bidi level:
+// bits 0-2 bidi level, bits 3-5 form.
+enum : uint8_t {
+  kBidiLevelMask = 0x07,
+  kFormShift = 3,
+  kFormNone = 0,
+  kFormIso = 1,
+  kFormFin = 2,
+  kFormIni = 3,
+  kFormMed = 4,
+  kFormLamAlefIso = 5,  // on the lam; the following alef is kFormSkip
+  kFormLamAlefFin = 6,
+  kFormSkip = 7,        // alef consumed by a lam-alef ligature
+};
+
+uint8_t arabJoin(uint32_t cp) {
+  if (cp >= kArabJoinLo && cp <= kArabJoinHi) return kArabJoinType[cp - kArabJoinLo];
+  return kJoinU;
+}
+
+const ArabForms* arabFormsFor(uint32_t cp) {
+  uint32_t lo = 0, hi = kArabFormsCount;
+  while (lo < hi) {
+    const uint32_t mid = (lo + hi) / 2;
+    if (kArabForms[mid].base < cp) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < kArabFormsCount && kArabForms[lo].base == cp ? &kArabForms[lo] : nullptr;
+}
+
+const ArabLamAlef* lamAlefFor(uint32_t alefCp) {
+  for (uint32_t i = 0; i < kArabLamAlefCount; ++i) {
+    if (kArabLamAlef[i].alef == alefCp) return &kArabLamAlef[i];
+  }
+  return nullptr;
+}
+
+// The presentation-form codepoint for (base letter, resolved form), or 0.
+uint32_t arabPresentation(uint32_t cp, uint8_t form) {
+  const ArabForms* f = arabFormsFor(cp);
+  if (f == nullptr || form < kFormIso || form > kFormMed) return 0;
+  return f->forms[form - kFormIso];
+}
+
+// One logical pass over the paragraph: resolve each Arabic letter's form
+// from whether it connects to its neighbors (transparent marks are skipped
+// per the joining rules), and fuse lam + immediately-following alef into the
+// mandatory ligature — but only when `font` covers the ligature glyph, since
+// the consumed alef cannot be resurrected at render time. Vowel marks
+// between lam and alef defeat the ligature (v1: adjacency required).
+void shapeArabic(const char* text, uint32_t len, uint8_t* levels, BookFont* font) {
+  bool prevJoins = false;  // does the previous letter connect forward?
+  uint32_t i = 0;
+  while (i < len) {
+    const uint32_t start = i;
+    const uint32_t cp = decodeUtf8(text, len, i);
+    const uint8_t jt = arabJoin(cp);
+    if (jt == kJoinT) continue;  // marks render as-is and keep the join chain
+    const ArabForms* forms = arabFormsFor(cp);
+    if (forms == nullptr) {
+      // No contextual glyphs (tatweel, punctuation, non-Arabic): only the
+      // joining chain matters.
+      prevJoins = jt == kJoinC || jt == kJoinD || jt == kJoinL;
+      continue;
+    }
+    // Lam + alef fuses when the font can draw the ligature.
+    if (cp == 0x0644 && i < len) {
+      uint32_t j = i;
+      const uint32_t alef = decodeUtf8(text, len, j);
+      const ArabLamAlef* la = lamAlefFor(alef);
+      if (la != nullptr) {
+        const uint8_t form = prevJoins ? kFormLamAlefFin : kFormLamAlefIso;
+        const uint32_t lig = prevJoins ? la->final : la->isolated;
+        if (font->covers(lig)) {
+          for (uint32_t b = start; b < i; ++b)
+            levels[b] = static_cast<uint8_t>(levels[b] | (form << kFormShift));
+          for (uint32_t b = i; b < j; ++b)
+            levels[b] = static_cast<uint8_t>(levels[b] | (kFormSkip << kFormShift));
+          i = j;
+          prevJoins = false;  // the ligature does not join forward (alef is R)
+          continue;
+        }
+      }
+    }
+    // Forward context: the next non-transparent character must accept a
+    // join on its trailing side (D/R/C).
+    bool nextAccepts = false;
+    for (uint32_t j = i; j < len;) {
+      const uint32_t ncp = decodeUtf8(text, len, j);
+      const uint8_t njt = arabJoin(ncp);
+      if (njt == kJoinT) continue;
+      nextAccepts = njt == kJoinD || njt == kJoinR || njt == kJoinC;
+      break;
+    }
+    const bool joinsPrev = prevJoins && (jt == kJoinD || jt == kJoinR);
+    const bool joinsNext = jt == kJoinD && nextAccepts;
+    uint8_t form;
+    if (joinsPrev && joinsNext) form = kFormMed;
+    else if (joinsPrev) form = kFormFin;
+    else if (joinsNext) form = kFormIni;
+    else form = kFormIso;
+    for (uint32_t b = start; b < i; ++b)
+      levels[b] = static_cast<uint8_t>(levels[b] | (form << kFormShift));
+    prevJoins = jt == kJoinD;
   }
 }
 
@@ -780,11 +900,43 @@ class LayoutEngine : public XmlHandler {
 
   // --- measure phase ----------------------------------------------------------
 
-  // Decodes the codepoint at i (advancing i), folding ligature pairs when
-  // the font substitutes one and both halves share the span. Used by every
-  // measure/place/copy walk so widths and baked run text always agree.
+  // Decodes the codepoint at i (advancing i), applying Arabic contextual
+  // forms and folding ligature pairs when the font substitutes one and both
+  // halves share the span. Used by every measure/place/copy walk so widths
+  // and baked run text always agree.
   uint32_t decodeShaped(uint32_t end, uint32_t& i, const Span& span) const {
+    const uint32_t pos = i;
     uint32_t cp = decodeUtf8(parText_, end, i);
+    uint8_t form = static_cast<uint8_t>(levels_[pos] >> kFormShift);
+    if (form == kFormSkip) {
+      // An alef whose lam sits outside this walk's bounds (pathological
+      // split): render it joined to that lam.
+      form = kFormFin;
+    }
+    if (form == kFormLamAlefIso || form == kFormLamAlefFin) {
+      // shapeArabic only marks the pair when the font covers the ligature,
+      // and the alef follows immediately; consume it.
+      uint32_t lig = 0;
+      if (i < end) {
+        uint32_t j = i;
+        const ArabLamAlef* la = lamAlefFor(decodeUtf8(parText_, end, j));
+        if (la != nullptr) {
+          lig = form == kFormLamAlefFin ? la->final : la->isolated;
+          i = j;
+        }
+      }
+      if (lig != 0) {
+        cp = lig;
+      } else {
+        // The alef is beyond `end`: shape the lam alone, still joining it.
+        const uint32_t solo =
+            arabPresentation(cp, form == kFormLamAlefFin ? kFormMed : kFormIni);
+        if (solo != 0 && params_.font->covers(solo)) cp = solo;
+      }
+    } else if (form != kFormNone) {
+      const uint32_t shaped = arabPresentation(cp, form);
+      if (shaped != 0 && params_.font->covers(shaped)) cp = shaped;
+    }
     while (i < end && &spanAt(i) == &span) {
       uint32_t j = i;
       const uint32_t next = decodeUtf8(parText_, end, j);
@@ -854,7 +1006,9 @@ class LayoutEngine : public XmlHandler {
     lineCount_ = 0;
     set_linebreaks_utf8(reinterpret_cast<const utf8_t*>(parText_), parLen_, params_.language,
                         breaks_);
-    paraRtl_ = computeBidiLevels(parText_, parLen_, levels_);
+    bool hasArabic = false;
+    paraRtl_ = computeBidiLevels(parText_, parLen_, levels_, &hasArabic);
+    if (hasArabic) shapeArabic(parText_, parLen_, levels_, params_.font);
 
     const int32_t baseMaxWidth =
         params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx;
@@ -1066,7 +1220,7 @@ class LayoutEngine : public XmlHandler {
     {
       uint32_t segStart = rec.start;
       const Span* segSpan = &spanAt(rec.start);
-      uint8_t segLevel = levels_[rec.start];
+      uint8_t segLevel = levels_[rec.start] & kBidiLevelMask;
       bool gapBefore = false, spaceBefore = false, scriptGap = false;
       uint32_t linePrev = 0;
       uint32_t i = rec.start;
@@ -1082,7 +1236,7 @@ class LayoutEngine : public XmlHandler {
       while (i < rec.end) {
         const uint32_t charStart = i;
         const Span* span = &spanAt(charStart);
-        const uint8_t level = levels_[charStart];
+        const uint8_t level = levels_[charStart] & kBidiLevelMask;
         uint32_t next = charStart;
         const uint32_t cp = decodeShaped(rec.end, next, *span);
 
@@ -1090,7 +1244,7 @@ class LayoutEngine : public XmlHandler {
           close(charStart, true, true, false);
           segStart = next;
           segSpan = &spanAt(next < rec.end ? next : charStart);
-          segLevel = next < rec.end ? levels_[next] : level;
+          segLevel = next < rec.end ? (levels_[next] & kBidiLevelMask) : level;
           linePrev = cp;
           i = next;
           continue;

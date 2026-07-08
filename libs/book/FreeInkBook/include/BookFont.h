@@ -67,6 +67,15 @@ class BookFont {
     (void)styleFlags;
     return 0;
   }
+
+  // Whether the font can draw `codepoint` at all. Layout uses this to keep a
+  // shaping substitution (Arabic presentation forms) only when the font has
+  // the substituted glyph, falling back to the base letter otherwise. The
+  // default claims everything so metrics-only fakes stay simple.
+  virtual bool covers(uint32_t codepoint) {
+    (void)codepoint;
+    return true;
+  }
 };
 
 // A BookFont that can also rasterize — what PageRenderer and FontChain
@@ -76,6 +85,7 @@ class BookFont {
 class RenderFont : public BookFont {
  public:
   virtual bool hasGlyph(uint32_t codepoint) const = 0;
+  bool covers(uint32_t codepoint) override { return hasGlyph(codepoint); }
   // Returns nullptr for missing glyphs. The bitmap must stay valid until the
   // next rasterize() call on the same font.
   virtual const GlyphBitmap* rasterize(uint32_t codepoint, uint16_t sizePx) = 0;

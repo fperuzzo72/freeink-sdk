@@ -995,6 +995,75 @@ void testBidi() {
   if (ltr != nullptr) CHECK_EQ(ltr->x, params.marginLeft);
 }
 
+// Arabic fixture chapter (ch8): joining forms resolve per Unicode ch. 9 and
+// bake into run text as Presentation Forms codepoints, already in visual
+// order. Expected sequences are hand-derived from the joining rules:
+// dual-joining letters take initial/medial/final by actual connection,
+// right-joining letters (alef, dal, reh...) never join forward, transparent
+// marks (harakat) are skipped for context, and lam+alef fuses (U+FEFB/FEFC).
+void testArabicShaping() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  CollectSink sink(params, font);
+
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch8.xhtml");
+  CHECK(entry != nullptr);
+  uint32_t pages = 0;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                  entry->name, params, opened.scratch, sink,
+                                                  &pages)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(pages >= 1);
+  CHECK_EQ(sink.geometryViolations, 0);
+
+  // كتب (kaf teh beh, all dual): initial FEDB, medial FE98, final FE90 —
+  // stored visually reversed.
+  CHECK(std::strstr(sink.text, "\xEF\xBA\x90\xEF\xBA\x98\xEF\xBB\x9B") != nullptr);
+  // مدرسة exercises right-joining mid-word: meem-initial FEE3, dal-final
+  // FEAA, reh-ISOLATED FEAD (dal never joins forward), seen-initial FEB3,
+  // teh-marbuta-final FE94.
+  CHECK(std::strstr(sink.text,
+                    "\xEF\xBA\x94\xEF\xBA\xB3\xEF\xBA\xAD\xEF\xBA\xAA\xEF\xBB\xA3") != nullptr);
+  // Lam-alef ligatures: isolated لا -> FEFB; joined بلا -> beh-initial FE91
+  // + final ligature FEFC.
+  CHECK(std::strstr(sink.text, "\xEF\xBB\xBB") != nullptr);
+  CHECK(std::strstr(sink.text, "\xEF\xBB\xBC\xEF\xBA\x91") != nullptr);
+  // الكتاب: alef-iso FE8D, lam-initial FEDF (next is kaf, no ligature),
+  // kaf-medial FEDC, teh-medial FE98, alef-final FE8E, beh-ISOLATED FE8F
+  // (the final alef cannot join forward).
+  CHECK(std::strstr(sink.text,
+                    "\xEF\xBA\x8F\xEF\xBA\x8E\xEF\xBA\x98\xEF\xBB\x9C\xEF\xBB\x9F\xEF\xBA\x8D") !=
+        nullptr);
+  // Vocalized كَتَبَ: fatha (U+064E) is transparent — the letters shape as if
+  // adjacent, and the marks pass through in place.
+  CHECK(std::strstr(sink.text,
+                    "\xD9\x8E\xEF\xBA\x90\xD9\x8E\xEF\xBA\x98\xD9\x8E\xEF\xBB\x9B") != nullptr);
+  // Numbers still read left-to-right inside the RTL flow.
+  CHECK(std::strstr(sink.text, "42") != nullptr);
+  CHECK(std::strstr(sink.text, "24") == nullptr);
+  // Every Arabic letter was substituted: no base-form beh (D8 A8) remains.
+  CHECK(std::strstr(sink.text, "\xD8\xA8") == nullptr);
+
+  // A font without Presentation Forms coverage degrades to base letters —
+  // exactly the pre-shaping behavior, and the lam-alef pair is NOT consumed.
+  struct NoFormsFont : FakeFont {
+    bool covers(uint32_t cp) override { return cp < 0xFB50; }
+  } bare;
+  LayoutParams bareParams = stickyParams(bare);
+  CollectSink bareSink(bareParams, bare);
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                  entry->name, bareParams, opened.scratch,
+                                                  bareSink, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(std::strstr(bareSink.text, "\xEF\xBB\xBB") == nullptr);  // no FEFB
+  CHECK(std::strstr(bareSink.text, "\xEF\xBA\x90") == nullptr);  // no FE90
+  // لا survives as its two base letters (visual order: alef then lam).
+  CHECK(std::strstr(bareSink.text, "\xD8\xA7\xD9\x84") != nullptr);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1035,6 +1104,7 @@ int main(int argc, char** argv) {
   testCjk();
   testPlainText();
   testBidi();
+  testArabicShaping();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

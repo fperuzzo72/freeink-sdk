@@ -233,6 +233,15 @@ uint32_t FontChain::ligature(uint32_t left, uint32_t right, uint8_t styleFlags) 
   return lig != 0 && fontFor(lig, styleFlags) == a ? lig : 0;
 }
 
+bool FontChain::covers(uint32_t codepoint) {
+  // fontFor() falls back to face 0 for missing glyphs; coverage asks the
+  // strict question, so probe the faces directly.
+  for (uint8_t i = 0; i < count_; ++i) {
+    if (entries_[i].font->hasGlyph(codepoint)) return true;
+  }
+  return false;
+}
+
 int16_t FontChain::kerning(uint32_t left, uint32_t right, uint16_t sizePx,
                            uint8_t styleFlags) {
   RenderFont* a = fontFor(left, styleFlags);

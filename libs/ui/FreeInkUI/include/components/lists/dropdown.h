@@ -50,16 +50,28 @@ void dropdown(Frame<MaxInteractions>& frame, Rect rect, const DropdownProps& pro
   }
 
   Rect content = rect.inset(props.padding);
+  TextStyle labelStyle = textStyleWithForeground(props.labelText, style.foreground);
+  TextStyle subtitleStyle = textStyleWithForeground(props.subtitleText, style.foreground);
+  const int16_t labelH = frame.target().lineHeight(labelStyle.font);
+  const int16_t subH = props.subtitle ? frame.target().lineHeight(subtitleStyle.font) : 0;
+  Rect band = content;
+  if (props.label && props.subtitle) {
+    int16_t top = static_cast<int16_t>(content.y + (content.height - labelH - subH) / 2);
+    if (top < content.y) top = content.y;
+    band = Rect{content.x, top, content.width, labelH};
+  }
   const BitmapRef icon = props.icon ? props.icon : resolveBitmap(frame.assets(), props.iconAsset);
   if (icon) {
     const int16_t iconSize = props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon.width);
-    Rect iconRect{content.x, static_cast<int16_t>(content.y + (content.height - iconSize) / 2),
+    Rect iconRect{content.x, static_cast<int16_t>(band.y + (band.height - iconSize) / 2),
                   iconSize, iconSize};
     const BoxStyle& iconStyle = (props.styles.unset() ? defaultButtonStyles() : props.styles).resolve(state);
     frame.target().bitmap(iconRect, icon, BitmapMode::Contain, iconStyle.foreground);
     const int16_t shift = static_cast<int16_t>(iconSize + props.gap);
     content.x = static_cast<int16_t>(content.x + shift);
     content.width = static_cast<int16_t>(content.width - shift);
+    band.x = content.x;
+    band.width = content.width;
   }
   const int16_t indicatorW = props.indicatorWidth < 8 ? 8 : props.indicatorWidth;
   Rect indicator{static_cast<int16_t>(content.right() - indicatorW), content.y, indicatorW, content.height};
@@ -78,14 +90,10 @@ void dropdown(Frame<MaxInteractions>& frame, Rect rect, const DropdownProps& pro
   Rect textRect{content.x, content.y, static_cast<int16_t>(indicator.x - content.x - props.gap), content.height};
   if (props.label && props.subtitle) {
     // Two-line layout: label above, subtitle (current selection) below.
-    const int16_t labelH = frame.target().lineHeight(props.labelText.font);
-    const int16_t subH = frame.target().lineHeight(props.subtitleText.font);
-    const int16_t total = static_cast<int16_t>(labelH + subH);
-    const int16_t top = static_cast<int16_t>(textRect.y + (textRect.height - total) / 2);
-    Rect labelRect{textRect.x, top, textRect.width, labelH};
-    frame.target().text(labelRect, props.label, textStyleWithForeground(props.labelText, ink));
-    Rect subRect{textRect.x, static_cast<int16_t>(top + labelH), textRect.width, subH};
-    frame.target().text(subRect, props.subtitle, textStyleWithForeground(props.subtitleText, ink));
+    Rect labelRect{textRect.x, band.y, textRect.width, labelH};
+    frame.target().text(labelRect, props.label, textStyleWithForeground(labelStyle, ink));
+    Rect subRect{textRect.x, static_cast<int16_t>(band.y + labelH), textRect.width, subH};
+    frame.target().text(subRect, props.subtitle, textStyleWithForeground(subtitleStyle, ink));
   } else if (props.label && props.value) {
     const Size labelSize = frame.target().measureText(props.labelText.font, props.label, props.labelText);
     Rect labelRect{textRect.x, textRect.y, labelSize.width, textRect.height};

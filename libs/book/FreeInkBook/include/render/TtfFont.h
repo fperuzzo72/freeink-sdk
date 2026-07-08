@@ -108,6 +108,7 @@ class FontChain : public BookFont {
                   uint8_t styleFlags) override;
 
   uint32_t ligature(uint32_t left, uint32_t right, uint8_t styleFlags) override;
+  bool covers(uint32_t codepoint) override;
 
   // The face that will draw `codepoint` in `styleFlags`. `faceFlagsOut`
   // (optional) receives the chosen face's registered style — renderers use

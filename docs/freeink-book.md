@@ -101,7 +101,7 @@ gestures) is a few hundred lines; the storage adapters are ~80.
 | Fonts | `BookFont.h`, `render/TtfFont.h` | `RenderFont` interface; stb_truetype engine (kerning, ligatures, AA); style-aware `FontChain` |
 | Render | `render/PageRenderer.h`, `render/ImageRenderer.h` | Page → framebuffer compositor (mono dithered/sharp/Gray8, 4 rotations); streaming image decode with box-filter + Floyd–Steinberg |
 | Text | `text/Hyphenator.h`, `text/EntityFilter.h` | Liang pattern hyphenation; HTML named-entity repair for strict XML |
-| Tools | `tools/hyphc.py`, `tools/fibcheck.cpp` | Pattern compiler (SD blob or embeddable header); whole-book pipeline checker for corpus testing |
+| Tools | `tools/hyphc.py`, `tools/arabshapec.py`, `tools/fibcheck.cpp` | Hyphenation pattern compiler (SD blob or embeddable header); Arabic shaping table generator (from vendored UCD extracts); whole-book pipeline checker for corpus testing |
 
 ## Typography
 
@@ -126,11 +126,18 @@ gestures) is a few hundred lines; the storage adapters are ~80.
   margins, `lineSpacingPct` / `paragraphSpacingPct` knobs.
 - **Bidi (RTL)** is built in: paragraphs are classified per UAX #9
   (first-strong detection, embedding levels, run reordering, bracket
-  mirroring), so Hebrew text — including embedded Latin words and numbers —
-  lays out and renders correctly with no renderer involvement: page records
-  store glyphs in visual order. RTL paragraphs mirror the alignment (left
-  becomes right) and skip first-line indent. Arabic reorders correctly but
-  letters do not yet join (no shaping).
+  mirroring), so Hebrew and Arabic text — including embedded Latin words and
+  numbers — lays out and renders correctly with no renderer involvement:
+  page records store glyphs in visual order. RTL paragraphs mirror the
+  alignment (left becomes right) and skip first-line indent.
+- **Arabic shaping**: letters take their contextual joining forms (isolated/
+  initial/medial/final per Unicode ch. 9, transparent marks skipped, the
+  mandatory lam-alef ligature fused) as Presentation Forms codepoints baked
+  into page records — resolved once per paragraph from UCD-generated tables
+  (`tools/arabshapec.py`), correct in both measurement and rendering. The
+  font must cover the Presentation Forms blocks (U+FB50–FEFF; most classic
+  Arabic faces do — fonts that only shape via OpenType GSUB fall back to
+  base letters, guarded per glyph by `BookFont::covers()`).
 
 ## Position, links, progress
 
@@ -215,8 +222,10 @@ books correctly rejected as `Encrypted`.
 ## Known limitations
 
 Dropcap float wrap-around (caps render at size, text does not wrap beside
-them), Arabic shaping (bidi reordering works — Hebrew is fully supported —
-but Arabic letters render in isolated forms), hyphenation only attempts
-ASCII-letter words, interlaced PNG, per-run character offsets for highlight
-ranges, and streaming (larger than addressable memory) fonts — FreeType
-behind the same `BookFont` interface is the documented path.
+them), Arabic vowel-mark positioning (harakat shape-correctly but render as
+spacing glyphs, and a mark between lam and alef defeats that ligature),
+Arabic shaping with GSUB-only fonts (Presentation Forms coverage required),
+hyphenation only attempts ASCII-letter words, interlaced PNG, per-run
+character offsets for highlight ranges, and streaming (larger than
+addressable memory) fonts — FreeType behind the same `BookFont` interface is
+the documented path.
