@@ -23,6 +23,11 @@ API: switching to FreeInk is a matter of repointing the library path.
   input, battery, SD, frontlight, LEDs, audio, microphone, RTC, sensors, and IMU.
 - **FreeInkUI**, an optional immediate-mode UI layer for e-paper reader screens,
   dialogs, settings, keyboards, library views, and future GUI-builder previews.
+- **FreeInkBook**, a complete EPUB reading engine — streaming parse, CSS,
+  UAX #14 layout with hyphenation/justification/ligatures, page caching with
+  exact position anchors, TTF fonts with per-codepoint fallback, image
+  dithering, links/footnotes — freestanding, arena-allocated, host-tested
+  (see [docs/freeink-book.md](docs/freeink-book.md)).
 - **Icon and asset tooling** for crisp 1-bpp Lucide-derived icons and generated
   C/C++ assets.
 
