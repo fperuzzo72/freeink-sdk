@@ -36,16 +36,21 @@ namespace {
 // LARGE for generous-RAM targets (headroom for pathological books; pages
 // virtually never split early on capacity).
 #if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
-constexpr uint32_t kParTextCap = 4096;
+// The small tier is sized against its real hosts: a deflated chapter's
+// working set (these buffers + a 47 KB inflate stream + the cache writer's
+// index) must fit a single allocation on ESP32-C3-class heaps where ~110 KB
+// contiguous is the practical ceiling. Every KB here is a KB of books that
+// do or don't open.
+constexpr uint32_t kParTextCap = 3072;  // x3 buffers (text/breaks/levels); long paragraphs segment-flush
 constexpr uint16_t kMaxSpans = 96;
-constexpr uint16_t kMaxRunsPerPage = 384;
-constexpr uint16_t kMaxLinesPerPar = 256;
-constexpr uint32_t kPageArenaCap = 12 * 1024;
+constexpr uint16_t kMaxRunsPerPage = 320;
+constexpr uint16_t kMaxLinesPerPar = 192;
+constexpr uint32_t kPageArenaCap = 8 * 1024;
 constexpr uint8_t kMaxElemDepth = 16;
 constexpr uint16_t kMaxImagesPerPage = 8;
 constexpr uint16_t kMaxLinksPerPage = 16;
 constexpr uint8_t kMaxLinksPerPar = 6;
-constexpr uint32_t kStyleTextCap = 6 * 1024;
+constexpr uint32_t kStyleTextCap = 4 * 1024;
 constexpr uint16_t kMaxProbedImages = 128;
 #elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
 constexpr uint32_t kParTextCap = 16384;

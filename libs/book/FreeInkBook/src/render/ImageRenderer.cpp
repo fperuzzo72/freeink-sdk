@@ -9,15 +9,6 @@
 
 #include "epub/ImageProbe.h"
 
-// Opt-in decode tracing for device bring-up: -DFREEINK_BOOK_IMAGE_DEBUG=1
-// routes failure details through esp_rom_printf (survives every log
-// transport). Zero cost when off.
-#if FREEINK_BOOK_IMAGE_DEBUG
-extern "C" int esp_rom_printf(const char* fmt, ...);
-#define FIB_IMG_DBG(...) esp_rom_printf(__VA_ARGS__)
-#else
-#define FIB_IMG_DBG(...) ((void)0)
-#endif
 
 namespace freeink {
 namespace book {
@@ -257,9 +248,7 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
   if (state.skipBuf == nullptr || work == nullptr) return BookStatus::OutOfMemory;
 
   JDEC jd;
-  const JRESULT jp = jd_prepare(&jd, jpegInput, work, 8 * 1024, &state);
-  if (jp != JDR_OK) {
-    FIB_IMG_DBG("[img] jd_prepare=%d io=%d\n", (int)jp, (int)state.ioError);
+  if (jd_prepare(&jd, jpegInput, work, 8 * 1024, &state) != JDR_OK) {
     return state.ioError ? BookStatus::IoError : BookStatus::ParseError;
   }
 
@@ -286,10 +275,7 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
 
   const JRESULT jr = jd_decomp(&jd, jpegOutput, scale);
   if (state.ioError) return BookStatus::IoError;
-  if (jr != JDR_OK && !state.scaler.stopped) {
-    FIB_IMG_DBG("[img] jd_decomp=%d scale=%u %ux%u\n", (int)jr, scale, jd.width, jd.height);
-    return BookStatus::ParseError;
-  }
+  if (jr != JDR_OK && !state.scaler.stopped) return BookStatus::ParseError;
   if (!state.scaler.stopped) state.flushBandRows(srcH);
   return BookStatus::Ok;
 }

@@ -4,8 +4,13 @@
 
 #include <string.h>
 
+#include "epub/MinizConfig.h"
 #include "epub/PackageParsers.h"
 #include "epub/XmlSax.h"
+
+#include <stdio.h>
+
+#include <expat.h>
 
 namespace freeink {
 namespace book {
@@ -37,6 +42,13 @@ class EncryptionScan : public XmlHandler {
 };
 
 }  // namespace
+
+const char* vendorVersions() {
+  static char buf[96];
+  snprintf(buf, sizeof(buf), "miniz %s expat %d.%d.%d", MZ_VERSION, XML_MAJOR_VERSION,
+           XML_MINOR_VERSION, XML_MICRO_VERSION);
+  return buf;
+}
 
 BookStatus Book::open(BookSource& source, Arena& bookArena, Arena& scratch) {
   source_ = &source;

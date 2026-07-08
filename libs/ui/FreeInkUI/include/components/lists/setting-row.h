@@ -24,6 +24,7 @@ struct SettingRowProps {
   int16_t sidePadding = 8;
   int16_t textGap = 10;
   int16_t iconSize = 0;
+  int16_t titleSubtitleGap = 2;
   int16_t minTouchSize = 44;
   bool drawChevron = false;
 };
@@ -55,9 +56,10 @@ void settingRow(Frame<MaxInteractions>& frame, Rect rect, const SettingRowProps&
   TextStyle labelStyle = textStyleWithForeground(props.labelText, style.foreground);
   const int16_t labelH = frame.target().lineHeight(labelStyle.font);
   const int16_t subH = props.subtitle ? frame.target().lineHeight(props.subtitleText.font) : 0;
+  const int16_t titleSubGap = props.subtitle ? (props.titleSubtitleGap > 0 ? props.titleSubtitleGap : 0) : 0;
   Rect band = content;
   if (props.subtitle) {
-    int16_t top = static_cast<int16_t>(content.y + (content.height - labelH - subH) / 2);
+    int16_t top = static_cast<int16_t>(content.y + (content.height - labelH - titleSubGap - subH) / 2);
     if (top < content.y) top = content.y;
     band = Rect{content.x, top, content.width, labelH};
   }
@@ -95,7 +97,7 @@ void settingRow(Frame<MaxInteractions>& frame, Rect rect, const SettingRowProps&
 
   frame.target().text(Rect{band.x, band.y, availW, band.height}, props.label, labelStyle);
   if (props.subtitle) {
-    frame.target().text(Rect{content.x, static_cast<int16_t>(band.y + labelH), content.width, subH},
+    frame.target().text(Rect{content.x, static_cast<int16_t>(band.y + labelH + titleSubGap), content.width, subH},
                         props.subtitle, textStyleWithForeground(props.subtitleText, style.foreground));
   }
 }

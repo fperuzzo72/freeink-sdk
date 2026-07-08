@@ -1,3 +1,7 @@
+/* The miniz symbol renames (MinizConfig.h) must be active before pngle.c
+ * makes its tinfl_* calls, or the linker binds them to the ESP32 ROM's
+ * incompatible copy. */
+#include "epub/MinizConfig.h"
 /* Compiles the vendored pngle against FreeInkBook's miniz (pngle.c's include
  * is patched to "../miniz/miniz.h" — ESP-IDF ships a ROM miniz.h whose
  * tinfl_decompressor layout differs, and pngle embeds that struct by value).

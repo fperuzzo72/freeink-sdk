@@ -348,8 +348,31 @@ class DisplayTarget final : public DrawTarget {
     return &f.glyphs[cp - f.first];
   }
 
+  int16_t missingGlyphAdvance(const BitmapFont& f) const {
+    const int16_t adv = static_cast<int16_t>(f.yAdvance / 2);
+    return adv > 6 ? adv : 6;
+  }
+
+  void drawMissingGlyph(const BitmapFont& f, const int16_t penX, const int16_t baseline,
+                        const bool ink) {
+    const Color color = ink ? Color::Black : Color::White;
+    const int16_t w = missingGlyphAdvance(f);
+    int16_t h = static_cast<int16_t>((f.yAdvance * 2) / 3);
+    if (h < 8) h = 8;
+    const int16_t x = penX;
+    const int16_t y = static_cast<int16_t>(baseline - h + 2);
+    for (int16_t dx = 0; dx < w; ++dx) {
+      plot(static_cast<int16_t>(x + dx), y, color);
+      plot(static_cast<int16_t>(x + dx), static_cast<int16_t>(y + h - 1), color);
+    }
+    for (int16_t dy = 0; dy < h; ++dy) {
+      plot(x, static_cast<int16_t>(y + dy), color);
+      plot(static_cast<int16_t>(x + w - 1), static_cast<int16_t>(y + dy), color);
+    }
+  }
+
   // Pen advance for a codepoint, mapping the ellipsis to three dots and unknown
-  // codepoints to a space — consistent with how drawRun() renders them.
+  // codepoints to a visible missing-glyph box — consistent with drawRun().
   int16_t runAdvance(const BitmapFont& f, const uint32_t cp) const {
     if (cp == 0x2026) {  // U+2026 HORIZONTAL ELLIPSIS -> "..."
       const FontGlyph* dot = glyphFor(f, '.');
@@ -361,8 +384,7 @@ class DisplayTarget final : public DrawTarget {
       const int16_t adv = fallback_->advance(cp, f.yAdvance);
       if (adv > 0) return adv;
     }
-    const FontGlyph* sp = glyphFor(f, ' ');
-    return static_cast<int16_t>(sp ? sp->xAdvance : 0);
+    return missingGlyphAdvance(f);
   }
 
   void drawGlyph(const BitmapFont& f, const FontGlyph& g, const int16_t penX, const int16_t baseline,
@@ -424,10 +446,14 @@ class DisplayTarget final : public DrawTarget {
           }
           penX = static_cast<int16_t>(penX + rg.advance);
         } else {
+          drawMissingGlyph(f, penX, baseline, ink);
           penX = static_cast<int16_t>(penX + runAdvance(f, cp));
         }
       }
-      else { penX = static_cast<int16_t>(penX + runAdvance(f, cp)); }
+      else {
+        drawMissingGlyph(f, penX, baseline, ink);
+        penX = static_cast<int16_t>(penX + runAdvance(f, cp));
+      }
     }
   }
 

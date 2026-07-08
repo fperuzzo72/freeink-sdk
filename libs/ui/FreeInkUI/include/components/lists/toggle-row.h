@@ -47,7 +47,8 @@ void toggleRow(Frame<MaxInteractions>& frame, Rect rect, const ToggleRowProps& p
   if (props.row.subtitle) {
     const int16_t labelH = frame.target().lineHeight(props.row.labelText.font);
     const int16_t subH = frame.target().lineHeight(props.row.subtitleText.font);
-    int16_t top = static_cast<int16_t>(rect.y + (rect.height - labelH - subH) / 2);
+    const int16_t gap = props.row.titleSubtitleGap > 0 ? props.row.titleSubtitleGap : 0;
+    int16_t top = static_cast<int16_t>(rect.y + (rect.height - labelH - gap - subH) / 2);
     if (top < rect.y) top = rect.y;
     bandY = top;
     bandH = labelH;

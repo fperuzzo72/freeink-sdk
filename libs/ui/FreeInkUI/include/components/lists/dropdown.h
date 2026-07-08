@@ -25,6 +25,7 @@ struct DropdownProps {
   State state = StateNormal;
   Insets padding{6, 8, 6, 8};
   int16_t gap = 8;
+  int16_t titleSubtitleGap = 2;
   int16_t indicatorWidth = 16;
   int16_t indicatorSize = 10;
   uint8_t indicatorStroke = 2;
@@ -54,9 +55,10 @@ void dropdown(Frame<MaxInteractions>& frame, Rect rect, const DropdownProps& pro
   TextStyle subtitleStyle = textStyleWithForeground(props.subtitleText, style.foreground);
   const int16_t labelH = frame.target().lineHeight(labelStyle.font);
   const int16_t subH = props.subtitle ? frame.target().lineHeight(subtitleStyle.font) : 0;
+  const int16_t titleSubGap = props.subtitle ? (props.titleSubtitleGap > 0 ? props.titleSubtitleGap : 0) : 0;
   Rect band = content;
   if (props.label && props.subtitle) {
-    int16_t top = static_cast<int16_t>(content.y + (content.height - labelH - subH) / 2);
+    int16_t top = static_cast<int16_t>(content.y + (content.height - labelH - titleSubGap - subH) / 2);
     if (top < content.y) top = content.y;
     band = Rect{content.x, top, content.width, labelH};
   }
@@ -92,7 +94,7 @@ void dropdown(Frame<MaxInteractions>& frame, Rect rect, const DropdownProps& pro
     // Two-line layout: label above, subtitle (current selection) below.
     Rect labelRect{textRect.x, band.y, textRect.width, labelH};
     frame.target().text(labelRect, props.label, textStyleWithForeground(labelStyle, ink));
-    Rect subRect{textRect.x, static_cast<int16_t>(band.y + labelH), textRect.width, subH};
+    Rect subRect{textRect.x, static_cast<int16_t>(band.y + labelH + titleSubGap), textRect.width, subH};
     frame.target().text(subRect, props.subtitle, textStyleWithForeground(subtitleStyle, ink));
   } else if (props.label && props.value) {
     const Size labelSize = frame.target().measureText(props.labelText.font, props.label, props.labelText);

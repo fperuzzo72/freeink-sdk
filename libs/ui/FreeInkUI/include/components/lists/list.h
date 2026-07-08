@@ -54,6 +54,11 @@ struct ListProps {
   // Draws a thin position indicator along the right edge when the list
   // overflows the rect.
   bool scrollIndicator = true;
+  // Draw a non-interactive label-only preview of the next row when there is
+  // leftover space after the fully visible rows. Scroll math still uses only
+  // full rows so paging stays deterministic.
+  bool partialTrailingRow = false;
+  int16_t partialTrailingMinHeight = 18;
   // Additional marker drawn on the selected row (the v1 theme Underline and
   // Triangle selection styles).
   SelectionMarker selectionMarker = SelectionMarker::None;
@@ -201,6 +206,37 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
         const int16_t cy = static_cast<int16_t>(row.y + row.height / 2);
         frame.target().triangle(Point{tx, static_cast<int16_t>(cy - 9)}, Point{tx, static_cast<int16_t>(cy + 9)},
                                 Point{static_cast<int16_t>(tx + 12), cy}, props.markerPaint);
+      }
+    }
+  }
+
+  if (props.partialTrailingRow && overflows && visible > 0) {
+    const uint16_t partialIndex = static_cast<uint16_t>(top + visible);
+    const int16_t remainingH = static_cast<int16_t>(rowArea.bottom() - cursorY);
+    if (partialIndex < props.count && remainingH >= props.partialTrailingMinHeight) {
+      const ListItem& item = props.items[partialIndex];
+      if (!item.isHeader && item.label != nullptr && item.label[0] != '\0') {
+        Rect row{rowArea.x, cursorY, rowArea.width, remainingH};
+        StyleSet styles = props.rowStyles.unset() ? defaultListRowStyles() : props.rowStyles;
+        if (props.rowRadius > 0) setStyleRadius(styles, props.rowRadius);
+        const BoxStyle& style = styles.resolve(item.enabled ? StateNormal : StateDisabled);
+        frame.target().fill(row, style.background, style.radius, style.corners);
+        if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
+          frame.target().stroke(row, style.border, style.borderWidth, style.radius, style.corners);
+        }
+
+        Rect content = row.inset(Insets{0, props.sidePadding, 0, props.sidePadding});
+        const BitmapRef icon = item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);
+        if (icon) {
+          const int16_t iconSize = props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon.width);
+          Rect iconRect{content.x, content.y, iconSize, iconSize};
+          frame.target().bitmap(iconRect, icon, BitmapMode::Contain, style.foreground);
+          content.x = static_cast<int16_t>(content.x + iconSize + props.textGap);
+          content.width = static_cast<int16_t>(content.width - iconSize - props.textGap);
+        }
+        TextStyle labelStyle = textStyleWithForeground(props.labelText, style.foreground);
+        labelStyle.maxLines = 1;
+        frame.target().text(content, item.label, labelStyle);
       }
     }
   }

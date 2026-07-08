@@ -28,6 +28,10 @@ enum class BookStatus : uint8_t {
 // Human-readable name for logs and tests.
 const char* bookStatusName(BookStatus status);
 
+// Vendored third-party versions ("miniz 11.3.2 expat 2.8.2"), for boot
+// logs — device debugging must never have to guess what is linked.
+const char* vendorVersions();
+
 struct BookMetadata {
   const char* title = "";
   const char* author = "";

@@ -31,7 +31,11 @@ constexpr uint32_t kLocalSig = 0x04034b50;
 constexpr size_t kEocdMinSize = 22;
 constexpr size_t kMaxCommentScan = 65535 + kEocdMinSize;
 constexpr size_t kMaxNameLen = 1024;
-constexpr uint32_t kInBufSize = 4096;
+// Compressed-input staging for the inflate loop. 2 KB doubles the number of
+// source reads versus 4 KB but sequential SD reads at this size stay cheap,
+// and on small-tier hosts every scratch KB decides whether a deflated
+// chapter's build fits at all.
+constexpr uint32_t kInBufSize = 2048;
 constexpr uint16_t kMethodStored = 0;
 constexpr uint16_t kMethodDeflate = 8;
 

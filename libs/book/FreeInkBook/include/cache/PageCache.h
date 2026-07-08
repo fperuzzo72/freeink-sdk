@@ -67,8 +67,12 @@ class PageCacheWriter : public PageSink {
   // (BookProfile.h): the small tier trades pathological single-spine books
   // (>2048 pages at its buffer sizes) for ~20 KB less build scratch.
 #if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
-  static constexpr uint32_t kMaxPages = 2048;
-  static constexpr uint32_t kMaxAnchors = 256;
+  // 1024 pages is ~1.5 M chars of chapter at small-profile page density —
+  // multiples beyond any sanely-authored chapter. The index arrays are the
+  // second-largest fixed cost of a build after the layout buffers, and the
+  // small tier's hosts genuinely cannot spare the extra 9.5 KB.
+  static constexpr uint32_t kMaxPages = 1024;
+  static constexpr uint32_t kMaxAnchors = 192;
 #elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
   static constexpr uint32_t kMaxPages = 8192;
   static constexpr uint32_t kMaxAnchors = 1024;
