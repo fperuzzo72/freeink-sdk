@@ -565,12 +565,14 @@ CssDecl elementDefaults(const char* local) {
   } else if (strcmp(local, "i") == 0 || strcmp(local, "em") == 0 || strcmp(local, "cite") == 0) {
     d.styleItalic = 1;
   } else if (strcmp(local, "small") == 0) {
-    d.sizePct = 87;
+    d.sizePct = 80;
+  } else if (strcmp(local, "big") == 0) {
+    d.sizePct = 120;
   } else if (strcmp(local, "sub") == 0) {
-    d.sizePct = 75;
+    d.sizePct = 50;
     d.vertAlign = 2;
   } else if (strcmp(local, "sup") == 0) {
-    d.sizePct = 75;
+    d.sizePct = 50;
     d.vertAlign = 1;
   } else if (strcmp(local, "u") == 0 || strcmp(local, "ins") == 0) {
     d.underline = 1;
@@ -781,6 +783,11 @@ class LayoutEngine : public XmlHandler {
     }
     if (hasInline) decl.applyOver(inlineDecl);
     pushState(decl);
+    if (decl.marginLeftPct >= 0) {
+      pendingMarginRootPct_ += static_cast<uint32_t>(currentSizePct()) *
+                               static_cast<uint16_t>(decl.marginLeftPct) / 100;
+      noteStyleChange();
+    }
 
     // id="" anchors: record the chapter char offset for link/footnote jumps.
     if (const char* id = attrLocal(atts, "id")) {
@@ -900,6 +907,7 @@ class LayoutEngine : public XmlHandler {
     uint16_t start;
     uint8_t flags;
     uint16_t sizePct;
+    uint16_t marginBeforeRootPct;
     uint8_t link;  // 0 = none, else 1-based index into parLinks_
   };
 
@@ -910,6 +918,7 @@ class LayoutEngine : public XmlHandler {
     uint16_t spaceCount;   // adjustable spaces (Latin justification)
     uint16_t cjkGaps;      // CJ boundaries (inter-character justification)
     uint16_t hangulGaps;   // Hangul boundaries — stretch only on space-less lines
+    uint8_t maxSizePct;
     uint8_t flags;
   };
 
@@ -937,8 +946,10 @@ class LayoutEngine : public XmlHandler {
     const ElemState& parent = stack_[stackTop_];
     ElemState next = parent;
     if (decl.sizePct != 0) {
-      const uint32_t scaled = static_cast<uint32_t>(parent.sizePct) * decl.sizePct / 100;
-      next.sizePct = static_cast<uint16_t>(scaled < 25 ? 25 : (scaled > 400 ? 400 : scaled));
+      const uint32_t scaled = decl.sizeRootRelative
+                                  ? decl.sizePct
+                                  : static_cast<uint32_t>(parent.sizePct) * decl.sizePct / 100;
+      next.sizePct = static_cast<uint16_t>(scaled < 30 ? 30 : (scaled > 250 ? 250 : scaled));
     }
     if (decl.weightBold == 1) next.flags |= StyleBold;
     if (decl.weightBold == 0) next.flags &= static_cast<uint8_t>(~StyleBold);
@@ -972,20 +983,35 @@ class LayoutEngine : public XmlHandler {
   uint8_t currentFlags() const { return stack_[stackTop_].flags; }
   uint16_t currentSizePct() const { return stack_[stackTop_].sizePct; }
 
+  uint16_t currentPendingMarginRootPct() const {
+    return pendingMarginRootPct_ > 65535u ? 65535u : static_cast<uint16_t>(pendingMarginRootPct_);
+  }
+
   // --- paragraph accumulation ------------------------------------------------
 
   void noteStyleChange() {
     if (spanCount_ == 0) return;  // paragraph text not started yet
     const uint8_t flags = currentFlags();
     const uint16_t sizePct = currentSizePct();
+    const uint16_t marginBeforeRootPct = currentPendingMarginRootPct();
     Span& last = spans_[spanCount_ - 1];
-    if (last.flags == flags && last.sizePct == sizePct && last.link == currentLink_) return;
+    if (last.flags == flags && last.sizePct == sizePct && last.link == currentLink_ &&
+        marginBeforeRootPct == 0) {
+      return;
+    }
     if (last.start == parLen_) {
       last.flags = flags;
       last.sizePct = sizePct;
       last.link = currentLink_;
+      last.marginBeforeRootPct = static_cast<uint16_t>(
+          last.marginBeforeRootPct + marginBeforeRootPct > 65535u
+              ? 65535u
+              : last.marginBeforeRootPct + marginBeforeRootPct);
+      pendingMarginRootPct_ = 0;
     } else if (spanCount_ < kMaxSpans) {
-      spans_[spanCount_++] = {static_cast<uint16_t>(parLen_), flags, sizePct, currentLink_};
+      spans_[spanCount_++] = {static_cast<uint16_t>(parLen_), flags, sizePct,
+                              marginBeforeRootPct, currentLink_};
+      pendingMarginRootPct_ = 0;
     }
   }
 
@@ -999,7 +1025,9 @@ class LayoutEngine : public XmlHandler {
       continued_ = true;  // continuation lines get no first-line indent
     }
     if (spanCount_ == 0) {
-      spans_[spanCount_++] = {0, currentFlags(), currentSizePct(), currentLink_};
+      spans_[spanCount_++] = {0, currentFlags(), currentSizePct(),
+                              currentPendingMarginRootPct(), currentLink_};
+      pendingMarginRootPct_ = 0;
     }
     parText_[parLen_++] = c;
   }
@@ -1022,6 +1050,7 @@ class LayoutEngine : public XmlHandler {
     resetParagraphLinks();
     parLen_ = 0;
     spanCount_ = 0;
+    pendingMarginRootPct_ = 0;
     pendingSpace_ = false;
   }
 
@@ -1037,6 +1066,7 @@ class LayoutEngine : public XmlHandler {
     resetParagraphLinks();
     parLen_ = 0;
     spanCount_ = 0;
+    pendingMarginRootPct_ = 0;
     pendingSpace_ = false;
   }
 
@@ -1045,14 +1075,21 @@ class LayoutEngine : public XmlHandler {
                                 params_.lineSpacingPct / 100);
   }
 
+  uint16_t sizePxForPct(uint16_t sizePct) const {
+    const uint32_t size = static_cast<uint32_t>(params_.baseSizePx) * sizePct / 100;
+    return static_cast<uint16_t>(size < 1 ? 1 : size);
+  }
+
   uint16_t paragraphSizePx() const {
-    const uint32_t size = static_cast<uint32_t>(params_.baseSizePx) * para_.sizePct / 100;
-    return static_cast<uint16_t>(size < 8 ? 8 : size);
+    return sizePxForPct(para_.sizePct);
   }
 
   uint16_t spanSizePx(const Span& span) const {
-    const uint32_t size = static_cast<uint32_t>(params_.baseSizePx) * span.sizePct / 100;
-    return static_cast<uint16_t>(size < 8 ? 8 : size);
+    return sizePxForPct(span.sizePct);
+  }
+
+  int32_t marginBeforePx(const Span& span) const {
+    return static_cast<int32_t>(params_.baseSizePx) * span.marginBeforeRootPct / 100;
   }
 
   const Span& spanAt(uint32_t byteOffset) const {
@@ -1213,6 +1250,10 @@ class LayoutEngine : public XmlHandler {
     while (i < to) {
       const uint32_t charStart = i;
       const Span& span = spanAt(charStart);
+      if (charStart == span.start && span.marginBeforeRootPct > 0) {
+        width += marginBeforePx(span);
+        prev = 0;
+      }
       const uint32_t cp = decodeShaped(to, i, span);
       width += advanceFor(cp, prev, span, focusExtra(charStart));
       prev = cp;
@@ -1304,7 +1345,11 @@ class LayoutEngine : public XmlHandler {
       const uint32_t charStart = i;
       const Span& shapeSpan = spanAt(charStart);
       const uint32_t cp = decodeShaped(parLen_, i, shapeSpan);
-      const int32_t adv = advanceFor(cp, prevCp, shapeSpan, focusExtra(charStart));
+      const int32_t leadingMargin =
+          charStart == shapeSpan.start ? marginBeforePx(shapeSpan) : 0;
+      const int32_t adv =
+          leadingMargin + advanceFor(cp, leadingMargin > 0 ? 0 : prevCp, shapeSpan,
+                                     focusExtra(charStart));
 
       if (cp != '\n' && lineWidth + adv > maxWidth && charStart > lineStart) {
         // Try a hyphen inside the overflowing word first; it beats breaking
@@ -1363,13 +1408,19 @@ class LayoutEngine : public XmlHandler {
     rec.start = start;
     rec.end = end;
     rec.flags = flags;
+    rec.maxSizePct = static_cast<uint8_t>(para_.sizePct > 255 ? 255 : para_.sizePct);
     rec.spaceCount = 0;
     rec.cjkGaps = 0;
     rec.hangulGaps = 0;
     uint32_t prev = 0;
     uint32_t i = start;
     while (i < end) {
+      const uint32_t charStart = i;
       const uint32_t cp = decodeUtf8(parText_, end, i);
+      const uint16_t charSizePct = spanAt(charStart).sizePct;
+      if (charSizePct > rec.maxSizePct) {
+        rec.maxSizePct = static_cast<uint8_t>(charSizePct > 255 ? 255 : charSizePct);
+      }
       if (cp == ' ') {
         ++rec.spaceCount;
       } else if (prev != 0 && isCjk(prev) && isCjk(cp) &&
@@ -1394,7 +1445,6 @@ class LayoutEngine : public XmlHandler {
       return;
     }
     const uint16_t sizePx = paragraphSizePx();
-    const int16_t lineHeight = lineHeightFor(sizePx);
     advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceBeforePct *
                                   params_.paragraphSpacingPct / 10000));
 
@@ -1402,8 +1452,14 @@ class LayoutEngine : public XmlHandler {
 
     uint32_t idx = 0;
     while (idx < lineCount_ && !failed_ && !stopParse) {
-      const int32_t availPx = (params_.pageHeight - params_.marginBottom) - pageY_;
-      uint32_t avail = availPx > 0 ? static_cast<uint32_t>(availPx / lineHeight) : 0;
+      int32_t availPx = (params_.pageHeight - params_.marginBottom) - pageY_;
+      uint32_t avail = 0;
+      for (uint32_t probe = idx; probe < lineCount_ && availPx > 0; ++probe) {
+        const int16_t lineHeight = lineHeightFor(sizePxForPct(lines_[probe].maxSizePct));
+        if (lineHeight > availPx) break;
+        availPx -= lineHeight;
+        ++avail;
+      }
       const uint32_t remaining = lineCount_ - idx;
       const bool hasContent = runCount_ > 0 || pageY_ > params_.marginTop;
 
@@ -1426,7 +1482,9 @@ class LayoutEngine : public XmlHandler {
       }
 
       for (uint32_t l = 0; l < take && !failed_ && !stopParse; ++l) {
-        placeLine(lines_[idx + l], sizePx, lineHeight, idx + l == 0);
+        const uint16_t lineBoxSizePx = sizePxForPct(lines_[idx + l].maxSizePct);
+        placeLine(lines_[idx + l], sizePx, lineBoxSizePx, lineHeightFor(lineBoxSizePx),
+                  idx + l == 0);
       }
       idx += take;
       if (idx < lineCount_ && !stopParse) emitPage();
@@ -1437,6 +1495,7 @@ class LayoutEngine : public XmlHandler {
     parCharBase_ += countChars(parText_, parLen_);
     parLen_ = 0;
     spanCount_ = 0;
+    pendingMarginRootPct_ = 0;
     pendingSpace_ = false;
     continued_ = false;
   }
@@ -1455,7 +1514,8 @@ class LayoutEngine : public XmlHandler {
     uint8_t extraFlags;   // style added beyond the span's (focus-reading bold)
   };
 
-  void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine) {
+  void placeLine(const LineRec& rec, uint16_t sizePx, uint16_t lineBoxSizePx,
+                 int16_t lineHeight, bool firstLine) {
     if (rec.end == rec.start) {  // blank line (e.g. double <br/>)
       pageY_ += lineHeight;
       return;
@@ -1497,7 +1557,7 @@ class LayoutEngine : public XmlHandler {
     const int32_t perGap = justify ? leftover / static_cast<int32_t>(gaps) : 0;
     int32_t gapRemainder = justify ? leftover % static_cast<int32_t>(gaps) : 0;
 
-    int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
+    int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(lineBoxSizePx));
 
     // --- collect segments in LOGICAL order -----------------------------------
     Seg segs[64];
@@ -1613,6 +1673,9 @@ class LayoutEngine : public XmlHandler {
         } else if (logicalOwner.compressBefore) {
           x -= spanSizePx(*logicalOwner.span) / 2;  // punctuation pair overlap
         }
+      }
+      if (sg.start == sg.span->start && sg.span->marginBeforeRootPct > 0) {
+        x += marginBeforePx(*sg.span);
       }
       const bool lastLogical = sg.end == rec.end;
       const bool addHyphen = lastLogical && (rec.flags & kLineHyphen) != 0 && !paraRtl_;
@@ -1731,6 +1794,7 @@ class LayoutEngine : public XmlHandler {
 
   uint32_t parLen_ = 0;
   uint16_t spanCount_ = 0;
+  uint32_t pendingMarginRootPct_ = 0;
   uint32_t lineCount_ = 0;
   ParaStyle para_{100, StyleNone, TextAlign::Left, 0, 0, 0, 40};
   bool pendingSpace_ = false;
