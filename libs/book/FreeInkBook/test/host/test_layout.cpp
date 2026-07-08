@@ -264,11 +264,11 @@ void testMemoryIndependence() {
 
   std::printf("  layout high water: small %zu B, big %zu B (%u pages)\n", highWater[0],
               highWater[1], bigPages);
-  // Ceiling anatomy: ~40 KB fixed layout buffers (paragraph text + breaks +
-  // line records + run table) + 24 KB page sub-arena + ~50 KB parse/inflate
-  // state. All O(1) in chapter size.
+  // Ceiling anatomy: ~48 KB fixed layout buffers (paragraph text + breaks +
+  // bidi levels + line records + run table) + 24 KB page sub-arena + ~50 KB
+  // parse/inflate state. All O(1) in chapter size.
   CHECK(bigPages > 10);                             // the big chapter really paginated
-  CHECK(highWater[1] < 144 * 1024);                 // absolute ceiling
+  CHECK(highWater[1] < 152 * 1024);                 // absolute ceiling
   CHECK(highWater[1] <= highWater[0] + 16 * 1024);  // O(page), not O(chapter)
 }
 
@@ -850,6 +850,151 @@ void testImages() {
   }
 }
 
+void testPlainText() {
+  // Write a .txt fixture: three paragraphs, single newlines inside one.
+  char path[1024];
+  std::snprintf(path, sizeof(path), "%s/sample.txt", fixturesDir);
+  FILE* f = std::fopen(path, "wb");
+  CHECK(f != nullptr);
+  std::fputs("\xEF\xBB\xBF" "First paragraph starts the file\nand continues on a new line.\n\n"
+             "Second paragraph after a blank line.\r\n\r\n"
+             "Third one ends without a newline.", f);
+  std::fclose(f);
+
+  HostFileSource source;
+  CHECK(source.open(path));
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  CollectSink sink(params, font);
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  uint32_t pages = 0;
+  uint32_t totalChars = 0;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layoutPlainText(source, params, scratch, sink,
+                                                           &pages, &totalChars)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(pages >= 1);
+  CHECK(totalChars > 100);
+  CHECK_EQ(sink.geometryViolations, 0);
+  // Single newline flowed as a space; blank lines split paragraphs.
+  CHECK(std::strstr(sink.text, "the file and continues") != nullptr);
+  CHECK(std::strstr(sink.text, "Second paragraph") != nullptr);
+  CHECK(std::strstr(sink.text, "Third one ends") != nullptr);
+  CHECK(std::strstr(sink.text, "\xEF\xBB\xBF") == nullptr);  // BOM skipped
+  CHECK_EQ(scratch.used(), 0u);
+}
+
+// Hebrew fixture chapter (ch7): RTL paragraphs with an embedded Latin word,
+// a number, and mirrored parentheses, plus one all-Latin paragraph. Runs are
+// stored in VISUAL order (UAX #9 L2 down to the character), so a plain
+// left-to-right glyph blit renders correct RTL text.
+void testBidi() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  FakeFont font;
+  LayoutParams params = stickyParams(font);  // defaultAlign Left -> mirrored to Right
+
+  struct RunSink : PageSink {
+    bool onPage(const Page& page) override {
+      for (uint16_t r = 0; r < page.runCount && count < kMax; ++r) {
+        const PageTextRun& run = page.runs[r];
+        runs[count].x = run.x;
+        runs[count].y = run.baselineY;
+        runs[count].cps = 0;
+        uint32_t i = 0;
+        while (i < run.len) {
+          const uint8_t b = static_cast<uint8_t>(run.text[i]);
+          i += 1 + (b >= 0xF0 ? 3 : b >= 0xE0 ? 2 : b >= 0xC0 ? 1 : 0);
+          ++runs[count].cps;
+        }
+        const uint32_t n = run.len < sizeof(runs[count].text) - 1
+                               ? run.len
+                               : static_cast<uint32_t>(sizeof(runs[count].text) - 1);
+        std::memcpy(runs[count].text, run.text, n);
+        runs[count].text[n] = '\0';
+        ++count;
+      }
+      return true;
+    }
+    struct Rec {
+      int16_t x;
+      int16_t y;
+      uint32_t cps;
+      char text[192];
+    };
+    enum : uint32_t { kMax = 256 };
+    Rec runs[kMax];
+    uint32_t count = 0;
+  } rs;
+
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch7.xhtml");
+  CHECK(entry != nullptr);
+  uint32_t pages = 0;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                  entry->name, params, opened.scratch, rs,
+                                                  &pages)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(pages >= 1);
+  CHECK(rs.count > 3);
+
+  // Helper lambdas over collected runs.
+  auto findRun = [&](const char* needle) -> const RunSink::Rec* {
+    for (uint32_t i = 0; i < rs.count; ++i) {
+      if (std::strstr(rs.runs[i].text, needle) != nullptr) return &rs.runs[i];
+    }
+    return nullptr;
+  };
+
+  // 1. Character reversal: logical "המחשב" must be stored as visual "בשחמה";
+  //    the logical byte order must not appear anywhere.
+  const char* logicalWord = "\xD7\x94\xD7\x9E\xD7\x97\xD7\xA9\xD7\x91";   // המחשב
+  const char* visualWord = "\xD7\x91\xD7\xA9\xD7\x97\xD7\x9E\xD7\x94";    // בשחמה
+  CHECK(findRun(visualWord) != nullptr);
+  CHECK(findRun(logicalWord) == nullptr);
+  // Same for the opening word of the first paragraph: בראשית -> תישארב.
+  CHECK(findRun("\xD7\xAA\xD7\x99\xD7\xA9\xD7\x90\xD7\xA8\xD7\x91") != nullptr);
+
+  // 2. Embedded Latin keeps LTR order, and numbers stay "25", not "52".
+  const RunSink::Rec* latin = findRun("Linux");
+  CHECK(latin != nullptr);
+  CHECK(findRun("xuniL") == nullptr);
+  CHECK(findRun("25") != nullptr);
+  CHECK(findRun("52") == nullptr);
+
+  // 3. Visual order on the mixed line: the paragraph's first logical word
+  //    (המחשב, visual בשחמה) sits at the RIGHT of the line; the embedded
+  //    Latin run sits further left.
+  const RunSink::Rec* firstWord = findRun(visualWord);
+  CHECK(firstWord != nullptr);
+  if (latin != nullptr && firstWord != nullptr) {
+    CHECK_EQ(latin->y, firstWord->y);  // same line (the paragraph fits one line)
+    CHECK(latin->x < firstWord->x);
+  }
+
+  // 4. Mirrored + reversed parentheses: logical "(בערך)" must be stored as
+  //    visual "(ךרעב)" — same-direction parens after L4 mirroring + L2 order.
+  CHECK(findRun("(\xD7\x9A\xD7\xA8\xD7\xA2\xD7\x91)") != nullptr);
+
+  // 5. RTL alignment mirroring: with Left alignment requested, RTL lines end
+  //    flush at the right margin. FakeFont advances are sizePx/2 = 8 px, so
+  //    the rightmost run's end lands exactly on pageWidth - marginRight.
+  if (firstWord != nullptr) {
+    int32_t lineEnd = 0;
+    for (uint32_t i = 0; i < rs.count; ++i) {
+      if (rs.runs[i].y != firstWord->y) continue;
+      const int32_t end = rs.runs[i].x + static_cast<int32_t>(rs.runs[i].cps) * 8;
+      if (end > lineEnd) lineEnd = end;
+    }
+    CHECK_EQ(lineEnd, params.pageWidth - params.marginRight);
+  }
+
+  // 6. The all-Latin paragraph in the same chapter keeps LTR order and left
+  //    alignment.
+  const RunSink::Rec* ltr = findRun("Latin paragraph inside");
+  CHECK(ltr != nullptr);
+  if (ltr != nullptr) CHECK_EQ(ltr->x, params.marginLeft);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -888,6 +1033,8 @@ int main(int argc, char** argv) {
   testWidowOrphan();
   testImages();
   testCjk();
+  testPlainText();
+  testBidi();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

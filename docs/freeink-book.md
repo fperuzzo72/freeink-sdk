@@ -96,7 +96,7 @@ gestures) is a few hundred lines; the storage adapters are ~80.
 |---|---|---|
 | Container | `FreeInkBook.h`, `epub/ZipCatalog.h` | ZIP catalog + streaming inflate; OPF metadata/manifest/spine; nav + NCX TOC; DRM detection |
 | CSS | `css/Css.h` | Tolerant subset cascade: element/`.class` selectors, ~15 properties, inline `style=""`, chapter `<style>` blocks, book-level builder |
-| Layout | `layout/ChapterLayout.h` | SAX → block flow → UAX #14 line breaking → two-phase paragraph placement → `PageSink` |
+| Layout | `layout/ChapterLayout.h` | SAX → block flow → UAX #14 line breaking → two-phase paragraph placement → `PageSink`; `layoutPlainText()` drives the same engine for .txt files |
 | Cache | `cache/PageCache.h` | FIBP page records: generation hash, torn-write detection, char anchors, id-anchor table, per-chapter totals |
 | Fonts | `BookFont.h`, `render/TtfFont.h` | `RenderFont` interface; stb_truetype engine (kerning, ligatures, AA); style-aware `FontChain` |
 | Render | `render/PageRenderer.h`, `render/ImageRenderer.h` | Page → framebuffer compositor (mono dithered/sharp/Gray8, 4 rotations); streaming image decode with box-filter + Floyd–Steinberg |
@@ -124,6 +124,13 @@ gestures) is a few hundred lines; the storage adapters are ~80.
   rendering needs no shaping logic).
 - **Paragraphs**: widow/orphan control, first-line `text-indent`, block
   margins, `lineSpacingPct` / `paragraphSpacingPct` knobs.
+- **Bidi (RTL)** is built in: paragraphs are classified per UAX #9
+  (first-strong detection, embedding levels, run reordering, bracket
+  mirroring), so Hebrew text — including embedded Latin words and numbers —
+  lays out and renders correctly with no renderer involvement: page records
+  store glyphs in visual order. RTL paragraphs mirror the alignment (left
+  becomes right) and skip first-line indent. Arabic reorders correctly but
+  letters do not yet join (no shaping).
 
 ## Position, links, progress
 
@@ -173,11 +180,11 @@ blank rather than failing the page.
 
 ## Memory profiles
 
-The default profile's layout working set is ~190 KB peak (dominated by one
+The default profile's layout working set is ~200 KB peak (dominated by one
 32 KB inflate window plus fixed buffers) — sized for PSRAM parts.
 `-DFREEINK_BOOK_SMALL=1` shrinks the fixed buffers for PSRAM-less MCUs
-(ESP32-C3 class): measured on real books, text chapters peak ~58 KB and
-image chapters ~149 KB (two inflate states live during an image probe — the
+(ESP32-C3 class): measured on real books, text chapters peak ~62 KB and
+image chapters ~153 KB (two inflate states live during an image probe — the
 known remaining squeeze). Costs are graceful: very long paragraphs flush in
 segments, dense pages split a line early, fewer links/images per page.
 
@@ -208,7 +215,8 @@ books correctly rejected as `Encrypted`.
 ## Known limitations
 
 Dropcap float wrap-around (caps render at size, text does not wrap beside
-them), RTL/bidi, hyphenation only attempts ASCII-letter words, interlaced
-PNG, per-run character offsets for highlight ranges, and streaming (larger
-than addressable memory) fonts — FreeType behind the same `BookFont`
-interface is the documented path.
+them), Arabic shaping (bidi reordering works — Hebrew is fully supported —
+but Arabic letters render in isolated forms), hyphenation only attempts
+ASCII-letter words, interlaced PNG, per-run character offsets for highlight
+ranges, and streaming (larger than addressable memory) fonts — FreeType
+behind the same `BookFont` interface is the documented path.

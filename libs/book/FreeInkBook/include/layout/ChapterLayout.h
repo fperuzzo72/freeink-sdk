@@ -123,6 +123,16 @@ class ChapterLayout {
                            const char* chapterHref, const LayoutParams& params, Arena& scratch,
                            PageSink& sink, uint32_t* pageCountOut = nullptr,
                            uint32_t* totalCharsOut = nullptr);
+
+  // Plain-text (.txt) layout: the whole file is one chapter, paragraphs
+  // split on blank lines, single newlines flow as spaces. Justification,
+  // hyphenation, caching, and character anchors all apply identically —
+  // feed the same PageCacheWriter/Reader as an EPUB chapter (spine 0).
+  // UTF-8 assumed; a leading BOM is skipped.
+  static BookStatus layoutPlainText(BookSource& source, const LayoutParams& params,
+                                    Arena& scratch, PageSink& sink,
+                                    uint32_t* pageCountOut = nullptr,
+                                    uint32_t* totalCharsOut = nullptr);
 };
 
 }  // namespace book

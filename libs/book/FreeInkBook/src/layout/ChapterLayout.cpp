@@ -156,6 +156,123 @@ bool crossesScripts(uint32_t a, uint32_t b) {
   return (isCjk(a) && isLatinWordChar(b)) || (isLatinWordChar(a) && isCjk(b));
 }
 
+// --- Bidi (UAX #9 subset for book text) ---------------------------------------
+//
+// Hebrew-class RTL: strong-R runs, embedded LTR words/numbers, mirrored
+// brackets. Levels 0-2 cover real books (base direction + one embedding);
+// Arabic REORDERS correctly here too but is unreadable without joining
+// shaping, which this engine does not do yet.
+
+enum : uint8_t { kBidiL = 0, kBidiR = 1, kBidiEN = 2, kBidiNeutral = 3 };
+
+uint8_t bidiClass(uint32_t cp) {
+  if ((cp >= 0x0590 && cp <= 0x05FF) || (cp >= 0xFB1D && cp <= 0xFB4F)) return kBidiR;  // Hebrew
+  if ((cp >= 0x0600 && cp <= 0x07BF) || (cp >= 0x08A0 && cp <= 0x08FF) ||
+      (cp >= 0xFB50 && cp <= 0xFDFF) || (cp >= 0xFE70 && cp <= 0xFEFF)) {
+    return kBidiR;  // Arabic block (reorder-only; no shaping)
+  }
+  if (cp >= '0' && cp <= '9') return kBidiEN;
+  if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || (cp >= 0x00C0 && cp <= 0x024F) ||
+      (cp >= 0x0370 && cp <= 0x058F) || cp >= 0x2E80) {
+    return kBidiL;  // Latin/Greek/Cyrillic/CJK — strong L for our purposes
+  }
+  return kBidiNeutral;
+}
+
+// Fills levels[byte] for every byte of text (continuation bytes copy their
+// lead). Returns true when the paragraph base direction is RTL (first strong
+// character is R). Levels: base 0/1; opposite-direction strong runs and
+// numbers inside RTL get base+1 (numbers in RTL → 2).
+bool computeBidiLevels(const char* text, uint32_t len, uint8_t* levels) {
+  // P2/P3: base = first strong.
+  bool baseRtl = false;
+  {
+    uint32_t i = 0;
+    while (i < len) {
+      uint32_t j = i;
+      const uint32_t cp = decodeUtf8(text, len, j);
+      const uint8_t cls = bidiClass(cp);
+      if (cls == kBidiR) { baseRtl = true; break; }
+      if (cls == kBidiL) break;
+      i = j;
+    }
+  }
+  const uint8_t base = baseRtl ? 1 : 0;
+  // First pass: strong/EN levels, neutrals marked 0xFF.
+  uint32_t i = 0;
+  while (i < len) {
+    const uint32_t start = i;
+    const uint32_t cp = decodeUtf8(text, len, i);
+    const uint8_t cls = bidiClass(cp);
+    uint8_t level;
+    if (cls == kBidiR) level = 1;                       // R is always odd
+    else if (cls == kBidiL) level = base == 0 ? 0 : 2;  // L inside RTL embeds
+    else if (cls == kBidiEN) level = base == 0 ? 0 : 2; // numbers read LTR
+    else level = 0xFF;
+    for (uint32_t b = start; b < i; ++b) levels[b] = level;
+  }
+  // Second pass: neutrals take the surrounding level when both sides agree,
+  // else the base level (N1/N2 simplified).
+  uint32_t pos = 0;
+  uint8_t prev = base;
+  while (pos < len) {
+    if (levels[pos] != 0xFF) { prev = levels[pos]; ++pos; continue; }
+    uint32_t end = pos;
+    while (end < len && levels[end] == 0xFF) ++end;
+    uint8_t next = base;
+    if (end < len) next = levels[end];
+    const uint8_t fill = prev == next ? prev : base;
+    for (uint32_t b = pos; b < end; ++b) levels[b] = fill;
+    pos = end;
+  }
+  return baseRtl;
+}
+
+// UAX #9 L4: mirrored characters in RTL runs.
+uint32_t bidiMirror(uint32_t cp) {
+  switch (cp) {
+    case '(': return ')';
+    case ')': return '(';
+    case '[': return ']';
+    case ']': return '[';
+    case '{': return '}';
+    case '}': return '{';
+    case '<': return '>';
+    case '>': return '<';
+    case 0x00AB: return 0x00BB;  // « »
+    case 0x00BB: return 0x00AB;
+    default: return cp;
+  }
+}
+
+// UAX #9 L2 at character granularity: an odd-level segment's codepoints are
+// stored in visual order so the renderer's left-to-right blit is correct.
+// Classic in-place trick: reverse all bytes, then re-reverse each multibyte
+// sequence (a continuation byte now precedes its lead byte).
+void reverseUtf8(char* s, uint32_t len) {
+  for (uint32_t a = 0, b = len - 1; a < b; ++a, --b) {
+    const char t = s[a];
+    s[a] = s[b];
+    s[b] = t;
+  }
+  uint32_t i = 0;
+  while (i < len) {
+    if ((static_cast<uint8_t>(s[i]) & 0xC0) == 0x80) {
+      uint32_t j = i;
+      while (j + 1 < len && (static_cast<uint8_t>(s[j + 1]) & 0xC0) == 0x80) ++j;
+      if (j + 1 < len) ++j;  // include the lead byte
+      for (uint32_t a = i, b = j; a < b; ++a, --b) {
+        const char t = s[a];
+        s[a] = s[b];
+        s[b] = t;
+      }
+      i = j + 1;
+    } else {
+      ++i;
+    }
+  }
+}
+
 // User-agent defaults per element, expressed as CSS so the book's own CSS
 // cascades over them naturally. Margins are % of em.
 CssDecl elementDefaults(const char* local) {
@@ -232,7 +349,7 @@ bool isSuppressedElement(const char* local) {
 
 class LayoutEngine : public XmlHandler {
  public:
-  LayoutEngine(BookSource& source, const ZipCatalog& zip, const char* chapterHref,
+  LayoutEngine(BookSource& source, const ZipCatalog* zip, const char* chapterHref,
                const LayoutParams& params, Arena& scratch, PageSink& sink)
       : source_(source), zip_(zip), params_(params), scratch_(scratch), sink_(sink) {
     if (!dirName(chapterHref != nullptr ? chapterHref : "", chapterDir_, sizeof(chapterDir_))) {
@@ -243,6 +360,7 @@ class LayoutEngine : public XmlHandler {
   bool init() {
     parText_ = static_cast<char*>(scratch_.alloc(kParTextCap, 1));
     breaks_ = static_cast<char*>(scratch_.alloc(kParTextCap, 1));
+    levels_ = static_cast<uint8_t*>(scratch_.alloc(kParTextCap, 1));
     spans_ = scratch_.allocArray<Span>(kMaxSpans);
     runs_ = scratch_.allocArray<PageTextRun>(kMaxRunsPerPage);
     images_ = scratch_.allocArray<PageImage>(kMaxImagesPerPage);
@@ -256,7 +374,7 @@ class LayoutEngine : public XmlHandler {
     styleText_ = static_cast<char*>(scratch_.alloc(kStyleTextCap, 1));
     chapterCssOk_ = styleText_ != nullptr && chapterBuilder_.begin(scratch_);
     void* pageBlock = scratch_.alloc(kPageArenaCap, alignof(max_align_t));
-    if (parText_ == nullptr || breaks_ == nullptr || spans_ == nullptr || runs_ == nullptr ||
+    if (parText_ == nullptr || breaks_ == nullptr || levels_ == nullptr || spans_ == nullptr || runs_ == nullptr ||
         images_ == nullptr || links_ == nullptr || lines_ == nullptr || pageBlock == nullptr) {
       return false;
     }
@@ -607,8 +725,9 @@ class LayoutEngine : public XmlHandler {
 
   void placeImage(const char* src) {
     const size_t marked = scratch_.mark();
-    const char* resolved = resolveHref(scratch_, chapterDir_, src, nullptr);
-    const ZipEntry* entry = resolved != nullptr ? zip_.find(resolved) : nullptr;
+    const char* resolved =
+        zip_ != nullptr ? resolveHref(scratch_, chapterDir_, src, nullptr) : nullptr;
+    const ZipEntry* entry = resolved != nullptr ? zip_->find(resolved) : nullptr;
     ImageInfo info;
     if (entry != nullptr) probeImage(source_, *entry, scratch_, &info);
     if (entry == nullptr || info.kind == ImageInfo::Kind::Unknown || info.width == 0 ||
@@ -735,6 +854,7 @@ class LayoutEngine : public XmlHandler {
     lineCount_ = 0;
     set_linebreaks_utf8(reinterpret_cast<const utf8_t*>(parText_), parLen_, params_.language,
                         breaks_);
+    paraRtl_ = computeBidiLevels(parText_, parLen_, levels_);
 
     const int32_t baseMaxWidth =
         params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx;
@@ -888,6 +1008,18 @@ class LayoutEngine : public XmlHandler {
     continued_ = false;
   }
 
+  // One visual segment of a line: same span, same bidi level, no interior
+  // adjustable gap. Collected logically, then reordered per UAX #9 L2.
+  struct Seg {
+    uint32_t start;
+    uint32_t end;
+    const Span* span;
+    uint8_t level;
+    bool gapBefore;    // an adjustable gap (space/CJK boundary) precedes it
+    bool spaceBefore;  // that gap includes a real space advance
+    bool scriptGap;    // quarter-em CJK/Latin air precedes it
+  };
+
   void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine) {
     if (rec.end == rec.start) {  // blank line (e.g. double <br/>)
       pageY_ += lineHeight;
@@ -906,13 +1038,21 @@ class LayoutEngine : public XmlHandler {
     const int32_t maxWidth = baseMaxWidth - textIndentPx;
     const int32_t leftover = maxWidth - rec.naturalWidth;
 
-    int32_t x = params_.marginLeft + para_.indentPx + textIndentPx;
     const uint32_t gaps = static_cast<uint32_t>(rec.spaceCount) + rec.cjkGaps;
     const bool justify = para_.align == TextAlign::Justify && !(rec.flags & kLineLast) &&
                          gaps > 0 && leftover > 0;
-    if (para_.align == TextAlign::Right) {
-      x += leftover;
-    } else if (para_.align == TextAlign::Center) {
+    // RTL paragraphs mirror the alignment semantics: default/Left reads as
+    // the start edge, which is the RIGHT edge for a Hebrew paragraph.
+    TextAlign align = para_.align;
+    if (paraRtl_) {
+      if (align == TextAlign::Left) align = TextAlign::Right;
+      else if (align == TextAlign::Right) align = TextAlign::Left;
+    }
+    int32_t x = params_.marginLeft + para_.indentPx +
+                (paraRtl_ ? 0 : textIndentPx);
+    if (align == TextAlign::Right) {
+      x += leftover + (paraRtl_ ? 0 : 0);
+    } else if (align == TextAlign::Center) {
       x += leftover / 2;
     }
     const int32_t perGap = justify ? leftover / static_cast<int32_t>(gaps) : 0;
@@ -920,126 +1060,191 @@ class LayoutEngine : public XmlHandler {
 
     int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
 
-    // Slice into runs. Segments close at style-span changes, at spaces and
-    // CJK-CJK boundaries when justifying (both become adjustable gaps —
-    // spaces for Latin text, inter-character expansion for CJK), and at
-    // script boundaries (which get their quarter-em of air explicitly).
-    uint32_t segStart = rec.start;
-    int32_t segWidth = 0;
-    uint32_t segPrev = 0;
-    const Span* segSpan = &spanAt(rec.start);
-    uint32_t linePrev = 0;
-    uint32_t i = rec.start;
-
-    auto flushSeg = [&](uint32_t segEnd, bool addHyphen) -> bool {
-      const uint32_t segLen = segEnd - segStart;
-      if (segLen == 0 && !addHyphen) return true;
-      const uint32_t copyLen = segLen + (addHyphen ? 1u : 0u);
-      if (runCount_ >= kMaxRunsPerPage) {
-        emitPage();
-        if (stopParse) return false;
-        baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
-      }
-      char* copy = static_cast<char*>(pageArena_.alloc(copyLen, 1));
-      if (copy == nullptr) {
-        emitPage();  // page text arena full — flush and continue on a fresh page
-        if (stopParse) return false;
-        baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
-        copy = static_cast<char*>(pageArena_.alloc(copyLen, 1));
-        if (copy == nullptr) {
-          failed_ = true;
-          return false;
+    // --- collect segments in LOGICAL order -----------------------------------
+    Seg segs[64];
+    uint32_t segCount = 0;
+    {
+      uint32_t segStart = rec.start;
+      const Span* segSpan = &spanAt(rec.start);
+      uint8_t segLevel = levels_[rec.start];
+      bool gapBefore = false, spaceBefore = false, scriptGap = false;
+      uint32_t linePrev = 0;
+      uint32_t i = rec.start;
+      auto close = [&](uint32_t endPos, bool nextGap, bool nextSpace, bool nextScript) {
+        if (endPos > segStart && segCount < 64) {
+          segs[segCount++] = {segStart, endPos, segSpan, segLevel,
+                              gapBefore, spaceBefore, scriptGap};
         }
-      }
-      // Re-encode the segment: ligature pairs bake into their substituted
-      // codepoints (so cached pages render them with no extra logic) and
-      // soft hyphens (U+00AD) drop out as zero-width.
-      uint32_t outLen = 0;
-      uint32_t ci = segStart;
-      while (ci < segEnd) {
-        const uint32_t cp2 = decodeShaped(segEnd, ci, *segSpan);
-        if (cp2 == 0xAD) continue;
-        outLen += encodeUtf8(cp2, copy + outLen);
-      }
-      if (addHyphen) {
-        copy[outLen++] = '-';
-        segWidth += params_.font->advance('-', spanSizePx(*segSpan), segSpan->flags);
-      }
-      // Superscript/subscript ride above/below the baseline at their reduced size.
-      int16_t runBaseline = baselineY;
-      if (segSpan->flags & StyleSuperscript) {
-        runBaseline = static_cast<int16_t>(baselineY - (spanSizePx(*segSpan) * 33) / 100);
-      } else if (segSpan->flags & StyleSubscript) {
-        runBaseline = static_cast<int16_t>(baselineY + (spanSizePx(*segSpan) * 12) / 100);
-      }
-      runs_[runCount_++] = {copy,
-                            static_cast<uint16_t>(outLen),
-                            static_cast<int16_t>(x),
-                            runBaseline,
-                            spanSizePx(*segSpan),
-                            segSpan->flags};
-      if (segSpan->link != 0 && linkCount_ < kMaxLinksPerPage) {
-        const uint8_t li = static_cast<uint8_t>(segSpan->link - 1);
-        const uint16_t sz = spanSizePx(*segSpan);
-        PageLink& pl = links_[linkCount_++];
-        pl.target = pageArena_.strdup(parLinkPath_[li]);
-        pl.fragment = pageArena_.strdup(parLinkFrag_[li]);
-        pl.x = static_cast<int16_t>(x);
-        pl.y = static_cast<int16_t>(runBaseline - sz);
-        pl.width = static_cast<uint16_t>(segWidth > 0 ? segWidth : 1);
-        pl.height = static_cast<uint16_t>(sz + sz / 4);
-        if (pl.target == nullptr || pl.fragment == nullptr) --linkCount_;
-      }
-      x += segWidth;
-      segWidth = 0;
-      segPrev = 0;
-      return true;
-    };
-    auto gapBump = [&]() {
-      if (!justify) return;
-      x += perGap;
-      if (gapRemainder > 0) {
-        ++x;
-        --gapRemainder;
-      }
-    };
+        gapBefore = nextGap;
+        spaceBefore = nextSpace;
+        scriptGap = nextScript;
+      };
+      while (i < rec.end) {
+        const uint32_t charStart = i;
+        const Span* span = &spanAt(charStart);
+        const uint8_t level = levels_[charStart];
+        uint32_t next = charStart;
+        const uint32_t cp = decodeShaped(rec.end, next, *span);
 
-    while (i < rec.end && !failed_) {
-      const uint32_t charStart = i;
-      const Span* span = &spanAt(charStart);
-      uint32_t next = charStart;
-      const uint32_t cp = decodeShaped(rec.end, next, *span);
-
-      if (span != segSpan) {
-        if (!flushSeg(charStart, false)) return;
-        segStart = charStart;
-        segSpan = span;
-      }
-      if (justify && cp == ' ') {
-        if (!flushSeg(charStart, false)) return;
-        x += params_.font->advance(' ', spanSizePx(*span), span->flags);
-        gapBump();
-        segStart = next;
+        if (justify && cp == ' ') {
+          close(charStart, true, true, false);
+          segStart = next;
+          segSpan = &spanAt(next < rec.end ? next : charStart);
+          segLevel = next < rec.end ? levels_[next] : level;
+          linePrev = cp;
+          i = next;
+          continue;
+        }
+        const bool cjkGap = linePrev != 0 && justify && isCjk(linePrev) && isCjk(cp);
+        const bool mixGap = linePrev != 0 && crossesScripts(linePrev, cp);
+        if (span != segSpan || level != segLevel || cjkGap || mixGap) {
+          close(charStart, cjkGap, false, mixGap);
+          segStart = charStart;
+          segSpan = span;
+          segLevel = level;
+        }
         linePrev = cp;
         i = next;
-        continue;
       }
-      if (linePrev != 0 && justify && isCjk(linePrev) && isCjk(cp)) {
-        if (!flushSeg(charStart, false)) return;
-        gapBump();
-        segStart = charStart;
-      } else if (linePrev != 0 && crossesScripts(linePrev, cp)) {
-        if (!flushSeg(charStart, false)) return;
-        x += spanSizePx(*span) / 4;
-        segStart = charStart;
-      }
-      segWidth += advanceFor(cp, segPrev, *span);
-      segPrev = cp;
-      linePrev = cp;
-      i = next;
+      close(rec.end, false, false, false);
     }
-    if (!failed_) flushSeg(rec.end, (rec.flags & kLineHyphen) != 0);
+    if (segCount == 0) {
+      pageY_ += lineHeight;
+      return;
+    }
+
+    // --- reorder to VISUAL order (UAX #9 L2) ---------------------------------
+    uint8_t order[64];
+    for (uint32_t s = 0; s < segCount; ++s) order[s] = static_cast<uint8_t>(s);
+    uint8_t maxLevel = 0, minOdd = 255;
+    for (uint32_t s = 0; s < segCount; ++s) {
+      if (segs[s].level > maxLevel) maxLevel = segs[s].level;
+      if ((segs[s].level & 1) && segs[s].level < minOdd) minOdd = segs[s].level;
+    }
+    const uint8_t base = paraRtl_ ? 1 : 0;
+    for (uint8_t lvl = maxLevel; lvl >= (minOdd == 255 ? 1 : minOdd) && lvl >= base + 1u &&
+                                 lvl != 0; --lvl) {
+      uint32_t s = 0;
+      while (s < segCount) {
+        if (segs[order[s]].level < lvl) { ++s; continue; }
+        uint32_t e = s;
+        while (e < segCount && segs[order[e]].level >= lvl) ++e;
+        for (uint32_t a = s, b = e - 1; a < b; ++a, --b) {
+          const uint8_t t = order[a]; order[a] = order[b]; order[b] = t;
+        }
+        s = e;
+      }
+    }
+    if (paraRtl_) {  // base level 1: reverse everything once more (L2 for lvl 1)
+      for (uint32_t a = 0, b = segCount - 1; a < b; ++a, --b) {
+        const uint8_t t = order[a]; order[a] = order[b]; order[b] = t;
+      }
+      // RTL first-line indent comes off the right edge: shift line body left.
+      // (x already excludes textIndent; the line simply starts at the margin.)
+    }
+
+    // --- emit in visual order -------------------------------------------------
+    for (uint32_t v = 0; v < segCount; ++v) {
+      const Seg& sg = segs[order[v]];
+      // Gap handling follows VISUAL adjacency: apply the logical gap cost of
+      // the segment it precedes (space advance + justify stretch).
+      if (v > 0) {
+        const Seg& logicalOwner = sg;
+        if (logicalOwner.gapBefore || logicalOwner.spaceBefore) {
+          if (logicalOwner.spaceBefore) {
+            x += params_.font->advance(' ', spanSizePx(*logicalOwner.span),
+                                       logicalOwner.span->flags);
+          }
+          if (justify) {
+            x += perGap;
+            if (gapRemainder > 0) { ++x; --gapRemainder; }
+          }
+        } else if (logicalOwner.scriptGap) {
+          x += spanSizePx(*logicalOwner.span) / 4;
+        }
+      }
+      const bool lastLogical = sg.end == rec.end;
+      const bool addHyphen = lastLogical && (rec.flags & kLineHyphen) != 0 && !paraRtl_;
+      if (!emitSeg(sg, addHyphen, baselineY, x, sizePx)) return;
+    }
     pageY_ += lineHeight;
+  }
+
+  // Emits one segment as a page run at x (advancing it). Splits pages when
+  // run/arena capacity is hit. Returns false on stop/failure.
+  bool emitSeg(const Seg& sg, bool addHyphen, int16_t& baselineY, int32_t& x,
+               uint16_t sizePx) {
+    // Measure the segment (kerning resets at its start, matching natural
+    // width accounting at gap boundaries).
+    int32_t segWidth = 0;
+    {
+      uint32_t i = sg.start;
+      uint32_t prev = 0;
+      while (i < sg.end) {
+        const uint32_t cp = decodeShaped(sg.end, i, *sg.span);
+        segWidth += advanceFor(cp, prev, *sg.span);
+        prev = cp;
+      }
+    }
+    const uint32_t segLen = sg.end - sg.start;
+    const uint32_t copyLen = segLen + segLen / 2 + (addHyphen ? 1u : 0u) + 4;
+    if (runCount_ >= kMaxRunsPerPage) {
+      emitPage();
+      if (stopParse) return false;
+      baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
+    }
+    char* copy = static_cast<char*>(pageArena_.alloc(copyLen, 1));
+    if (copy == nullptr) {
+      emitPage();
+      if (stopParse) return false;
+      baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
+      copy = static_cast<char*>(pageArena_.alloc(copyLen, 1));
+      if (copy == nullptr) {
+        failed_ = true;
+        return false;
+      }
+    }
+    // Re-encode: ligatures bake in, soft hyphens drop, RTL runs mirror
+    // brackets (UAX #9 L4).
+    uint32_t outLen = 0;
+    uint32_t ci = sg.start;
+    while (ci < sg.end) {
+      uint32_t cp2 = decodeShaped(sg.end, ci, *sg.span);
+      if (cp2 == 0xAD) continue;
+      if (sg.level & 1) cp2 = bidiMirror(cp2);
+      outLen += encodeUtf8(cp2, copy + outLen);
+    }
+    if (sg.level & 1) reverseUtf8(copy, outLen);  // store visual order (L2)
+    if (addHyphen) {
+      copy[outLen++] = '-';
+      segWidth += params_.font->advance('-', spanSizePx(*sg.span), sg.span->flags);
+    }
+    int16_t runBaseline = baselineY;
+    if (sg.span->flags & StyleSuperscript) {
+      runBaseline = static_cast<int16_t>(baselineY - (spanSizePx(*sg.span) * 33) / 100);
+    } else if (sg.span->flags & StyleSubscript) {
+      runBaseline = static_cast<int16_t>(baselineY + (spanSizePx(*sg.span) * 12) / 100);
+    }
+    runs_[runCount_++] = {copy,
+                          static_cast<uint16_t>(outLen),
+                          static_cast<int16_t>(x),
+                          runBaseline,
+                          spanSizePx(*sg.span),
+                          sg.span->flags};
+    if (sg.span->link != 0 && linkCount_ < kMaxLinksPerPage) {
+      const uint8_t li = static_cast<uint8_t>(sg.span->link - 1);
+      const uint16_t sz = spanSizePx(*sg.span);
+      PageLink& pl = links_[linkCount_++];
+      pl.target = pageArena_.strdup(parLinkPath_[li]);
+      pl.fragment = pageArena_.strdup(parLinkFrag_[li]);
+      pl.x = static_cast<int16_t>(x);
+      pl.y = static_cast<int16_t>(runBaseline - sz);
+      pl.width = static_cast<uint16_t>(segWidth > 0 ? segWidth : 1);
+      pl.height = static_cast<uint16_t>(sz + sz / 4);
+      if (pl.target == nullptr || pl.fragment == nullptr) --linkCount_;
+    }
+    x += segWidth;
+    return true;
   }
 
   void emitPage() {
@@ -1055,7 +1260,7 @@ class LayoutEngine : public XmlHandler {
   }
 
   BookSource& source_;
-  const ZipCatalog& zip_;
+  const ZipCatalog* zip_;  // nullptr for plain-text layout (no container)
   const LayoutParams& params_;
   Arena& scratch_;
   PageSink& sink_;
@@ -1063,6 +1268,8 @@ class LayoutEngine : public XmlHandler {
 
   char* parText_ = nullptr;
   char* breaks_ = nullptr;
+  uint8_t* levels_ = nullptr;  // bidi embedding level per byte
+  bool paraRtl_ = false;
   Span* spans_ = nullptr;
   PageTextRun* runs_ = nullptr;
   PageImage* images_ = nullptr;
@@ -1115,7 +1322,7 @@ BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
     return BookStatus::Unsupported;
   }
   const size_t marked = scratch.mark();
-  LayoutEngine engine(source, zip, chapterHref, params, scratch, sink);
+  LayoutEngine engine(source, &zip, chapterHref, params, scratch, sink);
   if (!engine.init()) {
     scratch.release(marked);
     return BookStatus::OutOfMemory;
@@ -1124,6 +1331,73 @@ BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
                                          /*filterHtmlEntities=*/true);
   if (status == BookStatus::Ok && !engine.finish()) status = BookStatus::OutOfMemory;
   if (status == BookStatus::Ok && engine.outOfMemory()) status = BookStatus::OutOfMemory;
+  if (pageCountOut != nullptr) *pageCountOut = engine.pageCount();
+  if (totalCharsOut != nullptr) *totalCharsOut = engine.totalChars();
+  scratch.release(marked);
+  return status;
+}
+
+BookStatus ChapterLayout::layoutPlainText(BookSource& source, const LayoutParams& params,
+                                          Arena& scratch, PageSink& sink,
+                                          uint32_t* pageCountOut, uint32_t* totalCharsOut) {
+  if (params.font == nullptr || params.pageWidth <= 0 || params.pageHeight <= 0) {
+    return BookStatus::Unsupported;
+  }
+  const size_t marked = scratch.mark();
+  LayoutEngine engine(source, nullptr, "", params, scratch, sink);
+  char* buf = static_cast<char*>(scratch.alloc(4096, 1));
+  if (!engine.init() || buf == nullptr) {
+    scratch.release(marked);
+    return BookStatus::OutOfMemory;
+  }
+
+  // Plain text is "one chapter of <p> elements": paragraphs split on blank
+  // lines, single newlines flow as spaces (the engine's whitespace collapse
+  // handles that). UTF-8 assumed; a leading BOM is skipped.
+  engine.onStartElement("body", nullptr);
+  engine.onStartElement("p", nullptr);
+  uint64_t offset = 0;
+  uint32_t newlines = 0;
+  bool first = true;
+  BookStatus status = BookStatus::Ok;
+  for (;;) {
+    const int32_t n = source.readAt(offset, buf, 4096);
+    if (n < 0) {
+      status = BookStatus::IoError;
+      break;
+    }
+    if (n == 0) break;
+    offset += static_cast<uint32_t>(n);
+    int32_t start = 0;
+    if (first) {
+      first = false;
+      if (n >= 3 && static_cast<uint8_t>(buf[0]) == 0xEF &&
+          static_cast<uint8_t>(buf[1]) == 0xBB && static_cast<uint8_t>(buf[2]) == 0xBF) {
+        start = 3;  // UTF-8 BOM
+      }
+    }
+    int32_t runStart = start;
+    for (int32_t i = start; i < n; ++i) {
+      const char c = buf[i];
+      if (c == '\n') {
+        ++newlines;
+        if (newlines >= 2) {  // blank line = paragraph break
+          if (i > runStart) engine.onText(buf + runStart, i - runStart);
+          engine.onEndElement("p");
+          engine.onStartElement("p", nullptr);
+          runStart = i + 1;
+          newlines = 0;
+        }
+      } else if (c != '\r') {
+        newlines = 0;
+      }
+    }
+    if (n > runStart) engine.onText(buf + runStart, n - runStart);
+    if (engine.stopParse) break;
+  }
+  engine.onEndElement("p");
+  engine.onEndElement("body");
+  if (status == BookStatus::Ok && !engine.finish()) status = BookStatus::OutOfMemory;
   if (pageCountOut != nullptr) *pageCountOut = engine.pageCount();
   if (totalCharsOut != nullptr) *totalCharsOut = engine.totalChars();
   scratch.release(marked);

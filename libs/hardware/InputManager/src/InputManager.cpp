@@ -163,6 +163,7 @@ void InputManager::beginAsync(const uint8_t taskPriority, const uint32_t pollMs,
   _asyncQueue = xQueueCreate(queueLen, sizeof(uint8_t));
   if (!_asyncQueue) return;
   _asyncTapQueue = xQueueCreate(queueLen, sizeof(float) * 2);
+  _asyncSwipeQueue = xQueueCreate(queueLen, sizeof(float) * 4);
   xTaskCreate(asyncTaskTrampoline, "fi_input", 4096, this, taskPriority, &_asyncTask);
 }
 
@@ -179,6 +180,10 @@ void InputManager::asyncPoll() {
     if (_asyncTapQueue && wasTouchTap(tap[0], tap[1])) {
       xQueueSend(_asyncTapQueue, tap, 0);
     }
+    float swipe[4];
+    if (_asyncSwipeQueue && wasSwipe(swipe[0], swipe[1], swipe[2], swipe[3])) {
+      xQueueSend(_asyncSwipeQueue, swipe, 0);
+    }
     vTaskDelay(pdMS_TO_TICKS(_asyncPollMs));
   }
 }
@@ -194,6 +199,17 @@ bool InputManager::popTouchTap(float& nx, float& ny) {
   if (xQueueReceive(_asyncTapQueue, tap, 0) != pdTRUE) return false;
   nx = tap[0];
   ny = tap[1];
+  return true;
+}
+
+bool InputManager::popSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) {
+  if (!_asyncSwipeQueue) return false;
+  float swipe[4];
+  if (xQueueReceive(_asyncSwipeQueue, swipe, 0) != pdTRUE) return false;
+  nxStart = swipe[0];
+  nyStart = swipe[1];
+  nxEnd = swipe[2];
+  nyEnd = swipe[3];
   return true;
 }
 

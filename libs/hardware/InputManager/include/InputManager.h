@@ -150,6 +150,11 @@ class InputManager {
   // drain and route them afterwards. Returns false when no tap is pending.
   bool popTouchTap(float& nx, float& ny);
 
+  // Pop the next latched swipe gesture (normalized 0..1 panel-native start/end
+  // coordinates, same frame as wasSwipe). Like taps, async polling queues swipes
+  // so gestures that complete during e-paper refreshes are not lost.
+  bool popSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd);
+
   // --- Diagnostics -----------------------------------------------------------
   // A live sample of one button-group ADC pin: the raw reading plus the BTN_*
   // it currently classifies as (-1 = no band matched). On the Xteink ADC ladder
@@ -174,6 +179,7 @@ class InputManager {
 
   QueueHandle_t _asyncQueue = nullptr;
   QueueHandle_t _asyncTapQueue = nullptr;
+  QueueHandle_t _asyncSwipeQueue = nullptr;
   TaskHandle_t _asyncTask = nullptr;
   uint32_t _asyncPollMs = 15;
   static void asyncTaskTrampoline(void* self);
