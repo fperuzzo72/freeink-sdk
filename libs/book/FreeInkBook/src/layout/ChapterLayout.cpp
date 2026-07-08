@@ -10,6 +10,8 @@
 
 #include "layout/ChapterLayout.h"
 
+#include <new>
+
 #include "BookProfile.h"
 
 #include <stdio.h>
@@ -1767,44 +1769,40 @@ class LayoutEngine : public XmlHandler {
 
 }  // namespace
 
-BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
-                                 const ZipEntry& entry, const char* chapterHref,
-                                 const LayoutParams& params, Arena& scratch, PageSink& sink,
-                                 uint32_t* pageCountOut, uint32_t* totalCharsOut,
-                                 Arena* parseScratch) {
-  if (params.font == nullptr || params.pageWidth <= 0 || params.pageHeight <= 0) {
-    return BookStatus::Unsupported;
-  }
-  const size_t marked = scratch.mark();
-  // Parse-side allocations (inflate state + XML chunks) go to their own
-  // arena when the caller provides one — see the header note.
-  Arena& parseArena = parseScratch != nullptr ? *parseScratch : scratch;
-  const size_t parseMarked = parseArena.mark();
+namespace {
 
-  // Image pre-scan: gather image hrefs in a collector parse, then probe each
-  // target's dimensions with only one inflate stream alive at a time. The
-  // table sits below the layout buffers; everything else the pre-scan used is
-  // released before the main parse, so the chapter peak stays at the
-  // text-chapter level. Failures here are non-fatal — the main parse reports
-  // real errors, and unprobed images fall back to the inline probe.
+// Image pre-scan: gather image hrefs in a collector parse (reading the
+// chapter from `chapterSource`), then probe each target's dimensions in the
+// BOOK container with only one inflate stream alive at a time. The table
+// sits below the layout buffers; everything else the pre-scan used is
+// released before the main parse, so the chapter peak stays at the
+// text-chapter level. Failures here are non-fatal — the main parse reports
+// real errors, and unprobed images fall back to the inline probe.
+void prescanImages(BookSource& bookSource, const ZipCatalog* zip, BookSource& chapterSource,
+                   const ZipEntry& entry, const char* chapterHref, Arena& scratch,
+                   Arena& parseArena, ProbedImage** probedOut, uint16_t* probedCountOut) {
+  *probedOut = nullptr;
+  *probedCountOut = 0;
+  if (zip == nullptr) return;
+  const size_t tableMark = scratch.mark();
   ProbedImage* probed = nullptr;
   uint16_t probedCount = 0;
-  if (entryMentionsImages(source, entry, parseArena)) {
+  if (entryMentionsImages(chapterSource, entry, parseArena)) {
     probed = scratch.allocArray<ProbedImage>(kMaxProbedImages);
     if (probed != nullptr) {
       ImageCollector collector(chapterHref, scratch, probed, kMaxProbedImages);
-      if (XmlSax::parseEntry(source, entry, parseArena, collector,
+      if (XmlSax::parseEntry(chapterSource, entry, parseArena, collector,
                              /*filterHtmlEntities=*/true) == BookStatus::Ok ||
           collector.count() > 0) {
         probedCount = collector.count();
         // One pass over the catalog, matched by the same name hash find()
         // keys on. A missing target keeps kind=Unknown and layout skips the
         // image, exactly as the inline probe path did.
-        for (size_t e = 0; e < zip.entryCount() && probedCount > 0; ++e) {
-          const ZipEntry* target = zip.entry(e);
+        for (size_t e = 0; e < zip->entryCount() && probedCount > 0; ++e) {
+          const ZipEntry* target = zip->entry(e);
           for (uint16_t i = 0; i < probedCount; ++i) {
             if (probed[i].hrefHash == target->nameHash) {
-              probeImage(source, *target, parseArena, &probed[i].info);
+              probeImage(bookSource, *target, parseArena, &probed[i].info);
               break;
             }
           }
@@ -1812,24 +1810,153 @@ BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
       }
     }
     if (probedCount == 0) {
-      scratch.release(marked);  // reclaim the unused table
+      scratch.release(tableMark);  // reclaim the unused table
       probed = nullptr;
     }
   }
+  // No parseArena release here: every helper above self-releases its own
+  // allocations, and in single-arena mode a release to a pre-table mark
+  // would clobber the probed table (parseArena aliases scratch then).
+  *probedOut = probed;
+  *probedCountOut = probedCount;
+}
 
-  LayoutEngine engine(source, &zip, chapterHref, params, scratch, sink, probed, probedCount,
-                      &parseArena);
-  if (!engine.init()) {
-    scratch.release(marked);
-    parseArena.release(parseMarked);
+}  // namespace
+
+// --- ChapterLayoutSession ----------------------------------------------------
+
+class ChapterLayoutSession::CountingSink : public PageSink {
+ public:
+  explicit CountingSink(PageSink& inner) : inner_(inner) {}
+  void onAnchor(uint32_t idHash, uint32_t charStart) override {
+    inner_.onAnchor(idHash, charStart);
+  }
+  bool onPage(const Page& page) override {
+    ++pages_;
+    return inner_.onPage(page);
+  }
+  uint32_t pages() const { return pages_; }
+
+ private:
+  PageSink& inner_;
+  uint32_t pages_ = 0;
+};
+
+BookStatus ChapterLayoutSession::begin(BookSource& bookSource, const ZipCatalog* zip,
+                                       BookSource& chapterSource, const ZipEntry& entry,
+                                       const char* chapterHref, const LayoutParams& params,
+                                       Arena& scratch, PageSink& sink, Arena* parseScratch,
+                                       Arena* prescanScratch) {
+  abort();
+  if (params.font == nullptr || params.pageWidth <= 0 || params.pageHeight <= 0) {
+    return BookStatus::Unsupported;
+  }
+  Arena& parseArena = parseScratch != nullptr ? *parseScratch : scratch;
+  Arena& prescanArena = prescanScratch != nullptr ? *prescanScratch : parseArena;
+  bytesTotal_ = entry.uncompressedSize;
+
+  ProbedImage* probed = nullptr;
+  uint16_t probedCount = 0;
+  prescanImages(bookSource, zip, chapterSource, entry, chapterHref, scratch, prescanArena, &probed,
+                &probedCount);
+
+  auto* counting =
+      static_cast<CountingSink*>(scratch.alloc(sizeof(CountingSink), alignof(CountingSink)));
+  auto* engine =
+      static_cast<LayoutEngine*>(scratch.alloc(sizeof(LayoutEngine), alignof(LayoutEngine)));
+  if (counting == nullptr || engine == nullptr) return BookStatus::OutOfMemory;
+  counting = new (counting) CountingSink(sink);
+  engine = new (engine) LayoutEngine(bookSource, zip, chapterHref, params, scratch, *counting,
+                                     probed, probedCount, &parseArena);
+  countingSink_ = counting;
+  engine_ = engine;
+  if (!engine->init()) {
+    state_ = State::Failed;
     return BookStatus::OutOfMemory;
   }
-  BookStatus status = XmlSax::parseEntry(source, entry, parseArena, engine,
-                                         /*filterHtmlEntities=*/true);
-  if (status == BookStatus::Ok && !engine.finish()) status = BookStatus::OutOfMemory;
-  if (status == BookStatus::Ok && engine.outOfMemory()) status = BookStatus::OutOfMemory;
-  if (pageCountOut != nullptr) *pageCountOut = engine.pageCount();
-  if (totalCharsOut != nullptr) *totalCharsOut = engine.totalChars();
+
+  const BookStatus st = sax_.open(chapterSource, entry, parseArena, *engine,
+                                  /*filterHtmlEntities=*/true);
+  if (st != BookStatus::Ok) {
+    state_ = State::Failed;
+    return st;
+  }
+  state_ = State::Parsing;
+  return BookStatus::Ok;
+}
+
+BookStatus ChapterLayoutSession::step(uint32_t minNewPages) {
+  if (state_ == State::Done) return BookStatus::Ok;
+  if (state_ != State::Parsing) return BookStatus::Unsupported;
+  auto* engine = static_cast<LayoutEngine*>(engine_);
+  auto* counting = static_cast<CountingSink*>(countingSink_);
+
+  const uint32_t startPages = counting->pages();
+  bool atEnd = false;
+  BookStatus status = BookStatus::Ok;
+  while (!atEnd && !engine->stopParse && counting->pages() - startPages < minNewPages) {
+    status = sax_.feedChunk(&atEnd);
+    if (status != BookStatus::Ok) break;
+  }
+  if (status == BookStatus::Ok && (atEnd || engine->stopParse)) {
+    if (!engine->finish()) status = BookStatus::OutOfMemory;
+    if (status == BookStatus::Ok && engine->outOfMemory()) status = BookStatus::OutOfMemory;
+    sax_.close();
+    state_ = status == BookStatus::Ok ? State::Done : State::Failed;
+    return status;
+  }
+  if (status != BookStatus::Ok) {
+    if (status != BookStatus::OutOfMemory && engine->outOfMemory()) {
+      status = BookStatus::OutOfMemory;
+    }
+    sax_.close();
+    state_ = State::Failed;
+  }
+  return status;
+}
+
+uint32_t ChapterLayoutSession::pagesEmitted() const {
+  return countingSink_ != nullptr ? static_cast<const CountingSink*>(countingSink_)->pages() : 0;
+}
+
+uint32_t ChapterLayoutSession::totalChars() const {
+  return engine_ != nullptr ? static_cast<const LayoutEngine*>(engine_)->totalChars() : 0;
+}
+
+void ChapterLayoutSession::abort() {
+  sax_.close();
+  if (engine_ != nullptr) {
+    static_cast<LayoutEngine*>(engine_)->~LayoutEngine();
+    engine_ = nullptr;
+  }
+  if (countingSink_ != nullptr) {
+    static_cast<CountingSink*>(countingSink_)->~CountingSink();
+    countingSink_ = nullptr;
+  }
+  bytesTotal_ = 0;
+  state_ = State::Idle;
+}
+
+BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
+                                 const ZipEntry& entry, const char* chapterHref,
+                                 const LayoutParams& params, Arena& scratch, PageSink& sink,
+                                 uint32_t* pageCountOut, uint32_t* totalCharsOut,
+                                 Arena* parseScratch) {
+  // One-shot = a session pumped to completion; a single code path keeps
+  // stepped and blocking layouts byte-identical by construction.
+  const size_t marked = scratch.mark();
+  Arena& parseArena = parseScratch != nullptr ? *parseScratch : scratch;
+  const size_t parseMarked = parseArena.mark();
+
+  ChapterLayoutSession session;
+  BookStatus status =
+      session.begin(source, &zip, source, entry, chapterHref, params, scratch, sink, parseScratch);
+  while (status == BookStatus::Ok && !session.done()) {
+    status = session.step(UINT32_MAX);
+  }
+  if (pageCountOut != nullptr) *pageCountOut = session.pagesEmitted();
+  if (totalCharsOut != nullptr) *totalCharsOut = session.totalChars();
+  session.abort();
   scratch.release(marked);
   parseArena.release(parseMarked);
   return status;

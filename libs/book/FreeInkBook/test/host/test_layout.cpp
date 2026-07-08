@@ -290,6 +290,143 @@ void testMemoryIndependence() {
 // one ~100 KB block does not exist). Also asserts each side's ceiling: the
 // split is only useful if BOTH arenas stay comfortably under a single-block
 // budget.
+// Resumable layout: a stepped session must deliver byte-identical pages to
+// the one-shot call (which is itself the session pumped to completion), take
+// multiple steps to finish a big chapter, and respect the raw-chapterSource
+// mode (chapter bytes from an extracted file, image probes from the book).
+void testChapterLayoutSession() {
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+
+  // Reference: one-shot layout of the big generated chapter.
+  uint32_t refPages = 0;
+  char refText[16 * 1024];
+  {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+    CHECK(entry != nullptr);
+    CollectSink sink(params, font);
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                    entry->name, params, opened.scratch, sink,
+                                                    &refPages)),
+             static_cast<int>(BookStatus::Ok));
+    std::snprintf(refText, sizeof(refText), "%.*s", static_cast<int>(sizeof(refText) - 1),
+                  sink.text);
+  }
+  CHECK(refPages > 50);  // the fixture really is a big chapter
+
+  // Stepped: 4 pages per step; identical output, genuinely incremental.
+  {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+    CHECK(entry != nullptr);
+    CollectSink sink(params, font);
+    ChapterLayoutSession session;
+    CHECK_EQ(static_cast<int>(session.begin(opened.source, &opened.book.zip(), opened.source,
+                                            *entry, entry->name, params, opened.scratch, sink)),
+             static_cast<int>(BookStatus::Ok));
+    uint32_t steps = 0;
+    uint64_t lastConsumed = 0;
+    while (!session.done()) {
+      CHECK_EQ(static_cast<int>(session.step(4)), static_cast<int>(BookStatus::Ok));
+      CHECK(session.bytesConsumed() >= lastConsumed);  // monotonic input progress
+      lastConsumed = session.bytesConsumed();
+      ++steps;
+      CHECK(steps < 100000u);  // no livelock
+    }
+    CHECK(steps > 5);  // it really ran incrementally, not one big gulp
+    CHECK_EQ(session.pagesEmitted(), refPages);
+    CHECK(std::strncmp(sink.text, refText, std::strlen(refText)) == 0);
+    CHECK_EQ(sink.geometryViolations, 0);
+    CHECK(session.totalChars() > 0);
+  }
+
+  // Raw chapterSource: extract the IMAGE chapter to a buffer, lay it out as
+  // a headerless stored entry with probes still resolving via the book zip.
+  {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch5.xhtml");
+    CHECK(entry != nullptr);
+
+    // One-shot reference for the image chapter.
+    uint32_t imgRefPages = 0;
+    char imgRefText[16 * 1024];
+    {
+      CollectSink sink(params, font);
+      const size_t mark = opened.scratch.mark();
+      CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                      entry->name, params, opened.scratch, sink,
+                                                      &imgRefPages)),
+               static_cast<int>(BookStatus::Ok));
+      opened.scratch.release(mark);
+      std::snprintf(imgRefText, sizeof(imgRefText), "%.*s", static_cast<int>(sizeof(imgRefText) - 1),
+                    sink.text);
+    }
+
+    // Extract the chapter bytes (the app does this to SD; here to a buffer).
+    static uint8_t extracted[64 * 1024];
+    uint32_t extractedLen = 0;
+    {
+      const size_t mark = opened.scratch.mark();
+      ZipEntryReader reader;
+      CHECK_EQ(static_cast<int>(reader.open(opened.source, *entry, opened.scratch)),
+               static_cast<int>(BookStatus::Ok));
+      for (;;) {
+        const int32_t n = reader.read(extracted + extractedLen,
+                                      static_cast<uint32_t>(sizeof(extracted) - extractedLen));
+        CHECK(n >= 0);
+        if (n <= 0) break;
+        extractedLen += static_cast<uint32_t>(n);
+      }
+      opened.scratch.release(mark);
+    }
+    CHECK_EQ(extractedLen, entry->uncompressedSize);
+
+    class MemSource : public BookSource {
+     public:
+      MemSource(const uint8_t* data, uint32_t len) : data_(data), len_(len) {}
+      int32_t readAt(uint64_t offset, void* dst, uint32_t len) override {
+        if (offset >= len_) return 0;
+        const uint32_t n = static_cast<uint32_t>(
+            len < len_ - static_cast<uint32_t>(offset) ? len : len_ - static_cast<uint32_t>(offset));
+        std::memcpy(dst, data_ + offset, n);
+        return static_cast<int32_t>(n);
+      }
+      uint64_t size() const override { return len_; }
+
+     private:
+      const uint8_t* data_;
+      uint32_t len_;
+    };
+    MemSource chapterSource(extracted, extractedLen);
+    const ZipEntry rawEntry = ZipEntryReader::rawEntry(extractedLen);
+
+    class ImageCountingSink : public CollectSink {
+     public:
+      ImageCountingSink(const LayoutParams& p, BookFont& f) : CollectSink(p, f) {}
+      bool onPage(const Page& page) override {
+        images += page.imageCount;
+        return CollectSink::onPage(page);
+      }
+      uint32_t images = 0;
+    };
+    ImageCountingSink sink(params, font);
+    ChapterLayoutSession session;
+    CHECK_EQ(static_cast<int>(session.begin(opened.source, &opened.book.zip(), chapterSource,
+                                            rawEntry, entry->name, params, opened.scratch, sink)),
+             static_cast<int>(BookStatus::Ok));
+    while (!session.done()) {
+      CHECK_EQ(static_cast<int>(session.step(2)), static_cast<int>(BookStatus::Ok));
+    }
+    CHECK_EQ(session.pagesEmitted(), imgRefPages);
+    CHECK(std::strncmp(sink.text, imgRefText, std::strlen(imgRefText)) == 0);
+    CHECK(sink.images > 0);  // the image really laid out via book-side probes
+  }
+}
+
 void testSplitParseArena() {
   FakeFont font;
   LayoutParams params = stickyParams(font);
@@ -1568,6 +1705,7 @@ int main(int argc, char** argv) {
   testMemoryIndependence();
   testEarlyStop();
   testSplitParseArena();
+  testChapterLayoutSession();
   testCssUnit();
   testStyledChapter();
   testHyphenation(hyphenator);

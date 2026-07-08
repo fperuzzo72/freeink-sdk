@@ -204,6 +204,16 @@ BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena
   window_ = nullptr;
   inBuf_ = nullptr;
 
+  // Raw (headerless) synthetic entries — see rawEntry(): the source IS the
+  // stored data, starting at offset 0.
+  if (entry.localHeaderOffset == kRawHeaderOffset) {
+    if (entry.method != kMethodStored || entry.compressedSize != entry.uncompressedSize) {
+      return BookStatus::Unsupported;
+    }
+    dataOffset_ = 0;
+    return BookStatus::Ok;
+  }
+
   // The central directory and the local header may disagree on name/extra
   // lengths (some writers add extra fields locally), so the local header is
   // authoritative for where the data starts.

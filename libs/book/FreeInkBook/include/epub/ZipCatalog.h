@@ -58,6 +58,24 @@ class ZipCatalog {
 // a negative value on error.
 class ZipEntryReader {
  public:
+  // Marks a synthetic entry as HEADERLESS: the source is the raw entry data
+  // itself (offset 0), not a ZIP container. See rawEntry().
+  static constexpr uint32_t kRawHeaderOffset = 0xFFFFFFFFu;
+
+  // Synthesizes an entry describing a raw stored byte range — e.g. a chapter
+  // previously extracted (inflated) to its own file so later layout passes
+  // can skip the ~46 KB inflate state. open() reads it from offset 0 without
+  // expecting a ZIP local header.
+  static ZipEntry rawEntry(uint32_t size) {
+    ZipEntry e;
+    e.name = "";
+    e.compressedSize = size;
+    e.uncompressedSize = size;
+    e.localHeaderOffset = kRawHeaderOffset;
+    e.method = 0;  // stored
+    return e;
+  }
+
   BookStatus open(BookSource& source, const ZipEntry& entry, Arena& scratch);
   int32_t read(void* dst, uint32_t len);
   uint32_t totalProduced() const { return produced_; }
