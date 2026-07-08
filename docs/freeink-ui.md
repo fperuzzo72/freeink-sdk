@@ -1182,3 +1182,33 @@ component set:
   with `minFill` so tiny nonzero values stay visible
 - pill tab bars, hug-content menus, per-corner rounded cards, and the
   `Underline`/`Triangle` selection markers
+
+## Recent additions
+
+- **`flatButtonStyles(radius)`** — the borderless sibling of
+  `outlinedButtonStyles`: nothing drawn at rest, a light fill for
+  selected/pressed feedback. Assign once (`theme.button =
+  ui::flatButtonStyles(8)`) for the "just text on paper" look.
+- **Dropdown upgrades** — `DropdownProps` gained a leading `icon`
+  (settingRow-style), a `subtitle` two-line layout (label over current
+  selection), and a legible default chevron (10 px, 2 px stroke — the old
+  8 px/1 px indicator was invisible on e-paper).
+- **`ButtonProps.iconSize`** — scales a button icon to any square size via
+  nearest-neighbor `Contain`, so one asset serves several button sizes.
+- **`DisplayTarget::setOrientation()`** — runtime portrait/landscape (and
+  flipped) switching; refresh your `DeviceContext` via `deviceContext()`
+  and repaint. Touch mapping follows automatically.
+- **Runtime glyph fallback** — `DisplayTarget::setGlyphFallback(...)` takes
+  a `RuntimeGlyphSource` consulted whenever the bitmap font lacks a glyph,
+  sized per slot and dithered like the alpha fonts. This is how UI chrome
+  renders scripts too large to pre-bake (Hangul, CJK) from a TTF on the
+  card.
+- **Opt-in bridges** (compilable only when the paired library is present,
+  like `FreeInkUIGfxRenderer.h`):
+  - `FreeInkUIBookFont.h` — `BitmapBookFont` lets FreeInkBook read books
+    with the bundled bitmap font (typographic punctuation normalized to
+    ASCII equivalents), and `TtfGlyphSource` adapts a FreeInkBook `TtfFont`
+    as the chrome glyph fallback above.
+  - `FreeInkUIIcon.h` — `bitmapFromIcon()` adapts `freeink::Icon` assets
+    (generated at any size by `libs/assets/Icons/tools/gen_icons.py`) to
+    the `BitmapRef` every component takes.
