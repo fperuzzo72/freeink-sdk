@@ -18,6 +18,9 @@ enum StyleFlags : uint8_t {
   StyleNone = 0,
   StyleBold = 1u << 0,
   StyleItalic = 1u << 1,
+  StyleUnderline = 1u << 2,
+  StyleSuperscript = 1u << 3,
+  StyleSubscript = 1u << 4,
 };
 
 struct GlyphBitmap {
@@ -41,6 +44,18 @@ class BookFont {
 
   // Distance from line top to baseline, in pixels.
   virtual int16_t ascent(uint16_t sizePx) = 0;
+
+  // Ligature substitution: the single codepoint that replaces the pair
+  // (left, right) — e.g. 'f'+'i' → U+FB01 — or 0 when none applies. Pairs
+  // chain (U+FB00+'i' → U+FB03). Layout applies this during measurement AND
+  // bakes the substituted codepoint into page-run text, so rendering and
+  // caching need no ligature logic of their own.
+  virtual uint32_t ligature(uint32_t left, uint32_t right, uint8_t styleFlags) {
+    (void)left;
+    (void)right;
+    (void)styleFlags;
+    return 0;
+  }
 
   // Kerning adjustment applied between `left` and `right`, in pixels
   // (usually zero or negative). Layout adds this during measurement so line

@@ -167,6 +167,13 @@ void applyDeclaration(CssDecl* decl, const char* prop, uint32_t propLen, const c
     }
   } else if (propIs("display")) {
     if (valueIs("none")) decl->displayNone = 1;
+  } else if (propIs("text-decoration") || propIs("text-decoration-line")) {
+    if (valueIs("underline")) decl->underline = 1;
+    else if (valueIs("none")) decl->underline = 0;
+  } else if (propIs("vertical-align")) {
+    if (valueIs("super")) decl->vertAlign = 1;
+    else if (valueIs("sub")) decl->vertAlign = 2;
+    else if (valueIs("baseline")) decl->vertAlign = 0;
   }
 }
 
@@ -224,6 +231,8 @@ void CssDecl::applyOver(const CssDecl& over) {
   if (over.marginTopPct >= 0) marginTopPct = over.marginTopPct;
   if (over.marginBottomPct >= 0) marginBottomPct = over.marginBottomPct;
   if (over.displayNone >= 0) displayNone = over.displayNone;
+  if (over.underline >= 0) underline = over.underline;
+  if (over.vertAlign >= 0) vertAlign = over.vertAlign;
 }
 
 bool CssStylesheetBuilder::begin(Arena& arena) {

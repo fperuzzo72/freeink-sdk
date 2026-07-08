@@ -81,6 +81,15 @@ class DisplayTarget final : public DrawTarget {
       : DisplayTarget(framebuffer, panelWidth, panelHeight, panelWidthBytes,
                       panelWidth > panelHeight ? Orientation::Portrait : Orientation::LandscapeCounterClockwise) {}
 
+  // Runtime orientation change (a reader's portrait/landscape setting):
+  // swaps the logical frame; callers must refresh their DeviceContext
+  // (deviceContext()) and fully repaint.
+  void setOrientation(Orientation orientation) {
+    orientation_ = orientation;
+    w_ = isPortrait(orientation) ? ph_ : pw_;
+    h_ = isPortrait(orientation) ? pw_ : ph_;
+  }
+
   // Fallback for codepoints missing from the bitmap fonts (nullptr = off).
   void setGlyphFallback(RuntimeGlyphSource* source) { fallback_ = source; }
 

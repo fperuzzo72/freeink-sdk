@@ -10,6 +10,11 @@
 
 #include "layout/ChapterLayout.h"
 
+#ifndef FREEINK_BOOK_SMALL
+#define FREEINK_BOOK_SMALL 0
+#endif
+
+#include <stdio.h>
 #include <string.h>
 
 #include <linebreak.h>
@@ -26,6 +31,23 @@ namespace {
 // Fixed working-set sizes. These bound layout memory regardless of chapter
 // size; a paragraph longer than the buffer is flushed in segments (a layout
 // artifact for pathological paragraphs, never a failure).
+//
+// FREEINK_BOOK_SMALL selects a reduced profile for PSRAM-less MCUs
+// (ESP32-C3 class, ~200 KB free heap): fixed layout buffers shrink from
+// ~62 KB to ~30 KB. Costs: very long paragraphs flush in more segments,
+// dense justified pages split earlier, fewer links/images per page.
+#if FREEINK_BOOK_SMALL
+constexpr uint32_t kParTextCap = 4096;
+constexpr uint16_t kMaxSpans = 96;
+constexpr uint16_t kMaxRunsPerPage = 384;
+constexpr uint16_t kMaxLinesPerPar = 256;
+constexpr uint32_t kPageArenaCap = 12 * 1024;
+constexpr uint8_t kMaxElemDepth = 16;
+constexpr uint16_t kMaxImagesPerPage = 8;
+constexpr uint16_t kMaxLinksPerPage = 16;
+constexpr uint8_t kMaxLinksPerPar = 6;
+constexpr uint32_t kStyleTextCap = 6 * 1024;
+#else
 constexpr uint32_t kParTextCap = 8192;
 constexpr uint16_t kMaxSpans = 128;
 constexpr uint16_t kMaxRunsPerPage = 768;  // word-level runs when justified
@@ -33,6 +55,10 @@ constexpr uint16_t kMaxLinesPerPar = 512;
 constexpr uint32_t kPageArenaCap = 24 * 1024;
 constexpr uint8_t kMaxElemDepth = 24;
 constexpr uint16_t kMaxImagesPerPage = 16;
+constexpr uint16_t kMaxLinksPerPage = 24;
+constexpr uint8_t kMaxLinksPerPar = 8;
+constexpr uint32_t kStyleTextCap = 12 * 1024;  // chapter-embedded <style> blocks
+#endif
 
 // LineRec flags.
 constexpr uint8_t kLineLast = 1u << 0;    // paragraph-final or hard break — never justify
@@ -83,6 +109,30 @@ uint32_t decodeUtf8(const char* text, uint32_t len, uint32_t& i) {
     --extra;
   }
   return cp;
+}
+
+// Encodes cp as UTF-8; returns bytes written (1-4).
+uint32_t encodeUtf8(uint32_t cp, char* out) {
+  if (cp < 0x80) {
+    out[0] = static_cast<char>(cp);
+    return 1;
+  }
+  if (cp < 0x800) {
+    out[0] = static_cast<char>(0xC0 | (cp >> 6));
+    out[1] = static_cast<char>(0x80 | (cp & 0x3F));
+    return 2;
+  }
+  if (cp < 0x10000) {
+    out[0] = static_cast<char>(0xE0 | (cp >> 12));
+    out[1] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out[2] = static_cast<char>(0x80 | (cp & 0x3F));
+    return 3;
+  }
+  out[0] = static_cast<char>(0xF0 | (cp >> 18));
+  out[1] = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+  out[2] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+  out[3] = static_cast<char>(0x80 | (cp & 0x3F));
+  return 4;
 }
 
 bool isAsciiLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
@@ -145,8 +195,14 @@ CssDecl elementDefaults(const char* local) {
     d.styleItalic = 1;
   } else if (strcmp(local, "small") == 0) {
     d.sizePct = 87;
-  } else if (strcmp(local, "sub") == 0 || strcmp(local, "sup") == 0) {
-    d.sizePct = 75;  // no baseline shift yet
+  } else if (strcmp(local, "sub") == 0) {
+    d.sizePct = 75;
+    d.vertAlign = 2;
+  } else if (strcmp(local, "sup") == 0) {
+    d.sizePct = 75;
+    d.vertAlign = 1;
+  } else if (strcmp(local, "u") == 0 || strcmp(local, "ins") == 0) {
+    d.underline = 1;
   }
   return d;
 }
@@ -190,15 +246,18 @@ class LayoutEngine : public XmlHandler {
     spans_ = scratch_.allocArray<Span>(kMaxSpans);
     runs_ = scratch_.allocArray<PageTextRun>(kMaxRunsPerPage);
     images_ = scratch_.allocArray<PageImage>(kMaxImagesPerPage);
+    links_ = scratch_.allocArray<PageLink>(kMaxLinksPerPage);
     lines_ = scratch_.allocArray<LineRec>(kMaxLinesPerPar);
     // Page-run text lives in its own sub-arena, NOT in `scratch_`: the XML
     // parse that drives this engine keeps its inflate window and parser
     // buffers live in `scratch_` for the whole chapter, and those are
     // allocated *after* init() runs. Releasing per-page copies from the
     // shared arena would free the decompressor out from under the reader.
+    styleText_ = static_cast<char*>(scratch_.alloc(kStyleTextCap, 1));
+    chapterCssOk_ = styleText_ != nullptr && chapterBuilder_.begin(scratch_);
     void* pageBlock = scratch_.alloc(kPageArenaCap, alignof(max_align_t));
     if (parText_ == nullptr || breaks_ == nullptr || spans_ == nullptr || runs_ == nullptr ||
-        images_ == nullptr || lines_ == nullptr || pageBlock == nullptr) {
+        images_ == nullptr || links_ == nullptr || lines_ == nullptr || pageBlock == nullptr) {
       return false;
     }
     pageArena_.init(pageBlock, kPageArenaCap);
@@ -224,6 +283,7 @@ class LayoutEngine : public XmlHandler {
     const char* local = localName(name);
     if (isSuppressedElement(local)) {
       ++suppress_;
+      if (strcmp(local, "style") == 0) ++inStyle_;  // captured, not flowed
       return;
     }
     if (strcmp(local, "body") == 0) {
@@ -251,13 +311,36 @@ class LayoutEngine : public XmlHandler {
       inlineDecl = parseInlineStyle(styleAttr);
       hasInline = true;
     }
+    const char* cls = attrLocal(atts, "class");
     if (params_.stylesheet != nullptr) {
-      decl.applyOver(cascadeFor(*params_.stylesheet, local, attrLocal(atts, "class"),
-                                hasInline ? &inlineDecl : nullptr));
-    } else if (hasInline) {
-      decl.applyOver(inlineDecl);
+      decl.applyOver(cascadeFor(*params_.stylesheet, local, cls, nullptr));
     }
+    if (chapterSheet_.ruleCount > 0) {
+      decl.applyOver(cascadeFor(chapterSheet_, local, cls, nullptr));
+    }
+    if (hasInline) decl.applyOver(inlineDecl);
     pushState(decl);
+
+    // id="" anchors: record the chapter char offset for link/footnote jumps.
+    if (const char* id = attrLocal(atts, "id")) {
+      sink_.onAnchor(ZipCatalog::hashPath(id), parCharBase_ + countChars(parText_, parLen_));
+    }
+    if (strcmp(local, "a") == 0) {
+      const char* href = attrLocal(atts, "href");
+      if (href != nullptr && parLinkCount_ < kMaxLinksPerPar) {
+        const size_t m = scratch_.mark();
+        const char* frag = nullptr;
+        const char* path = resolveHref(scratch_, chapterDir_, href, &frag);
+        if (path != nullptr) {
+          snprintf(parLinkPath_[parLinkCount_], sizeof(parLinkPath_[0]), "%s", path);
+          snprintf(parLinkFrag_[parLinkCount_], sizeof(parLinkFrag_[0]), "%s",
+                   frag != nullptr ? frag : "");
+          currentLink_ = static_cast<uint8_t>(++parLinkCount_);
+          noteStyleChange();
+        }
+        scratch_.release(m);
+      }
+    }
 
     if (isBlockElement(local)) {
       flushParagraph();
@@ -266,7 +349,7 @@ class LayoutEngine : public XmlHandler {
       appendRaw('\n');
     } else if (strcmp(local, "hr") == 0) {
       flushParagraph();
-      advanceY(params_.font->lineHeight(params_.baseSizePx));
+      advanceY(lineHeightFor(params_.baseSizePx));
     } else if (strcmp(local, "img") == 0 || strcmp(local, "image") == 0) {
       const char* src = attrLocal(atts, "src");
       if (src == nullptr) src = attrLocal(atts, "href");  // SVG xlink:href
@@ -284,6 +367,14 @@ class LayoutEngine : public XmlHandler {
     const char* local = localName(name);
     if (isSuppressedElement(local)) {
       if (suppress_ > 0) --suppress_;
+      if (strcmp(local, "style") == 0 && inStyle_ > 0) {
+        --inStyle_;
+        if (chapterCssOk_ && styleLen_ > 0) {
+          chapterBuilder_.addText(styleText_, styleLen_);
+          chapterSheet_ = chapterBuilder_.finish();
+          styleLen_ = 0;
+        }
+      }
       return;
     }
     if (strcmp(local, "body") == 0) {
@@ -294,6 +385,10 @@ class LayoutEngine : public XmlHandler {
     if (depth_ > 0) --depth_;
     if (!inBody_ || suppress_ > 0) return;
     popState();
+    if (strcmp(local, "a") == 0 && currentLink_ != 0) {
+      currentLink_ = 0;
+      noteStyleChange();
+    }
 
     if (isBlockElement(local)) {
       flushParagraph();
@@ -306,6 +401,10 @@ class LayoutEngine : public XmlHandler {
   }
 
   void onText(const char* text, int len) override {
+    if (inStyle_ > 0 && chapterCssOk_ && params_.embeddedStyles) {
+      for (int i = 0; i < len && styleLen_ + 1 < kStyleTextCap; ++i) styleText_[styleLen_++] = text[i];
+      return;
+    }
     if (failed_ || stopParse || !inBody_ || suppress_ > 0) return;
     if (stack_[stackTop_].displayNone) return;
     for (int i = 0; i < len; ++i) {
@@ -332,6 +431,7 @@ class LayoutEngine : public XmlHandler {
   }
 
   uint32_t pageCount() const { return pageCount_; }
+  uint32_t totalChars() const { return parCharBase_; }
   bool outOfMemory() const { return failed_; }
 
  private:
@@ -339,6 +439,7 @@ class LayoutEngine : public XmlHandler {
     uint16_t start;
     uint8_t flags;
     uint16_t sizePct;
+    uint8_t link;  // 0 = none, else 1-based index into parLinks_
   };
 
   struct LineRec {
@@ -381,6 +482,13 @@ class LayoutEngine : public XmlHandler {
     if (decl.weightBold == 0) next.flags &= static_cast<uint8_t>(~StyleBold);
     if (decl.styleItalic == 1) next.flags |= StyleItalic;
     if (decl.styleItalic == 0) next.flags &= static_cast<uint8_t>(~StyleItalic);
+    if (decl.underline == 1) next.flags |= StyleUnderline;
+    if (decl.underline == 0) next.flags &= static_cast<uint8_t>(~StyleUnderline);
+    if (decl.vertAlign >= 0) {
+      next.flags &= static_cast<uint8_t>(~(StyleSuperscript | StyleSubscript));
+      if (decl.vertAlign == 1) next.flags |= StyleSuperscript;
+      if (decl.vertAlign == 2) next.flags |= StyleSubscript;
+    }
     if (decl.align != TextAlign::Inherit) next.align = decl.align;
     if (decl.textIndentPct >= 0) next.textIndentPct = decl.textIndentPct;
     if (decl.displayNone == 1) next.displayNone = true;
@@ -409,12 +517,13 @@ class LayoutEngine : public XmlHandler {
     const uint8_t flags = currentFlags();
     const uint16_t sizePct = currentSizePct();
     Span& last = spans_[spanCount_ - 1];
-    if (last.flags == flags && last.sizePct == sizePct) return;
+    if (last.flags == flags && last.sizePct == sizePct && last.link == currentLink_) return;
     if (last.start == parLen_) {
       last.flags = flags;
       last.sizePct = sizePct;
+      last.link = currentLink_;
     } else if (spanCount_ < kMaxSpans) {
-      spans_[spanCount_++] = {static_cast<uint16_t>(parLen_), flags, sizePct};
+      spans_[spanCount_++] = {static_cast<uint16_t>(parLen_), flags, sizePct, currentLink_};
     }
   }
 
@@ -428,9 +537,14 @@ class LayoutEngine : public XmlHandler {
       continued_ = true;  // continuation lines get no first-line indent
     }
     if (spanCount_ == 0) {
-      spans_[spanCount_++] = {0, currentFlags(), currentSizePct()};
+      spans_[spanCount_++] = {0, currentFlags(), currentSizePct(), currentLink_};
     }
     parText_[parLen_++] = c;
+  }
+
+  void resetParagraphLinks() {
+    parLinkCount_ = 0;
+    currentLink_ = 0;
   }
 
   void latchParagraph(const char* local, const CssDecl& decl) {
@@ -443,6 +557,7 @@ class LayoutEngine : public XmlHandler {
     para_.spaceBeforePct = decl.marginTopPct >= 0 ? static_cast<uint16_t>(decl.marginTopPct) : 0;
     para_.spaceAfterPct =
         decl.marginBottomPct >= 0 ? static_cast<uint16_t>(decl.marginBottomPct) : 0;
+    resetParagraphLinks();
     parLen_ = 0;
     spanCount_ = 0;
     pendingSpace_ = false;
@@ -457,9 +572,15 @@ class LayoutEngine : public XmlHandler {
     para_.textIndentPct = 0;
     para_.spaceBeforePct = 0;
     para_.spaceAfterPct = 0;
+    resetParagraphLinks();
     parLen_ = 0;
     spanCount_ = 0;
     pendingSpace_ = false;
+  }
+
+  int16_t lineHeightFor(uint16_t sizePx) const {
+    return static_cast<int16_t>(static_cast<int32_t>(params_.font->lineHeight(sizePx)) *
+                                params_.lineSpacingPct / 100);
   }
 
   uint16_t paragraphSizePx() const {
@@ -540,8 +661,24 @@ class LayoutEngine : public XmlHandler {
 
   // --- measure phase ----------------------------------------------------------
 
+  // Decodes the codepoint at i (advancing i), folding ligature pairs when
+  // the font substitutes one and both halves share the span. Used by every
+  // measure/place/copy walk so widths and baked run text always agree.
+  uint32_t decodeShaped(uint32_t end, uint32_t& i, const Span& span) const {
+    uint32_t cp = decodeUtf8(parText_, end, i);
+    while (i < end && &spanAt(i) == &span) {
+      uint32_t j = i;
+      const uint32_t next = decodeUtf8(parText_, end, j);
+      const uint32_t lig = params_.font->ligature(cp, next, span.flags);
+      if (lig == 0) break;
+      cp = lig;
+      i = j;
+    }
+    return cp;
+  }
+
   int32_t advanceFor(uint32_t cp, uint32_t prevCp, const Span& span) const {
-    if (cp == '\n') return 0;
+    if (cp == '\n' || cp == 0xAD) return 0;  // soft hyphen: invisible until a break uses it
     const uint16_t sizePx = spanSizePx(span);
     int32_t adv = params_.font->advance(cp, sizePx, span.flags);
     if (prevCp != 0) {
@@ -558,8 +695,9 @@ class LayoutEngine : public XmlHandler {
     uint32_t i = from;
     while (i < to) {
       const uint32_t charStart = i;
-      const uint32_t cp = decodeUtf8(parText_, to, i);
-      width += advanceFor(cp, prev, spanAt(charStart));
+      const Span& span = spanAt(charStart);
+      const uint32_t cp = decodeShaped(to, i, span);
+      width += advanceFor(cp, prev, span);
       prev = cp;
     }
     return width;
@@ -614,8 +752,9 @@ class LayoutEngine : public XmlHandler {
     while (i < parLen_ && lineCount_ + 1 < kMaxLinesPerPar) {
       const int32_t maxWidth = baseMaxWidth - (lineCount_ == 0 && !continued_ ? textIndentPx : 0);
       const uint32_t charStart = i;
-      const uint32_t cp = decodeUtf8(parText_, parLen_, i);
-      const int32_t adv = advanceFor(cp, prevCp, spanAt(charStart));
+      const Span& shapeSpan = spanAt(charStart);
+      const uint32_t cp = decodeShaped(parLen_, i, shapeSpan);
+      const int32_t adv = advanceFor(cp, prevCp, shapeSpan);
 
       if (cp != '\n' && lineWidth + adv > maxWidth && charStart > lineStart) {
         // Try a hyphen inside the overflowing word first; it beats breaking
@@ -630,6 +769,7 @@ class LayoutEngine : public XmlHandler {
           flags = kLineHyphen;
         } else if (lastBreakEnd > lineStart) {
           breakEnd = lastBreakEnd;
+          if (lastBreakShy_) flags = kLineHyphen;
         } else {
           breakEnd = charStart;  // force mid-word, no opportunity at all
         }
@@ -656,6 +796,7 @@ class LayoutEngine : public XmlHandler {
         wordStart = i;
       } else if (brk == LINEBREAK_ALLOWBREAK) {
         lastBreakEnd = i;
+        lastBreakShy_ = cp == 0xAD;  // breaking here must render a hyphen
         wordStart = i;
         while (wordStart < parLen_ && parText_[wordStart] == ' ') ++wordStart;
       }
@@ -700,8 +841,9 @@ class LayoutEngine : public XmlHandler {
       return;
     }
     const uint16_t sizePx = paragraphSizePx();
-    const int16_t lineHeight = params_.font->lineHeight(sizePx);
-    advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceBeforePct / 100));
+    const int16_t lineHeight = lineHeightFor(sizePx);
+    advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceBeforePct *
+                                  params_.paragraphSpacingPct / 10000));
 
     measureParagraphLines();
 
@@ -737,7 +879,8 @@ class LayoutEngine : public XmlHandler {
       if (idx < lineCount_ && !stopParse) emitPage();
     }
 
-    advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceAfterPct / 100));
+    advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceAfterPct *
+                                  params_.paragraphSpacingPct / 10000));
     parCharBase_ += countChars(parText_, parLen_);
     parLen_ = 0;
     spanCount_ = 0;
@@ -808,17 +951,45 @@ class LayoutEngine : public XmlHandler {
           return false;
         }
       }
-      memcpy(copy, parText_ + segStart, segLen);
+      // Re-encode the segment: ligature pairs bake into their substituted
+      // codepoints (so cached pages render them with no extra logic) and
+      // soft hyphens (U+00AD) drop out as zero-width.
+      uint32_t outLen = 0;
+      uint32_t ci = segStart;
+      while (ci < segEnd) {
+        const uint32_t cp2 = decodeShaped(segEnd, ci, *segSpan);
+        if (cp2 == 0xAD) continue;
+        outLen += encodeUtf8(cp2, copy + outLen);
+      }
       if (addHyphen) {
-        copy[segLen] = '-';
+        copy[outLen++] = '-';
         segWidth += params_.font->advance('-', spanSizePx(*segSpan), segSpan->flags);
       }
+      // Superscript/subscript ride above/below the baseline at their reduced size.
+      int16_t runBaseline = baselineY;
+      if (segSpan->flags & StyleSuperscript) {
+        runBaseline = static_cast<int16_t>(baselineY - (spanSizePx(*segSpan) * 33) / 100);
+      } else if (segSpan->flags & StyleSubscript) {
+        runBaseline = static_cast<int16_t>(baselineY + (spanSizePx(*segSpan) * 12) / 100);
+      }
       runs_[runCount_++] = {copy,
-                            static_cast<uint16_t>(copyLen),
+                            static_cast<uint16_t>(outLen),
                             static_cast<int16_t>(x),
-                            baselineY,
+                            runBaseline,
                             spanSizePx(*segSpan),
                             segSpan->flags};
+      if (segSpan->link != 0 && linkCount_ < kMaxLinksPerPage) {
+        const uint8_t li = static_cast<uint8_t>(segSpan->link - 1);
+        const uint16_t sz = spanSizePx(*segSpan);
+        PageLink& pl = links_[linkCount_++];
+        pl.target = pageArena_.strdup(parLinkPath_[li]);
+        pl.fragment = pageArena_.strdup(parLinkFrag_[li]);
+        pl.x = static_cast<int16_t>(x);
+        pl.y = static_cast<int16_t>(runBaseline - sz);
+        pl.width = static_cast<uint16_t>(segWidth > 0 ? segWidth : 1);
+        pl.height = static_cast<uint16_t>(sz + sz / 4);
+        if (pl.target == nullptr || pl.fragment == nullptr) --linkCount_;
+      }
       x += segWidth;
       segWidth = 0;
       segPrev = 0;
@@ -837,7 +1008,7 @@ class LayoutEngine : public XmlHandler {
       const uint32_t charStart = i;
       const Span* span = &spanAt(charStart);
       uint32_t next = charStart;
-      const uint32_t cp = decodeUtf8(parText_, rec.end, next);
+      const uint32_t cp = decodeShaped(rec.end, next, *span);
 
       if (span != segSpan) {
         if (!flushSeg(charStart, false)) return;
@@ -872,11 +1043,13 @@ class LayoutEngine : public XmlHandler {
   }
 
   void emitPage() {
-    Page page{runs_, runCount_, images_, imageCount_, pageCount_, pageCharStart_};
+    Page page{runs_, runCount_, images_, imageCount_, links_, linkCount_, pageCount_,
+              pageCharStart_};
     ++pageCount_;
     if (!sink_.onPage(page)) stopParse = true;
     runCount_ = 0;
     imageCount_ = 0;
+    linkCount_ = 0;
     pageArena_.reset();
     pageY_ = params_.marginTop;
   }
@@ -914,6 +1087,19 @@ class LayoutEngine : public XmlHandler {
   uint16_t imageCount_ = 0;
   int16_t pageY_ = 0;
   uint32_t pageCount_ = 0;
+  char* styleText_ = nullptr;
+  uint32_t styleLen_ = 0;
+  int inStyle_ = 0;
+  bool chapterCssOk_ = false;
+  CssStylesheetBuilder chapterBuilder_;
+  CssStylesheet chapterSheet_{};
+  char parLinkPath_[kMaxLinksPerPar][160];
+  char parLinkFrag_[kMaxLinksPerPar][48];
+  uint8_t parLinkCount_ = 0;
+  uint8_t currentLink_ = 0;
+  PageLink* links_ = nullptr;
+  uint16_t linkCount_ = 0;
+  bool lastBreakShy_ = false;   // last ALLOWBREAK sat on a soft hyphen
   uint32_t parCharBase_ = 0;    // chapter chars before the current paragraph
   uint32_t pageCharStart_ = 0;  // anchor of the page being assembled
   bool failed_ = false;
@@ -924,7 +1110,7 @@ class LayoutEngine : public XmlHandler {
 BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
                                  const ZipEntry& entry, const char* chapterHref,
                                  const LayoutParams& params, Arena& scratch, PageSink& sink,
-                                 uint32_t* pageCountOut) {
+                                 uint32_t* pageCountOut, uint32_t* totalCharsOut) {
   if (params.font == nullptr || params.pageWidth <= 0 || params.pageHeight <= 0) {
     return BookStatus::Unsupported;
   }
@@ -939,6 +1125,7 @@ BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
   if (status == BookStatus::Ok && !engine.finish()) status = BookStatus::OutOfMemory;
   if (status == BookStatus::Ok && engine.outOfMemory()) status = BookStatus::OutOfMemory;
   if (pageCountOut != nullptr) *pageCountOut = engine.pageCount();
+  if (totalCharsOut != nullptr) *totalCharsOut = engine.totalChars();
   scratch.release(marked);
   return status;
 }

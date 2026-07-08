@@ -10,9 +10,9 @@ namespace book {
 
 namespace {
 
-constexpr uint16_t kFormatVersion = 2;  // v2: image records per page
+constexpr uint16_t kFormatVersion = 3;  // v3: link records + anchor table
 constexpr uint32_t kHeaderSize = 12;
-constexpr uint32_t kFooterSize = 12;
+constexpr uint32_t kFooterSize = 24;  // v3: + anchors + totalChars
 constexpr uint32_t kMaxBlobSize = 128 * 1024;  // sanity bound on one page
 
 void putU16(uint8_t* p, uint16_t v) {
@@ -42,9 +42,15 @@ uint32_t hashMix(uint32_t hash, uint32_t value) {
 
 }  // namespace
 
+// Bump when layout BEHAVIOR changes without a format change (ligatures,
+// breaking rules, spacing math) — stale caches would otherwise render with
+// mismatched widths after a firmware update.
+constexpr uint32_t kLayoutRevision = 2;  // 2: ligature substitution
+
 uint32_t layoutGenerationHash(const LayoutParams& params, uint32_t fontFingerprint) {
   uint32_t hash = 2166136261u;
   hash = hashMix(hash, kFormatVersion);
+  hash = hashMix(hash, kLayoutRevision);
   hash = hashMix(hash, static_cast<uint16_t>(params.pageWidth));
   hash = hashMix(hash, static_cast<uint16_t>(params.pageHeight));
   hash = hashMix(hash, static_cast<uint16_t>(params.marginLeft));
@@ -54,6 +60,8 @@ uint32_t layoutGenerationHash(const LayoutParams& params, uint32_t fontFingerpri
   hash = hashMix(hash, params.baseSizePx);
   hash = hashMix(hash, fontFingerprint);
   hash = hashMix(hash, static_cast<uint32_t>(params.defaultAlign));
+  hash = hashMix(hash, static_cast<uint32_t>(params.lineSpacingPct) << 16 | params.paragraphSpacingPct);
+  hash = hashMix(hash, params.embeddedStyles ? 1u : 0u);
   hash = hashMix(hash, static_cast<uint32_t>(params.orphanLines) << 8 | params.widowLines);
   hash = hashMix(hash, params.stylesheet != nullptr ? params.stylesheet->contentHash : 0);
   hash = hashMix(hash, params.hyphenator != nullptr && params.hyphenator->ready() ? 1u : 0u);
@@ -81,7 +89,11 @@ bool PageCacheWriter::begin(CacheStorage& storage, const char* name, uint32_t ge
 
   offsets_ = arena.allocArray<uint32_t>(kMaxPages);
   charStarts_ = arena.allocArray<uint32_t>(kMaxPages);
-  if (offsets_ == nullptr || charStarts_ == nullptr) {
+  anchorHashes_ = arena.allocArray<uint32_t>(kMaxAnchors);
+  anchorChars_ = arena.allocArray<uint32_t>(kMaxAnchors);
+  anchorCount_ = 0;
+  if (offsets_ == nullptr || charStarts_ == nullptr || anchorHashes_ == nullptr ||
+      anchorChars_ == nullptr) {
     failed_ = true;
     return false;
   }
@@ -112,6 +124,14 @@ bool PageCacheWriter::writeRaw(const void* data, uint32_t len) {
   return true;
 }
 
+void PageCacheWriter::onAnchor(uint32_t idHash, uint32_t charStart) {
+  if (anchorCount_ < kMaxAnchors) {
+    anchorHashes_[anchorCount_] = idHash;
+    anchorChars_[anchorCount_] = charStart;
+    ++anchorCount_;
+  }
+}
+
 bool PageCacheWriter::onPage(const Page& page) {
   if (failed_) return false;
   if (pageCount_ >= kMaxPages) {
@@ -122,10 +142,11 @@ bool PageCacheWriter::onPage(const Page& page) {
   charStarts_[pageCount_] = page.charStart;
   ++pageCount_;
 
-  uint8_t head[8];
+  uint8_t head[10];
   putU32(head, page.charStart);
   putU16(head + 4, page.runCount);
   putU16(head + 6, page.imageCount);
+  putU16(head + 8, page.linkCount);
   if (!writeRaw(head, sizeof(head))) return false;
 
   for (uint16_t r = 0; r < page.runCount; ++r) {
@@ -152,6 +173,21 @@ bool PageCacheWriter::onPage(const Page& page) {
     if (!writeRaw(rec, sizeof(rec))) return false;
     if (!writeRaw(img.href, hrefLen)) return false;
   }
+  for (uint16_t l = 0; l < page.linkCount; ++l) {
+    const PageLink& link = page.links[l];
+    const uint16_t tLen = static_cast<uint16_t>(strlen(link.target));
+    const uint16_t fLen = static_cast<uint16_t>(strlen(link.fragment));
+    uint8_t rec[12];
+    putU16(rec, static_cast<uint16_t>(link.x));
+    putU16(rec + 2, static_cast<uint16_t>(link.y));
+    putU16(rec + 4, link.width);
+    putU16(rec + 6, link.height);
+    putU16(rec + 8, tLen);
+    putU16(rec + 10, fLen);
+    if (!writeRaw(rec, sizeof(rec))) return false;
+    if (!writeRaw(link.target, tLen)) return false;
+    if (!writeRaw(link.fragment, fLen)) return false;
+  }
   return true;
 }
 
@@ -172,13 +208,23 @@ bool PageCacheWriter::finish() {
     putU32(rec + 4, charStarts_[i]);
     writeRaw(rec, sizeof(rec));
   }
+  const uint32_t anchorOffset = writeOffset_;
+  for (uint32_t a = 0; a < anchorCount_ && !failed_; ++a) {
+    uint8_t rec[8];
+    putU32(rec, anchorHashes_[a]);
+    putU32(rec + 4, anchorChars_[a]);
+    writeRaw(rec, sizeof(rec));
+  }
   uint8_t footer[kFooterSize];
   putU32(footer, indexOffset);
   putU32(footer + 4, pageCount_);
-  footer[8] = 'F';
-  footer[9] = 'I';
-  footer[10] = 'B';
-  footer[11] = 'X';
+  putU32(footer + 8, anchorOffset);
+  putU32(footer + 12, anchorCount_);
+  putU32(footer + 16, totalChars_);
+  footer[20] = 'F';
+  footer[21] = 'I';
+  footer[22] = 'B';
+  footer[23] = 'X';
   writeRaw(footer, sizeof(footer));
 
   const bool committed = !failed_ && storage_->endWrite();
@@ -218,12 +264,17 @@ BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32
       static_cast<int32_t>(sizeof(footer))) {
     return BookStatus::IoError;
   }
-  if (memcmp(footer + 8, "FIBX", 4) != 0) return BookStatus::Stale;  // torn write
+  if (memcmp(footer + 20, "FIBX", 4) != 0) return BookStatus::Stale;  // torn write
   indexOffset_ = getU32(footer);
   const uint32_t pageCount = getU32(footer + 4);
+  const uint32_t anchorOffset = getU32(footer + 8);
+  const uint32_t anchorCount = getU32(footer + 12);
+  totalChars_ = getU32(footer + 16);
   if (indexOffset_ < kHeaderSize ||
-      static_cast<int64_t>(indexOffset_) + static_cast<int64_t>(pageCount) * 8 + kFooterSize !=
-          size) {
+      static_cast<int64_t>(anchorOffset) + static_cast<int64_t>(anchorCount) * 8 + kFooterSize !=
+          size ||
+      static_cast<int64_t>(indexOffset_) + static_cast<int64_t>(pageCount) * 8 !=
+          static_cast<int64_t>(anchorOffset)) {
     return BookStatus::Stale;
   }
 
@@ -241,8 +292,33 @@ BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32
     offsets_[i] = getU32(rec);
     charStarts_[i] = getU32(rec + 4);
   }
+  anchorHashes_ = arena.allocArray<uint32_t>(anchorCount);
+  anchorChars_ = arena.allocArray<uint32_t>(anchorCount);
+  if ((anchorHashes_ == nullptr || anchorChars_ == nullptr) && anchorCount != 0) {
+    return BookStatus::OutOfMemory;
+  }
+  for (uint32_t a = 0; a < anchorCount; ++a) {
+    uint8_t rec[8];
+    if (storage.readAt(name, anchorOffset + a * 8, rec, sizeof(rec)) !=
+        static_cast<int32_t>(sizeof(rec))) {
+      return BookStatus::IoError;
+    }
+    anchorHashes_[a] = getU32(rec);
+    anchorChars_[a] = getU32(rec + 4);
+  }
+  anchorCount_ = anchorCount;
   pageCount_ = pageCount;
   return BookStatus::Ok;
+}
+
+bool PageCacheReader::charForAnchor(uint32_t idHash, uint32_t* charOut) const {
+  for (uint32_t a = 0; a < anchorCount_; ++a) {
+    if (anchorHashes_[a] == idHash) {
+      *charOut = anchorChars_[a];
+      return true;
+    }
+  }
+  return false;
 }
 
 uint32_t PageCacheReader::pageForChar(uint32_t charOffset) const {
@@ -277,12 +353,13 @@ BookStatus PageCacheReader::readPage(uint32_t pageIndex, Arena& scratch, Page* o
   const uint32_t charStart = getU32(blob);
   const uint16_t runCount = getU16(blob + 4);
   const uint16_t imageCount = getU16(blob + 6);
+  const uint16_t linkCount = getU16(blob + 8);
   PageTextRun* runs = scratch.allocArray<PageTextRun>(runCount);
   if (runs == nullptr && runCount != 0) return BookStatus::OutOfMemory;
   PageImage* images = scratch.allocArray<PageImage>(imageCount);
   if (images == nullptr && imageCount != 0) return BookStatus::OutOfMemory;
 
-  uint32_t pos = 8;
+  uint32_t pos = 10;
   for (uint16_t r = 0; r < runCount; ++r) {
     if (pos + 10 > blobLen) return BookStatus::Stale;
     PageTextRun& run = runs[r];
@@ -316,10 +393,37 @@ BookStatus PageCacheReader::readPage(uint32_t pageIndex, Arena& scratch, Page* o
     pos += hrefLen;
   }
 
+  PageLink* links = scratch.allocArray<PageLink>(linkCount);
+  if (links == nullptr && linkCount != 0) return BookStatus::OutOfMemory;
+  for (uint16_t l = 0; l < linkCount; ++l) {
+    if (pos + 12 > blobLen) return BookStatus::Stale;
+    PageLink& link = links[l];
+    link.x = static_cast<int16_t>(getU16(blob + pos));
+    link.y = static_cast<int16_t>(getU16(blob + pos + 2));
+    link.width = getU16(blob + pos + 4);
+    link.height = getU16(blob + pos + 6);
+    const uint16_t tLen = getU16(blob + pos + 8);
+    const uint16_t fLen = getU16(blob + pos + 10);
+    pos += 12;
+    if (pos + tLen + fLen > blobLen) return BookStatus::Stale;
+    char* t = static_cast<char*>(scratch.alloc(tLen + 1u, 1));
+    char* f = static_cast<char*>(scratch.alloc(fLen + 1u, 1));
+    if (t == nullptr || f == nullptr) return BookStatus::OutOfMemory;
+    memcpy(t, blob + pos, tLen);
+    t[tLen] = 0;
+    memcpy(f, blob + pos + tLen, fLen);
+    f[fLen] = 0;
+    link.target = t;
+    link.fragment = f;
+    pos += tLen + fLen;
+  }
+
   out->runs = runs;
   out->runCount = runCount;
   out->images = images;
   out->imageCount = imageCount;
+  out->links = links;
+  out->linkCount = linkCount;
   out->pageIndex = pageIndex;
   out->charStart = charStart;
   return BookStatus::Ok;

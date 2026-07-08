@@ -93,6 +93,15 @@ void testMetrics(TtfFont& font) {
   const int16_t at32 = font.advance('n', 32, StyleNone);
   CHECK(at32 >= at16 * 2 - 1 && at32 <= at16 * 2 + 1);
 
+  // Ligatures: when the face has the U+FB0x glyphs, pairs substitute; the
+  // chain refuses cross-face ligatures.
+  if (font.hasGlyph(0xFB01)) {
+    CHECK_EQ(static_cast<long>(font.ligature('f', 'i', StyleNone)), 0xFB01L);
+    CHECK_EQ(static_cast<long>(font.ligature(0xFB00, 'i', StyleNone)),
+             font.hasGlyph(0xFB03) ? 0xFB03L : 0L);
+  }
+  CHECK_EQ(static_cast<long>(font.ligature('a', 'b', StyleNone)), 0L);
+
   // DejaVu kerns AV/AV-style pairs (negative or zero, never positive here).
   const int16_t kernAV = font.kerning('A', 'V', 32, StyleNone);
   std::printf("  kerning A-V at 32px: %d\n", kernAV);

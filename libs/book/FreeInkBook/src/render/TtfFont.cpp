@@ -114,6 +114,18 @@ int16_t TtfFont::kerning(uint32_t left, uint32_t right, uint16_t sizePx, uint8_t
   return static_cast<int16_t>(scaled + (scaled < 0 ? -0.5f : 0.5f));
 }
 
+uint32_t TtfFont::ligature(uint32_t left, uint32_t right, uint8_t styleFlags) {
+  (void)styleFlags;
+  if (!ready_) return 0;
+  uint32_t lig = 0;
+  if (left == 'f' && right == 'f') lig = 0xFB00;
+  else if (left == 'f' && right == 'i') lig = 0xFB01;
+  else if (left == 'f' && right == 'l') lig = 0xFB02;
+  else if (left == 0xFB00 && right == 'i') lig = 0xFB03;
+  else if (left == 0xFB00 && right == 'l') lig = 0xFB04;
+  return lig != 0 && hasGlyph(lig) ? lig : 0;
+}
+
 void TtfFont::flushGlyphs() {
   glyphArena_->release(glyphBase_);
   for (uint32_t i = 0; i < kGlyphSlots; ++i) glyphs_[i] = GlyphSlot{};
@@ -210,6 +222,15 @@ int16_t FontChain::lineHeight(uint16_t sizePx) {
 
 int16_t FontChain::ascent(uint16_t sizePx) {
   return count_ > 0 ? entries_[0].font->ascent(sizePx) : static_cast<int16_t>(sizePx);
+}
+
+uint32_t FontChain::ligature(uint32_t left, uint32_t right, uint8_t styleFlags) {
+  RenderFont* a = fontFor(left, styleFlags);
+  RenderFont* b = fontFor(right, styleFlags);
+  if (a == nullptr || a != b) return 0;
+  const uint32_t lig = a->ligature(left, right, styleFlags);
+  // The ligature glyph must come from the same face or widths disagree.
+  return lig != 0 && fontFor(lig, styleFlags) == a ? lig : 0;
 }
 
 int16_t FontChain::kerning(uint32_t left, uint32_t right, uint16_t sizePx,

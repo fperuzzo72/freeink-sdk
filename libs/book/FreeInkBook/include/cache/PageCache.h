@@ -48,7 +48,11 @@ class PageCacheWriter : public PageSink {
   // The index (8 bytes per page) accumulates in `arena` until finish().
   bool begin(CacheStorage& storage, const char* name, uint32_t generationHash, Arena& arena);
   bool onPage(const Page& page) override;
+  void onAnchor(uint32_t idHash, uint32_t charStart) override;
   bool finish();
+  // Set before finish(): total extracted characters in the chapter — the
+  // denominator for reading-percentage (kosync-style progress).
+  void setTotalChars(uint32_t totalChars) { totalChars_ = totalChars; }
   bool failed() const { return failed_; }
   uint32_t pageCount() const { return pageCount_; }
 
@@ -56,11 +60,16 @@ class PageCacheWriter : public PageSink {
   bool writeRaw(const void* data, uint32_t len);
 
   static constexpr uint32_t kMaxPages = 4096;
+  static constexpr uint32_t kMaxAnchors = 512;
 
   CacheStorage* storage_ = nullptr;
   const char* name_ = nullptr;
   uint32_t* offsets_ = nullptr;
   uint32_t* charStarts_ = nullptr;
+  uint32_t* anchorHashes_ = nullptr;
+  uint32_t* anchorChars_ = nullptr;
+  uint32_t anchorCount_ = 0;
+  uint32_t totalChars_ = 0;
   uint32_t pageCount_ = 0;
   uint32_t writeOffset_ = 0;
   bool failed_ = false;
@@ -83,6 +92,14 @@ class PageCacheReader {
   // The page containing `charOffset` — the position-restore primitive.
   uint32_t pageForChar(uint32_t charOffset) const;
 
+  // Total extracted characters in the chapter (percentage denominator).
+  uint32_t totalChars() const { return totalChars_; }
+
+  // Resolves an id="" anchor (FNV hash via ZipCatalog::hashPath) to its
+  // chapter character offset — link/footnote jumps: charForAnchor →
+  // pageForChar. False when the chapter has no such id.
+  bool charForAnchor(uint32_t idHash, uint32_t* charOut) const;
+
   // Decodes one page. Run records and text are allocated from `scratch`;
   // take a mark first and release after rendering. The returned Page points
   // into that allocation.
@@ -93,6 +110,10 @@ class PageCacheReader {
   const char* name_ = nullptr;  // arena-owned copy (made in open())
   uint32_t* offsets_ = nullptr;
   uint32_t* charStarts_ = nullptr;
+  uint32_t* anchorHashes_ = nullptr;
+  uint32_t* anchorChars_ = nullptr;
+  uint32_t anchorCount_ = 0;
+  uint32_t totalChars_ = 0;
   uint32_t pageCount_ = 0;
   uint32_t indexOffset_ = 0;
 };

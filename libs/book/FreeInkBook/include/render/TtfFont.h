@@ -49,6 +49,11 @@ class TtfFont : public RenderFont {
   int16_t kerning(uint32_t left, uint32_t right, uint16_t sizePx,
                   uint8_t styleFlags) override;
 
+  // Standard Latin ligatures (fi fl ff ffi ffl) when the face carries the
+  // Unicode ligature glyphs. (stb_truetype exposes no GSUB, so discretionary
+  // ligatures beyond the encoded U+FB00 block are out of reach.)
+  uint32_t ligature(uint32_t left, uint32_t right, uint8_t styleFlags) override;
+
   // Rasterizes (and caches) one glyph. Returns nullptr for missing glyphs or
   // when a single glyph exceeds the whole arena. The bitmap stays valid
   // until the cache flushes — consume or blit before rasterizing many more.
@@ -101,6 +106,8 @@ class FontChain : public BookFont {
   int16_t ascent(uint16_t sizePx) override;
   int16_t kerning(uint32_t left, uint32_t right, uint16_t sizePx,
                   uint8_t styleFlags) override;
+
+  uint32_t ligature(uint32_t left, uint32_t right, uint8_t styleFlags) override;
 
   // The face that will draw `codepoint` in `styleFlags`. `faceFlagsOut`
   // (optional) receives the chosen face's registered style — renderers use

@@ -75,7 +75,7 @@ class StatsSink : public PageSink {
   uint32_t sizeCount = 0;
 };
 
-uint8_t bookBuf[256 * 1024];
+uint8_t bookBuf[768 * 1024];  // webnovel omnibuses: 1800+ zip entries, 1500+ spine items
 uint8_t scratchBuf[512 * 1024];
 uint8_t sheetBuf[128 * 1024];
 uint8_t hyphBuf[96 * 1024];
@@ -105,6 +105,9 @@ int main(int argc, char** argv) {
          book.metadata().author, book.metadata().language);
   printf("manifest: %zu items, spine: %zu, toc: %zu entries\n", book.manifestCount(),
          book.spineCount(), book.tocCount());
+  for (size_t t = 0; t < book.tocCount() && t < 5; ++t) {
+    printf("  toc[%zu] '%s' -> %s\n", t, book.tocEntry(t)->title, book.tocEntry(t)->href);
+  }
 
   // Book stylesheet from every CSS manifest item.
   Arena sheetArena(sheetBuf, sizeof(sheetBuf));

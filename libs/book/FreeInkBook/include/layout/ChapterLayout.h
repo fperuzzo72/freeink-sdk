@@ -39,9 +39,12 @@ struct LayoutParams {
   BookFont* font = nullptr;
 
   // Typography (Phase 4).
+  uint16_t lineSpacingPct = 100;                 // line height multiplier (CrossPoint parity)
+  uint16_t paragraphSpacingPct = 100;            // scales block margins (0 = compact)
   TextAlign defaultAlign = TextAlign::Left;      // body alignment when CSS is silent
   uint8_t orphanLines = 2;                       // min paragraph lines at a page bottom
   uint8_t widowLines = 2;                        // min paragraph lines carried over
+  bool embeddedStyles = true;                    // honor chapter <style> blocks
   const CssStylesheet* stylesheet = nullptr;     // book CSS (optional)
   const Hyphenator* hyphenator = nullptr;        // soft hyphenation (optional)
 };
@@ -67,11 +70,24 @@ struct PageImage {
   uint16_t height;
 };
 
+// A tappable link region (an <a href> on this page). `target` is the
+// resolved container path ("" = same chapter); `fragment` the anchor id.
+struct PageLink {
+  const char* target;
+  const char* fragment;
+  int16_t x;
+  int16_t y;
+  uint16_t width;
+  uint16_t height;
+};
+
 struct Page {
   const PageTextRun* runs;
   uint16_t runCount;
   const PageImage* images;
   uint16_t imageCount;
+  const PageLink* links;
+  uint16_t linkCount;
   uint32_t pageIndex;  // 0-based within the chapter
   // Chapter character offset (codepoints of extracted text) of this page's
   // first text run. Whitespace collapse and entity resolution are layout-
@@ -84,6 +100,12 @@ struct Page {
 class PageSink {
  public:
   virtual ~PageSink() = default;
+  // Called for every id="" anchor as layout passes it (chapter character
+  // offset) — the substrate for footnote/internal-link jumps.
+  virtual void onAnchor(uint32_t idHash, uint32_t charStart) {
+    (void)idHash;
+    (void)charStart;
+  }
   // Called once per completed page, in order. Return false to stop layout
   // early (e.g. only the first pages are needed). Page data must be consumed
   // or copied before returning.
@@ -99,7 +121,8 @@ class ChapterLayout {
   // `pageCountOut` (optional) receives the number of pages delivered.
   static BookStatus layout(BookSource& source, const ZipCatalog& zip, const ZipEntry& entry,
                            const char* chapterHref, const LayoutParams& params, Arena& scratch,
-                           PageSink& sink, uint32_t* pageCountOut = nullptr);
+                           PageSink& sink, uint32_t* pageCountOut = nullptr,
+                           uint32_t* totalCharsOut = nullptr);
 };
 
 }  // namespace book

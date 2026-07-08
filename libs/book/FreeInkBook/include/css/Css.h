@@ -39,6 +39,8 @@ struct CssDecl {
   int16_t marginTopPct = -1;   // -1 unset; % of em
   int16_t marginBottomPct = -1;
   int8_t displayNone = -1;     // -1 unset, 1 = display:none
+  int8_t underline = -1;       // -1 unset, 0 none, 1 underline
+  int8_t vertAlign = -1;       // -1 unset, 0 baseline, 1 super, 2 sub
 
   // Applies every property `over` declares on top of this one.
   void applyOver(const CssDecl& over);
