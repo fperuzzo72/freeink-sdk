@@ -54,7 +54,7 @@ struct ListProps {
   // Draws a thin position indicator along the right edge when the list
   // overflows the rect.
   bool scrollIndicator = true;
-  // Draw a non-interactive label-only preview of the next row when there is
+  // Draw a non-interactive preview of the next row when there is
   // leftover space after the fully visible rows. Scroll math still uses only
   // full rows so paging stays deterministic.
   bool partialTrailingRow = false;
@@ -226,17 +226,33 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
         }
 
         Rect content = row.inset(Insets{0, props.sidePadding, 0, props.sidePadding});
+        TextStyle labelStyle = textStyleWithForeground(props.labelText, style.foreground);
+        labelStyle.maxLines = 1;
+        TextStyle subtitleStyle = textStyleWithForeground(props.subtitleText, style.foreground);
+        subtitleStyle.maxLines = 1;
+        const int16_t labelH = frame.target().lineHeight(labelStyle.font);
+        const int16_t subH = item.subtitle ? frame.target().lineHeight(subtitleStyle.font) : 0;
+        const int16_t textBlockH = static_cast<int16_t>(labelH + subH);
+        int16_t textY = content.y;
+        if (content.height > textBlockH) {
+          textY = static_cast<int16_t>(content.y + (content.height - textBlockH) / 2);
+        }
+        Rect band{content.x, textY, content.width, labelH};
         const BitmapRef icon = item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);
         if (icon) {
           const int16_t iconSize = props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon.width);
-          Rect iconRect{content.x, content.y, iconSize, iconSize};
+          Rect iconRect{content.x, static_cast<int16_t>(band.y + (band.height - iconSize) / 2), iconSize, iconSize};
           frame.target().bitmap(iconRect, icon, BitmapMode::Contain, style.foreground);
           content.x = static_cast<int16_t>(content.x + iconSize + props.textGap);
           content.width = static_cast<int16_t>(content.width - iconSize - props.textGap);
+          band.x = content.x;
+          band.width = content.width;
         }
-        TextStyle labelStyle = textStyleWithForeground(props.labelText, style.foreground);
-        labelStyle.maxLines = 1;
-        frame.target().text(content, item.label, labelStyle);
+        frame.target().text(band, item.label, labelStyle);
+        if (item.subtitle && subH > 0) {
+          frame.target().text(Rect{content.x, static_cast<int16_t>(band.y + labelH), content.width, subH},
+                              item.subtitle, subtitleStyle);
+        }
       }
     }
   }
