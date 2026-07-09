@@ -268,6 +268,12 @@ int main(int argc, char** argv) {
     printf("catalog parity: %u mismatches over %zu spines + %zu toc + %zu manifest\n",
            mismatches, book.spineCount(), book.tocCount(), book.manifestCount());
     if (mismatches != 0) return 1;
+
+    // Stored stylesheet loaded from this (fresh, from-disk) catalog open.
+    const CssStylesheet* catSheet = catalog.stylesheet();
+    printf("catalog stylesheet (from disk): %u rules, hash %08x\n",
+           catSheet != nullptr ? catSheet->ruleCount : 0,
+           catSheet != nullptr ? catSheet->contentHash : 0u);
     useCatalog = true;
   }
 

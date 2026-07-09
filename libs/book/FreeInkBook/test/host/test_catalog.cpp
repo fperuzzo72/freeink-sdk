@@ -448,7 +448,11 @@ void testOmnibus() {
            static_cast<int>(BookStatus::Ok));
   std::printf("  omnibus build: scratch high water %zu B, parse high water %zu B\n",
               buildScratch.highWater(), parseArena.highWater());
-  CHECK(buildScratch.highWater() < 80 * 1024);
+  // The stored-stylesheet section parses CSS into a CssStylesheetBuilder whose
+  // rule array (kMaxRules) is a transient ~16 KB draw from the build scratch,
+  // so the omnibus peak sits a little above the pre-v2 80 KB. Still well under
+  // the 96 KB ideal records arena BookPaginator::buildCatalog allocates.
+  CHECK(buildScratch.highWater() < 88 * 1024);
   CHECK(parseArena.highWater() < 52 * 1024);
 
   size_t resident = 0;
@@ -467,6 +471,83 @@ void testOmnibus() {
   checkParity(book, catalog);
 }
 
+// Parses every text/css entry the Book resolves in RAM into a stylesheet, so
+// the catalog's stored stylesheet can be compared rule for rule.
+uint16_t bookStylesheetRuleCount(Book& book, BookSource& source, uint32_t* hashOut) {
+  Arena sheetArena(scratchBuf + 384 * 1024, 64 * 1024);
+  Arena cssScratch(parseBuf, 128 * 1024);
+  CssStylesheetBuilder builder;
+  CHECK(builder.begin(sheetArena));
+  for (size_t m = 0; m < book.manifestCount(); ++m) {
+    const ManifestItem* item = book.manifestItem(m);
+    if (item == nullptr || item->mediaType == nullptr ||
+        std::strcmp(item->mediaType, "text/css") != 0) {
+      continue;
+    }
+    if (const ZipEntry* e = book.zip().find(item->href)) {
+      builder.addSheet(source, *e, cssScratch);
+    }
+  }
+  const CssStylesheet sheet = builder.finish();
+  if (hashOut != nullptr) *hashOut = sheet.contentHash;
+  return sheet.ruleCount;
+}
+
+// Regression: opening a catalog FRESH from disk must yield the same parsed
+// stylesheet Book produces in RAM -- non-zero, and byte-stable across
+// independent opens. Before the stored-stylesheet fix, from-disk opens parsed
+// 0 rules (dropping all book styling and destabilizing the layout generation
+// hash), while the post-build open still saw the rules.
+void testStoredStylesheet() {
+  HostFileSource source;
+  CHECK(source.open(fixture("minimal.epub")));
+  HostCacheStorage cache(cacheDir);
+  cache.remove(BookCatalog::kCatalogName);
+
+  // Reference: what Book's in-RAM CSS build produces.
+  Arena bookArena(bookBuf, sizeof(bookBuf));
+  Arena scratch(scratchBuf, 256 * 1024);
+  Book book;
+  CHECK_EQ(static_cast<int>(book.open(source, bookArena, scratch)),
+           static_cast<int>(BookStatus::Ok));
+  uint32_t bookHash = 0;
+  const uint16_t bookRules = bookStylesheetRuleCount(book, source, &bookHash);
+  CHECK(bookRules > 0);  // the fixture stylesheet has real rules
+
+  Arena buildScratch(scratchBuf + 256 * 1024, 128 * 1024);
+  Arena parseArena(parseBuf, 128 * 1024);
+  CHECK_EQ(static_cast<int>(BookCatalog::build(source, cache, buildScratch, &parseArena)),
+           static_cast<int>(BookStatus::Ok));
+
+  // Two INDEPENDENT from-disk opens (fresh BookCatalog + fresh source each) --
+  // no post-build state carried over. Both must match Book exactly.
+  uint32_t firstHash = 0;
+  uint16_t firstRules = 0;
+  for (int pass = 0; pass < 2; ++pass) {
+    HostFileSource diskSource;
+    CHECK(diskSource.open(fixture("minimal.epub")));
+    Arena catalogArena(catalogBuf, sizeof(catalogBuf));
+    BookCatalog catalog;
+    CHECK_EQ(static_cast<int>(catalog.open(diskSource, cache, catalogArena, scratch)),
+             static_cast<int>(BookStatus::Ok));
+    const CssStylesheet* sheet = catalog.stylesheet();
+    CHECK(sheet != nullptr);
+    if (sheet == nullptr) return;
+    CHECK(sheet->ruleCount > 0);
+    CHECK_EQ(sheet->ruleCount, bookRules);
+    CHECK_EQ(sheet->contentHash, bookHash);
+    if (pass == 0) {
+      firstRules = sheet->ruleCount;
+      firstHash = sheet->contentHash;
+    } else {
+      CHECK_EQ(sheet->ruleCount, firstRules);   // stable across opens
+      CHECK_EQ(sheet->contentHash, firstHash);  // -> stable generation hash
+    }
+  }
+  std::printf("  stored stylesheet: %u rules, hash %08x (Book in-RAM %u rules)\n", firstRules,
+              firstHash, bookRules);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -481,6 +562,7 @@ int main(int argc, char** argv) {
   testCatalogParity("stored.epub");
   testCatalogParity("ncxonly.epub");  // EPUB 2 NCX path
   testCatalogLayout();
+  testStoredStylesheet();
   testStaleAndReopen();
   testOmnibus();
 

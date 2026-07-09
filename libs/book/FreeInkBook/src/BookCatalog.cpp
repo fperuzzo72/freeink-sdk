@@ -23,7 +23,10 @@ using xmlutil::TextCapture;
 
 namespace {
 
-constexpr uint32_t kCatalogVersion = 1;
+// v2: added the stored stylesheet section (compacted CssRule array), so open()
+// never re-parses CSS from the container. Existing v1 catalog.fibc files read
+// as Stale and rebuild.
+constexpr uint32_t kCatalogVersion = 2;
 constexpr uint32_t kMagic = 0x43424946u;  // 'F''I''B''C' little-endian
 constexpr uint32_t kNoOffset = 0xFFFFFFFFu;
 constexpr uint16_t kNoSpine16 = 0xFFFFu;
@@ -70,9 +73,12 @@ struct Footer {
   uint32_t metaOff;
   uint32_t metaSize;
   uint32_t coverEntryIndex;  // kNoEntry32 = none
+  uint32_t cssRulesOff;      // file offset of the compacted stylesheet section
+  uint32_t cssRuleCount;     // number of CssRule rows stored
+  uint32_t cssContentHash;   // stylesheet content hash (feeds layout generation)
   uint32_t magic;
 };
-static_assert(sizeof(Footer) == 72, "catalog footer layout");
+static_assert(sizeof(Footer) == 84, "catalog footer layout");
 
 uint16_t le16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
 
@@ -1099,6 +1105,37 @@ BookStatus BookCatalog::build(BookSource& source, CacheStorage& cache, Arena& sc
   }
   const uint32_t metaSize = writer.offset() - metaOff;
 
+  // Section 8: the compacted stylesheet. Parse every CSS entry ONCE here and
+  // store the resulting POD CssRule array, so open() loads rules resident and
+  // never re-parses CSS from the container -- the parse was the only source of
+  // per-open nondeterminism in the layout generation hash. The builder's rule
+  // array lives in scratch (~14 KB worst case at kMaxRules); each sheet's
+  // inflate stream uses the parse arena and is released between sheets.
+  const uint32_t cssRulesOff = writer.offset();
+  uint32_t cssRuleCount = 0;
+  uint32_t cssContentHash = 0;
+  {
+    const size_t marked = scratch.mark();
+    CssStylesheetBuilder cssBuilder;
+    if (cssBuilder.begin(scratch)) {
+      for (size_t i = 0; i < cssUsed; ++i) {
+        const uint16_t row = cssEntryIdx[i];
+        if (row >= entryCount) continue;
+        const ZipEntry cssZip = toZipEntry(entries[row]);
+        const size_t innerMark = parse.mark();
+        cssBuilder.addSheet(source, cssZip, parse);
+        parse.release(innerMark);
+      }
+      const CssStylesheet sheet = cssBuilder.finish();
+      cssRuleCount = sheet.ruleCount;
+      cssContentHash = sheet.contentHash;
+      if (sheet.ruleCount > 0) {
+        writer.write(sheet.rules, static_cast<uint32_t>(sheet.ruleCount) * sizeof(CssRule));
+      }
+    }
+    scratch.release(marked);
+  }
+
   Footer footer;
   footer.version = kCatalogVersion;
   footer.fingerprint = fingerprint;
@@ -1117,6 +1154,9 @@ BookStatus BookCatalog::build(BookSource& source, CacheStorage& cache, Arena& sc
   footer.metaOff = metaOff;
   footer.metaSize = metaSize;
   footer.coverEntryIndex = coverEntryIdx;
+  footer.cssRulesOff = cssRulesOff;
+  footer.cssRuleCount = cssRuleCount;
+  footer.cssContentHash = cssContentHash;
   footer.magic = kMagic;
   writer.write(&footer, sizeof(footer));
 
@@ -1150,7 +1190,8 @@ BookStatus BookCatalog::residentBytes(CacheStorage& cache, size_t* out) {
   const BookStatus st = readFooter(cache, &footer);
   if (st != BookStatus::Ok) return st;
   *out = footer.spineCount * sizeof(SpineRec) + footer.entryCount * sizeof(HashRec) +
-         footer.metaSize + footer.cssCount * sizeof(ZipEntry) + 256 /* alignment slack */;
+         footer.metaSize + footer.cssCount * sizeof(ZipEntry) +
+         footer.cssRuleCount * sizeof(CssRule) + 256 /* alignment slack */;
   return BookStatus::Ok;
 }
 
@@ -1231,6 +1272,26 @@ BookStatus BookCatalog::open(BookSource& source, CacheStorage& cache, Arena& boo
   }
   hasCover_ = footer.coverEntryIndex != kNoEntry32 &&
               readEntryRecord(footer.coverEntryIndex, &coverEntry_) == BookStatus::Ok;
+
+  // Stored stylesheet: load the compacted rule array resident. Parsed once at
+  // build(), so it is byte-identical every open -- no CSS re-parse, and the
+  // content hash the layout generation depends on never drifts.
+  sheet_ = CssStylesheet{};
+  if (footer.cssRuleCount > 0) {
+    CssRule* rules = bookArena.allocArray<CssRule>(footer.cssRuleCount);
+    if (rules == nullptr) {
+      cache_ = nullptr;
+      return BookStatus::OutOfMemory;
+    }
+    if (!readCacheFully(cache, footer.cssRulesOff, rules,
+                        footer.cssRuleCount * sizeof(CssRule))) {
+      cache_ = nullptr;
+      return BookStatus::IoError;
+    }
+    sheet_.rules = rules;
+    sheet_.ruleCount = static_cast<uint16_t>(footer.cssRuleCount);
+    sheet_.contentHash = footer.cssContentHash;
+  }
 
   zipView_.owner_ = this;
   return BookStatus::Ok;

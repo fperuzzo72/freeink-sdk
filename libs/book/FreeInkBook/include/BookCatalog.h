@@ -39,6 +39,8 @@
 //   hashTable    entryCount x 8 B {u32 nameHash, u16 spineIndex, u16 reserved}
 //                (row i describes entryRecords[i]; rows are hash-sorted)
 //   meta         title\0 author\0 language\0 identifier\0 + cssCount x u16
+//   cssRules     the compacted stylesheet: ruleCount x sizeof(CssRule) POD
+//                rows (parsed from every CSS entry at build time)
 //   footer       section offsets/counts + fingerprint + 'F''I''B''C'
 
 #include <stddef.h>
@@ -47,6 +49,7 @@
 #include "BookArena.h"
 #include "BookStorage.h"
 #include "BookTypes.h"
+#include "css/Css.h"
 #include "epub/ZipCatalog.h"
 
 namespace freeink {
@@ -115,6 +118,13 @@ class BookCatalog {
     return index < cssCount_ ? &cssEntries_[index] : nullptr;
   }
 
+  // The book's compacted stylesheet, parsed once at build() from every CSS
+  // entry and stored in the catalog file. open() loads the rule array resident
+  // in the book arena, so the caller never re-parses CSS from the container --
+  // byte-identical every open, which keeps the layout generation hash stable.
+  // nullptr when the catalog was built without any parsable CSS.
+  const CssStylesheet* stylesheet() const { return sheet_.ruleCount > 0 ? &sheet_ : nullptr; }
+
   // The container's cover image, when the package declares one.
   bool coverEntry(ZipEntry* out) const;
 
@@ -162,6 +172,7 @@ class BookCatalog {
   const SpineRec* spineRecs_ = nullptr;
   const HashRec* hashRecs_ = nullptr;
   ZipEntry* cssEntries_ = nullptr;
+  CssStylesheet sheet_;  // rules resident in the book arena (empty when none)
   uint32_t spineCount_ = 0;
   uint32_t tocCount_ = 0;
   uint32_t entryCount_ = 0;
