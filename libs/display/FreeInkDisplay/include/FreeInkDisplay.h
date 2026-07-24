@@ -67,6 +67,14 @@ class FreeInkDisplay {
   void clearScreen(uint8_t color = 0xFF) const;
   void drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool fromProgmem = false) const;
   void drawImageTransparent(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool fromProgmem = false) const;
+  // Persistent black/white output inversion. Framebuffers remain in their
+  // normal logical colors, so callers keep drawing exactly as before; the
+  // facade transforms frames only while sending them to the panel. The first
+  // refresh after a mode change is automatically promoted from FAST to HALF
+  // so single-buffer differential panels cannot compare opposite polarities.
+  void setInverted(bool inverted);
+  bool toggleInverted();
+  bool isInverted() const { return _inverted; }
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   void swapBuffers();
 #endif
@@ -389,6 +397,8 @@ class FreeInkDisplay {
   bool _redRamSynced = false;
   bool _singleBufferFastDiff = false;
   bool _fastGrayscaleLut = false;
+  bool _inverted = false;
+  bool _inversionDirty = false;
 
   // Runtime display geometry (seeded from the driver at begin()).
   uint16_t displayWidth = DISPLAY_WIDTH;
