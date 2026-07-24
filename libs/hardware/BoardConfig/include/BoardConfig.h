@@ -94,6 +94,15 @@
 #else
 #define FREEINK_DRIVER_UC8253_X3 0
 #endif
+// Newer X3 units ship the same 792x528 glass on a UC8279d controller (Xteink
+// heads-up, 2026-07). Both X3 drivers link whenever X3 is in the build; the
+// running unit's controller is fingerprinted at boot (XteinkDetect display
+// probe) and the matching sibling profile selected before display begin().
+#if FREEINK_DEVICE_X3
+#define FREEINK_DRIVER_UC8279 1
+#else
+#define FREEINK_DRIVER_UC8279 0
+#endif
 // M5 PaperColor has two interchangeable display backends: the fast hand-rolled
 // ED2208 driver (default), or M5's official M5GFX/M5Unified path (opt in with
 // -DFREEINK_M5_OFFICIAL=1, which pulls the M5 libraries — see platformio.sample).
@@ -285,6 +294,7 @@ inline auto& serialTransport() { return Serial; }
 enum class Board : uint8_t {
   XteinkX4,
   XteinkX3,
+  XteinkX3Uc8279,  // newer X3 production run: same board/glass, UC8279d controller
   XteinkX4Pro,  // ESP32-S3 sibling of the C3 X4: SSD1677 + GT911 touch + warm/cold frontlight
   M5StackPaperColor,
   MurphyM3,
@@ -306,7 +316,7 @@ enum class InputStyle : uint8_t {
 // Panel controller silicon. Drivers are selected from this at begin().
 // LgfxEpd = a raw-parallel EPD with no on-glass controller, driven via LovyanGFX
 // (e.g. ED047TC1 on LilyGo T5 S3).
-enum class DisplayController : uint8_t { SSD1677, UC8253, ED2208, LgfxEpd, IT8951 };
+enum class DisplayController : uint8_t { SSD1677, UC8253, ED2208, LgfxEpd, IT8951, UC8279 };
 
 // Optional capacitive touch controller.
 enum class TouchController : uint8_t { None, Chsc6x, Gt911 };
@@ -709,6 +719,38 @@ constexpr BoardProfile XTEINK_X3 = {
     NO_FLIP,
     NO_SDMMC,
     {20, 0, 400000, 0x55, 0},  // BQ27220 fuel gauge (0x55) on SDA20/SCL0; no charger IC
+    NO_MIC,
+    {20, 0, 400000, 0x68, 0, 0x6B, 0, RtcType::Ds3231, ImuType::Qmi8658}};
+
+// --- Xteink X3 (UC8279d run) — ESP32-C3, UC8279d (792x528) -------------------
+// Newer X3 production units swap the UC8253 for a UC8279d ("d_B" silicon; the
+// TFT-module UltraChip BWR part driven in KW mode) on the same board, glass and
+// pinout. Everything except the panel controller is inherited from XTEINK_X3;
+// which sibling is running is fingerprinted at boot via the XteinkDetect
+// display-controller probe (UC8279 VER/FLG readback). UC8279 serial write
+// timing is also rated to 20 MHz ("Clock rate up to 20MHz").
+constexpr BoardProfile XTEINK_X3_UC8279 = {
+    Board::XteinkX3Uc8279,
+    "xteink_x3_uc8279",
+    InputStyle::XteinkAdcLadder,
+    DisplayController::UC8279,
+    792,
+    528,
+    {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
+    20000000,
+    {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
+    {0, 1, 2, 3, 4, 5, 3, false},
+    0,
+    PIN_UNASSIGNED,
+    2.0f,
+    20,
+    NO_TOUCH,
+    NO_FRONTLIGHT,
+    NO_AUDIO,
+    NO_LEDS,
+    NO_FLIP,
+    NO_SDMMC,
+    {20, 0, 400000, 0x55, 0},
     NO_MIC,
     {20, 0, 400000, 0x68, 0, 0x6B, 0, RtcType::Ds3231, ImuType::Qmi8658}};
 
@@ -1142,6 +1184,9 @@ inline bool selectDevice(Board which) {
 #if FREEINK_DEVICE_X3
     case Board::XteinkX3:
       ACTIVE = XTEINK_X3;
+      return true;
+    case Board::XteinkX3Uc8279:
+      ACTIVE = XTEINK_X3_UC8279;
       return true;
 #endif
 #if FREEINK_DEVICE_M5

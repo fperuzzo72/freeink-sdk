@@ -4,6 +4,8 @@
 #include <BoardConfig.h>
 #include <Wire.h>
 
+#include <string.h>
+
 namespace freeink {
 
 #if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3)
@@ -18,6 +20,11 @@ XteinkVerdict detectXteinkVerdict(uint8_t* score1, uint8_t* score2) {
   return XteinkVerdict::Inconclusive;
 }
 bool detectXteinkIsX3() { return false; }
+X3DisplayVerdict detectX3DisplayController(uint8_t verBytes[5], uint8_t* flg) {
+  if (verBytes) memset(verBytes, 0, 5);
+  if (flg) *flg = 0;
+  return X3DisplayVerdict::Uc8253Assumed;
+}
 bool selectXteinkDevice() { return false; }
 
 #else
@@ -117,10 +124,162 @@ XteinkVerdict detectXteinkVerdict(uint8_t* score1, uint8_t* score2) {
 
 bool detectXteinkIsX3() { return detectXteinkVerdict() == XteinkVerdict::X3Confirmed; }
 
+#if FREEINK_DEVICE_X3
+
+namespace {
+
+// X3 display pins (shared by both X3 controller variants; see XTEINK_X3).
+constexpr int8_t EPD_SCLK = 8;
+constexpr int8_t EPD_MOSI = 10;  // the controller's bidirectional SDA
+constexpr int8_t EPD_CS = 21;
+constexpr int8_t EPD_DC = 4;
+constexpr int8_t EPD_RST = 5;
+constexpr int8_t EPD_BUSY = 6;
+
+// UC8279d read-capable registers (UC8279d_B 0.1 datasheet).
+constexpr uint8_t UC8279_CMD_VER = 0x70;  // reserved, CHIP_VER, LUT_VER[23:0]
+constexpr uint8_t UC8279_CMD_FLG = 0x71;  // status; BUSY_N (D0) = 1 when idle
+
+inline void epdClockDelay() { delayMicroseconds(1); }  // ~500 kHz, timing-safe
+
+void epdWriteByte(uint8_t b) {
+  for (uint8_t i = 0; i < 8; i++) {
+    digitalWrite(EPD_MOSI, (b & 0x80) ? HIGH : LOW);
+    epdClockDelay();
+    digitalWrite(EPD_SCLK, HIGH);
+    epdClockDelay();
+    digitalWrite(EPD_SCLK, LOW);
+    b <<= 1;
+  }
+}
+
+uint8_t epdReadByte() {
+  uint8_t b = 0;
+  for (uint8_t i = 0; i < 8; i++) {
+    // The controller shifts the next bit out on the SCL falling edge; sample
+    // while the clock is low, then pulse.
+    epdClockDelay();
+    b = static_cast<uint8_t>((b << 1) | (digitalRead(EPD_MOSI) == HIGH ? 1 : 0));
+    digitalWrite(EPD_SCLK, HIGH);
+    epdClockDelay();
+    digitalWrite(EPD_SCLK, LOW);
+  }
+  return b;
+}
+
+// One command + N-byte half-duplex read: command with DC low, then SDA (our
+// MOSI) released to input with DC high while the controller drives the reads.
+void epdCmdRead(uint8_t cmd, uint8_t* out, uint8_t len) {
+  pinMode(EPD_MOSI, OUTPUT);
+  digitalWrite(EPD_DC, LOW);
+  digitalWrite(EPD_CS, LOW);
+  epdClockDelay();
+  epdWriteByte(cmd);
+  digitalWrite(EPD_DC, HIGH);
+  pinMode(EPD_MOSI, INPUT_PULLUP);
+  epdClockDelay();
+  for (uint8_t i = 0; i < len; i++) out[i] = epdReadByte();
+  digitalWrite(EPD_CS, HIGH);
+  pinMode(EPD_MOSI, OUTPUT);
+}
+
+// The UC8279 VER signature: a leading reserved 0x00, then a CHIP_VER byte
+// (datasheet default 0x03, MTP-programmed so not pinned to that exact value)
+// that is neither a floating-low nor a floating-high bus. A released SDA reads
+// back all-0x00 or all-0xFF through the pull-up, and the UC8253 places its
+// revision in the FIRST byte of its 0x70 read (UC815x-family REV layout), so a
+// genuine 0x00 lead followed by a non-trivial byte is discriminating. FLG must
+// additionally report idle (BUSY_N=1) without being a floating pattern.
+bool matchUc8279(const uint8_t ver[5], uint8_t flg) {
+  if (ver[0] != 0x00) return false;
+  if (ver[1] == 0x00 || ver[1] == 0xFF) return false;
+  if (flg == 0x00 || flg == 0xFF) return false;
+  return (flg & 0x01) == 0x01;
+}
+
+bool runDisplayProbePass(uint8_t ver[5], uint8_t* flg) {
+  pinMode(EPD_CS, OUTPUT);
+  digitalWrite(EPD_CS, HIGH);
+  pinMode(EPD_SCLK, OUTPUT);
+  digitalWrite(EPD_SCLK, LOW);
+  pinMode(EPD_DC, OUTPUT);
+  digitalWrite(EPD_DC, LOW);
+  pinMode(EPD_MOSI, OUTPUT);
+  pinMode(EPD_BUSY, INPUT);
+
+  // Hardware reset pulse (RST_N min low width 50 us; give it 1 ms) and wait
+  // for the controller to come ready (BUSY_N high). The panel driver's own
+  // begin() resets again afterwards, so this leaves no lasting state.
+  pinMode(EPD_RST, OUTPUT);
+  digitalWrite(EPD_RST, HIGH);
+  delay(2);
+  digitalWrite(EPD_RST, LOW);
+  delay(1);
+  digitalWrite(EPD_RST, HIGH);
+  {
+    const unsigned long t0 = millis();
+    while (digitalRead(EPD_BUSY) == LOW && millis() - t0 < 30) delay(1);
+  }
+
+  uint8_t flgByte = 0;
+  epdCmdRead(UC8279_CMD_FLG, &flgByte, 1);
+  epdCmdRead(UC8279_CMD_VER, ver, 5);
+  if (flg) *flg = flgByte;
+  return matchUc8279(ver, flgByte);
+}
+
+void releaseDisplayPins() {
+  // Same convention as the I2C probe: leave everything released. RST_N has an
+  // internal pull-up, so INPUT keeps the controller out of reset.
+  pinMode(EPD_SCLK, INPUT);
+  pinMode(EPD_MOSI, INPUT);
+  pinMode(EPD_CS, INPUT_PULLUP);  // don't leave the panel selected
+  pinMode(EPD_DC, INPUT);
+  pinMode(EPD_RST, INPUT);
+}
+
+}  // namespace
+
+X3DisplayVerdict detectX3DisplayController(uint8_t verBytes[5], uint8_t* flg) {
+  uint8_t ver1[5] = {0};
+  uint8_t ver2[5] = {0};
+  uint8_t flg1 = 0;
+  const bool pass1 = runDisplayProbePass(ver1, &flg1);
+  delay(2);
+  const bool pass2 = runDisplayProbePass(ver2, nullptr);
+  releaseDisplayPins();
+  if (verBytes) memcpy(verBytes, ver1, 5);
+  if (flg) *flg = flg1;
+  // Confirmed only when both passes match the UC8279 signature AND agree on
+  // the VER bytes — a floating bus can't produce the same stable non-trivial
+  // pattern twice. Disagreement is Inconclusive (resolve as UC8253, the
+  // shipping controller, but don't persist so a flaky boot re-probes).
+  if (pass1 && pass2 && memcmp(ver1, ver2, 5) == 0) return X3DisplayVerdict::Uc8279Confirmed;
+  if (!pass1 && !pass2) return X3DisplayVerdict::Uc8253Assumed;
+  return X3DisplayVerdict::Inconclusive;
+}
+
+#else  // X4-only build: no X3 profile, nothing to probe.
+
+X3DisplayVerdict detectX3DisplayController(uint8_t verBytes[5], uint8_t* flg) {
+  if (verBytes) memset(verBytes, 0, 5);
+  if (flg) *flg = 0;
+  return X3DisplayVerdict::Uc8253Assumed;
+}
+
+#endif  // FREEINK_DEVICE_X3
+
 bool selectXteinkDevice() {
   const bool isX3 = detectXteinkIsX3();
-  BoardConfig::selectDevice(isX3 ? BoardConfig::Board::XteinkX3 : BoardConfig::Board::XteinkX4);
-  return isX3;
+  if (!isX3) {
+    BoardConfig::selectDevice(BoardConfig::Board::XteinkX4);
+    return false;
+  }
+  // X3 confirmed: fingerprint which panel controller this production run
+  // carries and select the matching sibling profile.
+  const bool isUc8279 = detectX3DisplayController() == X3DisplayVerdict::Uc8279Confirmed;
+  BoardConfig::selectDevice(isUc8279 ? BoardConfig::Board::XteinkX3Uc8279 : BoardConfig::Board::XteinkX3);
+  return true;
 }
 
 #endif  // FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3

@@ -41,11 +41,32 @@ XteinkVerdict detectXteinkVerdict(uint8_t* score1 = nullptr, uint8_t* score2 = n
 // call before any other hardware bring-up.
 bool detectXteinkIsX3();
 
+// --- X3 display-controller fingerprint ---------------------------------------
+// Newer X3 production units ship a UC8279d panel controller instead of the
+// UC8253 (same board, glass and pinout). The two are told apart by reading the
+// UC8279's VER (0x70: reserved 0x00 + CHIP_VER + 24-bit LUT_VER) and FLG
+// (0x71: status, BUSY_N=1 when idle) registers over a bit-banged half-duplex
+// 4-wire SPI on the X3 display pins, after a hardware reset pulse. The UC8253
+// either doesn't answer 0x70 (bus floats) or answers with a different byte
+// shape, so a matching UC8279 signature in two independent passes confirms the
+// new controller; anything else conservatively resolves to the shipping
+// UC8253. Safe to call before FreeInkDisplay::begin() — the pins are released
+// afterwards and the driver re-resets the panel.
+enum class X3DisplayVerdict : uint8_t { Uc8253Assumed, Uc8279Confirmed, Inconclusive };
+
+// Probe the X3 display controller. Optionally reports the raw VER bytes and
+// FLG byte from the first pass (for bring-up logging / threshold tuning on new
+// hardware). Only meaningful on a confirmed X3; in builds without
+// FREEINK_DEVICE_X3 this is a no-op returning Uc8253Assumed.
+X3DisplayVerdict detectX3DisplayController(uint8_t verBytes[5] = nullptr, uint8_t* flg = nullptr);
+
 // Convenience: run detectXteinkIsX3(), set BoardConfig::ACTIVE to the matching
 // profile via selectDevice(), and return whether an X3 was detected (so the
-// caller can put FreeInkDisplay in X3 mode with setDisplayX3()). Call this
-// before SDCardManager::begin() and FreeInkDisplay::begin() so both read the
-// correct profile.
+// caller can put FreeInkDisplay in X3 mode with setDisplayX3()). On a
+// confirmed X3 the display-controller probe also runs, selecting the UC8279
+// sibling profile when that controller is fingerprinted. Call this before
+// SDCardManager::begin() and FreeInkDisplay::begin() so both read the correct
+// profile.
 bool selectXteinkDevice();
 
 }  // namespace freeink
