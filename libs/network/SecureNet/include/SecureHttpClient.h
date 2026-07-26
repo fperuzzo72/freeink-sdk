@@ -41,6 +41,7 @@
 #include <cstdlib>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "SecureClient.h"
@@ -310,6 +311,16 @@ class SecureHttpClient {
     const auto found = std::find_if(_responseHeaders.begin(), _responseHeaders.end(),
                                     [&normalized](const Header& header) { return header.name == normalized; });
     return found == _responseHeaders.end() ? "" : found->value;
+  }
+
+  // All response headers, in receive order, as (lowercased-name, value) pairs.
+  // Order-preserving and duplicate-preserving so callers can see every
+  // Set-Cookie (or other repeated header) rather than just the first.
+  std::vector<std::pair<std::string, std::string>> getHeaders() const {
+    std::vector<std::pair<std::string, std::string>> out;
+    out.reserve(_responseHeaders.size());
+    for (const Header& h : _responseHeaders) out.emplace_back(h.name, h.value);
+    return out;
   }
 
   static bool resolveUrl(const std::string& baseUrl, const std::string& location, std::string& resolved) {
