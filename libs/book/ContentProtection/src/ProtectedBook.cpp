@@ -38,6 +38,14 @@ bool ProtectedBook::open(ByteSource& source, Crypto& crypto, const Credential& i
     return false;
   }
 
+  // encryption.xml is present but lists no AES-128-CBC content — this is a
+  // plain EPUB that merely obfuscates its embedded fonts (IDPF/Adobe font
+  // mangling), not content protection. Nothing to unwrap; open normally and
+  // require no rights document or credential.
+  if (encryptedUris_.empty()) {
+    return true;  // protected_ stays false
+  }
+
   // Prefer the out-of-band rights document (sidecar); fall back to reading
   // META-INF/rights.xml from the zip for the legacy in-container form.
   std::string rightsXml = rightsXmlOverride;
