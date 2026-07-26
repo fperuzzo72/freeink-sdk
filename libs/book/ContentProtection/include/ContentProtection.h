@@ -36,6 +36,10 @@ class ContentDecryptor {
 //   non-null            -> route protected item reads through it
 //   null, err empty     -> plain content (not protected) — read normally
 //   null, err non-empty -> protected but unreadable (no credential / expired)
+//
+// This is the SD-backed convenience entry; the integrating firmware provides
+// the implementation (it binds the ByteSource to device storage). The portable
+// lib itself stays storage-agnostic — host code opens ProtectedBook directly.
 std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath, std::string& err);
 
 }  // namespace content
