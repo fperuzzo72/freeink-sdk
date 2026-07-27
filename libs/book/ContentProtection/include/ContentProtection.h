@@ -6,12 +6,15 @@
 // decoded bytes to storage; access is on-read, into memory only.
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace freeink {
 namespace content {
+
+using ContentChunkSink = bool (*)(void* context, const uint8_t* data, size_t size);
 
 // Provides in-memory access to protected items of an opened container.
 class ContentDecryptor {
@@ -21,6 +24,9 @@ class ContentDecryptor {
   virtual bool isEncrypted(const std::string& itemPath) const = 0;
   // Read one protected item fully into `out` (transient, RAM only).
   virtual bool decrypt(const std::string& itemPath, std::vector<uint8_t>& out) = 0;
+  virtual size_t decryptedSize(const std::string& itemPath) const = 0;
+  virtual bool decryptToSink(const std::string& itemPath, ContentChunkSink sink,
+                             void* context) = 0;
 };
 
 // Opens the protected read path for `epubPath` when the content is protected

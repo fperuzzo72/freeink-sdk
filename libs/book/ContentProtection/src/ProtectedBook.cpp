@@ -1,5 +1,6 @@
 #include "ProtectedBook.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "ContentMinizConfig.h"
@@ -77,6 +78,11 @@ bool ProtectedBook::isEncrypted(const std::string& name) const {
   return false;
 }
 
+size_t ProtectedBook::decryptedSize(const std::string& name) const {
+  const ZipEntryInfo* entry = zip_.find(name);
+  return entry ? entry->uncompressedSize : 0;
+}
+
 bool ProtectedBook::unwrapBookKey(Crypto& crypto, const Credential& identity, uint8_t out[16]) {
   std::string encryptedKey = base64Decode(rights_.encryptedKey);
 
@@ -137,6 +143,28 @@ bool ProtectedBook::unwrapBookKey(Crypto& crypto, const Credential& identity, ui
 
 bool ProtectedBook::decryptEntry(ByteSource& source, Crypto& crypto, const std::string& name,
                              std::vector<uint8_t>* out) {
+  out->clear();
+  const ZipEntryInfo* entry = zip_.find(name);
+  if (!entry) {
+    lastError_ = "entry not found: " + name;
+    return false;
+  }
+  if (entry->uncompressedSize > 256 * 1024) {
+    lastError_ = "entry too large for in-memory read";
+    return false;
+  }
+  out->reserve(entry->uncompressedSize);
+  auto append = [](void* context, const uint8_t* data, size_t size) {
+    auto* target = static_cast<std::vector<uint8_t>*>(context);
+    target->insert(target->end(), data, data + size);
+    return true;
+  };
+  return decryptEntryToSink(source, crypto, name, append, out);
+}
+
+bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
+                                       const std::string& name, ContentChunkSink sink,
+                                       void* context) {
   const ZipEntryInfo* entry = zip_.find(name);
   if (!entry) {
     lastError_ = "entry not found: " + name;
@@ -147,42 +175,107 @@ bool ProtectedBook::decryptEntry(ByteSource& source, Crypto& crypto, const std::
     return false;
   }
 
-  std::vector<uint8_t> raw(entry->compressedSize);
-  if (!zip_.readRaw(source, *entry, raw.data())) {
-    lastError_ = "entry read failed";
+  uint64_t offset = 0;
+  if (!zip_.dataOffset(source, *entry, &offset)) {
+    lastError_ = "entry offset unavailable";
     return false;
   }
 
   uint8_t iv[16];
-  memcpy(iv, raw.data(), 16);
-  std::vector<uint8_t> plain(raw.size() - 16);
-  if (!crypto.aes128CbcDecrypt(bookKey_, iv, raw.data() + 16, raw.size() - 16, plain.data())) {
-    lastError_ = "content read failed";
+  if (source.readAt(offset, iv, sizeof(iv)) != sizeof(iv)) {
+    lastError_ = "entry IV read failed";
     return false;
   }
 
-  // PKCS#7 unpad.
-  const uint8_t pad = plain.back();
-  size_t plainLen = plain.size();
-  if (pad >= 1 && pad <= 16 && pad <= plainLen) {
-    bool valid = true;
-    for (size_t i = plainLen - pad; i < plainLen; i++) valid = valid && plain[i] == pad;
-    if (valid) plainLen -= pad;
+  constexpr size_t kCipherChunk = 2048;
+  constexpr size_t kOutputChunk = 4096;
+  auto* buffers = static_cast<uint8_t*>(malloc(kCipherChunk * 2 + kOutputChunk));
+  if (!buffers) {
+    lastError_ = "insufficient memory for content stream";
+    return false;
+  }
+  uint8_t* cipher = buffers;
+  uint8_t* plain = cipher + kCipherChunk;
+  uint8_t* output = plain + kCipherChunk;
+
+  mz_stream stream;
+  memset(&stream, 0, sizeof(stream));
+  if (mz_inflateInit2(&stream, -15) != MZ_OK) {
+    free(buffers);
+    lastError_ = "inflate setup failed";
+    return false;
   }
 
-  // Content is stored as raw deflate. Some producers' streams only terminate
-  // cleanly with a trailing byte present (the inept 'Z' convention) — retry
-  // with one appended if the first attempt fails.
-  if (inflateRaw(plain.data(), plainLen, entry->uncompressedSize, out)) return true;
-  // Force the byte at plainLen to 'Z' and inflate one extra byte. With invalid
-  // padding plainLen == plain.size(), so grow first to keep the write in bounds
-  // (resize may reallocate; inflateRaw re-fetches plain.data()).
-  if (plainLen == plain.size()) plain.resize(plainLen + 1);
-  plain[plainLen] = 'Z';
-  if (inflateRaw(plain.data(), plainLen + 1, entry->uncompressedSize, out)) return true;
+  bool ended = false;
+  auto inflateChunk = [&](const uint8_t* data, size_t size) {
+    stream.next_in = data;
+    stream.avail_in = static_cast<unsigned int>(size);
+    size_t produced = 0;
+    do {
+      const unsigned int before = stream.avail_in;
+      stream.next_out = output;
+      stream.avail_out = kOutputChunk;
+      const int status = mz_inflate(&stream, MZ_NO_FLUSH);
+      produced = kOutputChunk - stream.avail_out;
+      if (produced && (!sink || !sink(context, output, produced))) return false;
+      if (status == MZ_STREAM_END) {
+        ended = true;
+        return true;
+      }
+      if (status != MZ_OK && status != MZ_BUF_ERROR) return false;
+      if (status == MZ_BUF_ERROR && produced == 0 && stream.avail_in == before) {
+        return stream.avail_in == 0;
+      }
+    } while (stream.avail_in > 0 || produced == kOutputChunk);
+    return true;
+  };
 
-  lastError_ = "inflate failed";
-  return false;
+  uint32_t remaining = entry->compressedSize - 16;
+  offset += 16;
+  bool ok = true;
+  while (remaining > 0 && !ended) {
+    const size_t amount = remaining < kCipherChunk ? remaining : kCipherChunk;
+    if (source.readAt(offset, cipher, amount) != static_cast<int32_t>(amount)) {
+      ok = false;
+      lastError_ = "entry read failed";
+      break;
+    }
+    uint8_t nextIv[16];
+    memcpy(nextIv, cipher + amount - sizeof(nextIv), sizeof(nextIv));
+    if (!crypto.aes128CbcDecrypt(bookKey_, iv, cipher, amount, plain)) {
+      ok = false;
+      lastError_ = "content read failed";
+      break;
+    }
+    memcpy(iv, nextIv, sizeof(iv));
+
+    size_t plainSize = amount;
+    if (amount == remaining) {
+      const uint8_t pad = plain[plainSize - 1];
+      if (pad >= 1 && pad <= 16 && pad <= plainSize) {
+        bool valid = true;
+        for (size_t i = plainSize - pad; i < plainSize; i++) valid = valid && plain[i] == pad;
+        if (valid) plainSize -= pad;
+      }
+    }
+    if (!inflateChunk(plain, plainSize)) {
+      ok = false;
+      lastError_ = "inflate failed";
+      break;
+    }
+    offset += amount;
+    remaining -= amount;
+  }
+
+  if (ok && !ended) {
+    const uint8_t trailing = 'Z';
+    ok = inflateChunk(&trailing, 1) && ended;
+    if (!ok) lastError_ = "inflate failed";
+  }
+
+  mz_inflateEnd(&stream);
+  free(buffers);
+  return ok && ended;
 }
 
 bool ProtectedBook::readEntryInflated(ByteSource& source, const std::string& name, std::string* out) {

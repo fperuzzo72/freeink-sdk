@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "ByteSource.h"
+#include "ContentProtection.h"
 #include "Crypto.h"
 #include "Credential.h"
 #include "Rights.h"
@@ -47,10 +48,13 @@ class ProtectedBook {
   bool isExpired(int64_t nowEpoch) const { return rights_.expiresAt != 0 && nowEpoch > rights_.expiresAt; }
 
   bool isEncrypted(const std::string& name) const;
+  size_t decryptedSize(const std::string& name) const;
 
   // Access + inflate one protected entry (in memory; chapters are small).
   bool decryptEntry(ByteSource& source, Crypto& crypto, const std::string& name,
                     std::vector<uint8_t>* out);
+  bool decryptEntryToSink(ByteSource& source, Crypto& crypto, const std::string& name,
+                          ContentChunkSink sink, void* context);
 
   // Read a non-encrypted entry fully, inflating when deflated.
   bool readEntryInflated(ByteSource& source, const std::string& name, std::string* out);
