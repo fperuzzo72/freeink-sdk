@@ -1,6 +1,6 @@
 #pragma once
 
-// FreeInk — content protection: the access credential.
+// FreeInk — access credential.
 //
 // The credential bundle is produced off-device and stored on the SD card so
 // it is portable across firmware installs —

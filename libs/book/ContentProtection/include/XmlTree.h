@@ -1,6 +1,6 @@
 #pragma once
 
-// FreeInk — content protection: XML tree model, serializer, and the rights
+// FreeInk — XML tree model, serializer, and the rights
 // request-signing canonicalization (SHA-1 over a custom binary serialization
 // — namespace URIs inlined, attributes sorted, text trimmed, length-prefixed
 // strings). Must match the server's canonicalization byte-for-byte.

@@ -1,6 +1,6 @@
 #pragma once
 
-// FreeInk — content protection: the read path for access-restricted EPUBs.
+// FreeInk — encrypted-entry read path.
 //
 // Access-only, by design:
 //  - content stays encrypted at rest (items are accessed on read, into memory)

@@ -1,6 +1,6 @@
 #pragma once
 
-// FreeInk — content protection: small shared helpers (header-only).
+// FreeInk — small shared helpers (header-only).
 
 #include <stdint.h>
 #include <string.h>

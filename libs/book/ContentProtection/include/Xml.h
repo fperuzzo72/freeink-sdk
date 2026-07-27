@@ -1,6 +1,6 @@
 #pragma once
 
-// FreeInk — content protection: minimal XML scanner (header-only).
+// FreeInk — minimal XML scanner (header-only).
 //
 // rights.xml and encryption.xml are small, stable schemas. A full parser
 // (expat) would be overkill here and costs a vendored dependency; this

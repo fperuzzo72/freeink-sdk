@@ -38,10 +38,8 @@ bool ProtectedBook::open(ByteSource& source, Crypto& crypto, const Credential& i
     return false;
   }
 
-  // encryption.xml is present but lists no AES-128-CBC content — this is a
-  // plain EPUB that merely obfuscates its embedded fonts (IDPF/Adobe font
-  // mangling), not content protection. Nothing to unwrap; open normally and
-  // require no rights document or credential.
+  // A manifest containing only embedded-font obfuscation needs no key unwrap
+  // or alternate read path.
   if (encryptedUris_.empty()) {
     return true;  // protected_ stays false
   }

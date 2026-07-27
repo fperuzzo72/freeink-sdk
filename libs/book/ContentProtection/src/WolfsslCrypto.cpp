@@ -1,4 +1,4 @@
-// FreeInk — content protection: wolfSSL crypto backend (device).
+// FreeInk — wolfSSL crypto backend.
 //
 // Notes on the wolfSSL pieces:
 //  - PKCS#8 is decoded via ToTraditional (in-place PKCS#8 -> PKCS#1), then
@@ -26,6 +26,12 @@
 #include <wolfssl/wolfcrypt/rsa.h>
 #include <wolfssl/wolfcrypt/sha.h>
 #include <wolfssl/wolfcrypt/sha256.h>
+
+#if defined(ESP_PLATFORM)
+#include <mbedtls/esp_mbedtls_random.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/rsa.h>
+#endif
 
 #include <stdlib.h>
 #include <string.h>
@@ -230,6 +236,40 @@ bool WolfsslCrypto::rsaGenerate(RsaKeyPairDer* out) {
     lastError = "rng not initialized";
     return false;
   }
+#if defined(ESP_PLATFORM)
+  // wolfSSL 5.7.2's Tom's Fast Math key-generation path is unstable on the
+  // ESP32-C3 (the Miller-Rabin test faults in fp_mul_comba). ESP-IDF already
+  // ships mbedTLS with RSA key generation enabled, so use it for this one
+  // operation. The output remains the same SPKI public key + PKCS#8 private
+  // key consumed by the rest of the content-protection code.
+  mbedtls_pk_context key;
+  mbedtls_pk_init(&key);
+
+  int rc = mbedtls_pk_setup(&key, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA));
+  if (rc == 0) {
+    rc = mbedtls_rsa_gen_key(mbedtls_pk_rsa(key), mbedtls_esp_random, nullptr, 1024, 65537);
+  }
+
+  uint8_t pubBuf[192];
+  uint8_t privBuf[1024];
+  int pubLen = 0;
+  int privLen = 0;
+  if (rc == 0) pubLen = mbedtls_pk_write_pubkey_der(&key, pubBuf, sizeof(pubBuf));
+  if (pubLen > 0) privLen = mbedtls_pk_write_key_der(&key, privBuf, sizeof(privBuf));
+
+  bool ok = pubLen > 0 && privLen > 0;
+  if (ok) {
+    out->spki.assign(pubBuf + sizeof(pubBuf) - pubLen, pubBuf + sizeof(pubBuf));
+    ok = wrapPkcs8(privBuf + sizeof(privBuf) - privLen, static_cast<size_t>(privLen), &out->pkcs8);
+    if (!ok) lastError = "PKCS#8 DER wrap failed";
+  } else {
+    lastError = "mbedTLS RSA keygen rc=" + std::to_string(rc) + " pub=" + std::to_string(pubLen) +
+                " priv=" + std::to_string(privLen);
+  }
+
+  mbedtls_pk_free(&key);
+  return ok;
+#else
   ScopedRsaKey key;
   if (!key.get()) {
     lastError = "wc_InitRsaKey failed";
@@ -260,6 +300,7 @@ bool WolfsslCrypto::rsaGenerate(RsaKeyPairDer* out) {
     }
   }
   return ok;
+#endif
 }
 
 bool WolfsslCrypto::rsaPublicEncrypt(const uint8_t* certDer, size_t certLen, const uint8_t* in,
@@ -318,7 +359,14 @@ bool WolfsslCrypto::rsaPublicEncrypt(const uint8_t* certDer, size_t certLen, con
       *outLen = static_cast<size_t>(n);
     } else {
       ok = false;
-      lastError = "wc_RsaPublicEncrypt rc=" + std::to_string(n);
+      const int modBits = wc_RsaEncryptSize(key.get()) * 8;
+#if defined(WOLFSSL_ESP32_CRYPT_RSA_PRI_EXPTMOD)
+      const char* path = "HW";
+#else
+      const char* path = "SW";
+#endif
+      lastError = "wc_RsaPublicEncrypt rc=" + std::to_string(n) + " modbits=" + std::to_string(modBits) +
+                  " " + path;
     }
   }
   return ok;

@@ -1,6 +1,6 @@
 #pragma once
 
-// FreeInk — content protection: wolfSSL crypto backend (device).
+// FreeInk — wolfSSL crypto backend.
 //
 // Compiled only when FREEINK_CONTENT_WOLFSSL is defined (CrossPoint sets it
 // alongside FREEINK_NET_WOLFSSL). wolfSSL build needs: RSA (+ PKCS#8

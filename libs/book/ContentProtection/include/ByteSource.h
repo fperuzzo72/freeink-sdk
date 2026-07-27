@@ -1,6 +1,6 @@
 #pragma once
 
-// FreeInk — content protection: random-access byte source.
+// FreeInk — random-access byte source.
 //
 // Mirrors FreeInkBook's BookSource shape so adapting an SD file (CrossPoint
 // HalFile, FreeInkBook BookSource, host stdio) is a few lines. The content

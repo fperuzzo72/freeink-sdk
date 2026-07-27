@@ -1,17 +1,9 @@
 #pragma once
 
-// Content protection — the reader-facing seam for protected content.
-//
-// Scheme-neutral by design: the reader knows only "some items are encrypted;
-// access them on read." The credential that grants access to protected content
-// is produced off-device and dropped on the SD card;
-// the reader never activates, never talks to a server, never handles account
-// credentials. Today the one backend unwraps an RSA-wrapped content key from a
-// rights document; a second backend (e.g. LCP) can be added behind the same
-// interface without touching the reader.
+// Reader-facing interface for encrypted entries.
 //
 // Freestanding C++17 core; storage/crypto injected. Nothing here can write the
-// content out in the clear — access is on-read, into memory only.
+// decoded bytes to storage; access is on-read, into memory only.
 
 #include <cstdint>
 #include <memory>

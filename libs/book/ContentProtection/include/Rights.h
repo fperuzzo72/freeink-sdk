@@ -1,6 +1,6 @@
 #pragma once
 
-// FreeInk — content protection: rights.xml and encryption.xml parsing.
+// FreeInk — rights.xml and encryption.xml parsing.
 
 #include <stdint.h>
 
