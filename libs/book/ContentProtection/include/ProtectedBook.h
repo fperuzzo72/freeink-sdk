@@ -39,6 +39,13 @@ class ProtectedBook {
   bool open(ByteSource& source, Crypto& crypto, const Credential& identity,
             const std::string& rightsXmlOverride = "");
 
+  // Completes open using an already-scanned ZIP index. This lets an embedding
+  // application classify a plain EPUB before initializing crypto or loading
+  // credentials, then transfer ownership of that same index instead of
+  // scanning the central directory a second time.
+  bool openFromScan(ByteSource& source, Crypto& crypto, const Credential& identity,
+                    ZipScan&& scan, const std::string& rightsXmlOverride = "");
+
   bool isProtected() const { return protected_; }
   const Rights& rights() const { return rights_; }
   const std::string& lastError() const { return lastError_; }
@@ -63,6 +70,8 @@ class ProtectedBook {
   bool inflateRaw(const uint8_t* in, size_t inLen, size_t expectedOut, std::vector<uint8_t>* out);
 
  private:
+  bool finishOpen(ByteSource& source, Crypto& crypto, const Credential& identity,
+                  const std::string& rightsXmlOverride);
   bool unwrapBookKey(Crypto& crypto, const Credential& identity, uint8_t out[16]);
 
   ZipScan zip_;

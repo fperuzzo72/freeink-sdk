@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <utility>
+
 #include "ContentMinizConfig.h"
 #include "Util.h"
 
@@ -16,7 +18,7 @@ constexpr size_t kRsaBlock = 128;  // RSA-1024
 }  // namespace
 
 bool ProtectedBook::open(ByteSource& source, Crypto& crypto, const Credential& identity,
-                     const std::string& rightsXmlOverride) {
+                         const std::string& rightsXmlOverride) {
   lastError_.clear();
   protected_ = false;
 
@@ -25,6 +27,21 @@ bool ProtectedBook::open(ByteSource& source, Crypto& crypto, const Credential& i
     return false;
   }
 
+  return finishOpen(source, crypto, identity, rightsXmlOverride);
+}
+
+bool ProtectedBook::openFromScan(ByteSource& source, Crypto& crypto,
+                                 const Credential& identity, ZipScan&& scan,
+                                 const std::string& rightsXmlOverride) {
+  lastError_.clear();
+  protected_ = false;
+  zip_ = std::move(scan);
+  return finishOpen(source, crypto, identity, rightsXmlOverride);
+}
+
+bool ProtectedBook::finishOpen(ByteSource& source, Crypto& crypto,
+                               const Credential& identity,
+                               const std::string& rightsXmlOverride) {
   if (!zip_.find(kEncryptionXml)) {
     return true;  // plain EPUB; nothing to do
   }
