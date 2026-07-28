@@ -110,6 +110,34 @@ struct ListProps {
   bool headerUnderline = true;
 };
 
+inline void drawListScrollIndicator(DrawTarget &target, const Rect rect,
+                                    const uint32_t count,
+                                    const uint32_t visible,
+                                    const uint32_t top,
+                                    const int16_t width = 3,
+                                    const uint8_t side = 0,
+                                    const int16_t inset = 0) {
+  if (count <= visible || visible == 0 || width <= 0)
+    return;
+
+  const bool left = side == 1;
+  const Rect track{left ? static_cast<int16_t>(rect.x + inset)
+                        : static_cast<int16_t>(rect.right() - width - inset),
+                   rect.y, width, rect.height};
+  target.fill(track, Paint::dither(Color::LightGray));
+  int16_t thumbH = static_cast<int16_t>(
+      (static_cast<int32_t>(rect.height) * visible) / count);
+  if (thumbH < 12)
+    thumbH = 12;
+  const uint32_t scrollRange = count - visible;
+  const uint32_t clampedTop = top < scrollRange ? top : scrollRange;
+  const int16_t thumbY = static_cast<int16_t>(
+      track.y + (static_cast<int32_t>(track.height - thumbH) * clampedTop) /
+                    scrollRange);
+  target.fill(Rect{track.x, thumbY, track.width, thumbH},
+              Paint::solid(Color::Black));
+}
+
 template <size_t MaxInteractions>
 void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
   if (!props.items || props.count == 0)
@@ -150,23 +178,8 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       if (scrollLeft)
         rowArea.x = static_cast<int16_t>(rowArea.x + cut);
     }
-    Rect track{scrollLeft
-                   ? static_cast<int16_t>(rect.x + scrollInset)
-                   : static_cast<int16_t>(rect.right() - scrollW - scrollInset),
-               rect.y, scrollW, rect.height};
-    frame.target().fill(track, Paint::dither(Color::LightGray));
-    int16_t thumbH = static_cast<int16_t>(
-        (static_cast<int32_t>(rect.height) * visible) / props.count);
-    if (thumbH < 12)
-      thumbH = 12;
-    const int32_t scrollRange = props.count - visible;
-    const int16_t thumbY = static_cast<int16_t>(
-        track.y +
-        (scrollRange > 0
-             ? (static_cast<int32_t>(track.height - thumbH) * top) / scrollRange
-             : 0));
-    frame.target().fill(Rect{track.x, thumbY, track.width, thumbH},
-                        Paint::solid(Color::Black));
+    drawListScrollIndicator(frame.target(), rect, props.count, visible, top,
+                            scrollW, scrollLeft ? 1 : 0, scrollInset);
   }
 
   // Cursor-based layout: section header rows are shorter than item rows, so
