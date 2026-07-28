@@ -94,14 +94,24 @@
 #else
 #define FREEINK_DRIVER_UC8253_X3 0
 #endif
-// Newer X3 units ship the same 792x528 glass on a UC8279d controller (Xteink
-// heads-up, 2026-07). Both X3 drivers link whenever X3 is in the build; the
-// running unit's controller is fingerprinted at boot (XteinkDetect display
-// probe) and the matching sibling profile selected before display begin().
+// UltraChip controller variants. Newer batches of several Xteink panels ship an
+// UltraChip controller in place of the original. Both are in the UC81xx KW
+// command family but are separate drivers (different power/LUT bring-up):
+//   * UC8279d — X3 (792x528), replaces the UC8253. Runs pure OTP waveforms.
+//   * UC8179  — X4 / X4 Pro (800x480), replaces the SSD1677. Needs an explicit
+//     PLL/booster/VCOM bring-up.
+// Which controller a given unit runs is resolved at boot (OEM hw_calib/screenType
+// in NVS first, then a display-bus probe) and the matching driver is selected
+// before display begin(). Link each driver wherever a batch might carry it.
 #if FREEINK_DEVICE_X3
 #define FREEINK_DRIVER_UC8279 1
 #else
 #define FREEINK_DRIVER_UC8279 0
+#endif
+#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO
+#define FREEINK_DRIVER_UC8179 1
+#else
+#define FREEINK_DRIVER_UC8179 0
 #endif
 // M5 PaperColor has two interchangeable display backends: the fast hand-rolled
 // ED2208 driver (default), or M5's official M5GFX/M5Unified path (opt in with
@@ -316,7 +326,13 @@ enum class InputStyle : uint8_t {
 // Panel controller silicon. Drivers are selected from this at begin().
 // LgfxEpd = a raw-parallel EPD with no on-glass controller, driven via LovyanGFX
 // (e.g. ED047TC1 on LilyGo T5 S3).
-enum class DisplayController : uint8_t { SSD1677, UC8253, ED2208, LgfxEpd, IT8951, UC8279 };
+// UC8179 is the UltraChip sibling that newer X4 / X4 Pro batches ship in place
+// of the SSD1677 (as UC8279 replaces UC8253 on the X3). Same UC81xx KW command
+// family, but its own driver — the UC8179 needs an explicit PLL/booster/VCOM
+// bring-up. Which one a unit carries is resolved at boot: the OEM factory value
+// in NVS (hw_calib/screenType) first, then a display-bus probe (0x70 VER / 0x71
+// FLG read, which SSD1677 lacks). See XteinkDetect::applyXteinkDisplayController.
+enum class DisplayController : uint8_t { SSD1677, UC8253, ED2208, LgfxEpd, IT8951, UC8279, UC8179 };
 
 // Optional capacitive touch controller.
 enum class TouchController : uint8_t { None, Chsc6x, Gt911 };
