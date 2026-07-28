@@ -30,7 +30,7 @@ bool tagHas(const char* tag, size_t len, const char* token) {
 
 // Extract one attribute value from a raw tag slice ('<' .. '>'). Requires
 // whitespace before the name so URI= cannot match inside another attribute.
-// ADEPT manifests are machine-generated with quoted attributes; both quote
+// These manifests are machine-generated with quoted attributes; both quote
 // styles accepted.
 bool tagAttr(const char* tag, size_t len, const char* attr, std::string* out) {
   const size_t alen = strlen(attr);
