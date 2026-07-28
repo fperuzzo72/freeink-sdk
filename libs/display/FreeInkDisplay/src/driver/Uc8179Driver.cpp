@@ -115,10 +115,11 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     memset(whiteRow, 0xFF, sizeof(whiteRow));
     whiteInit = true;
   }
-  bus.cmd(CMD_DTM2);
-  // Visible rows straight through (facade framebuffer is already panel-oriented,
-  // 0xFF = white — same convention fillPlane/sendPlane use).
-  bus.data(fb, static_cast<uint16_t>(_h) * _wb);
+  // Visible rows, bottom-to-top (the UC81xx KW convention — same as the UC8279
+  // sibling; sending natural order paints upside-down on this panel). 0xFF =
+  // white, matching fillPlane/sendPlane. The command + reversed rows go out as
+  // one CS burst; the padding then continues the same RAM write.
+  bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   // Off-screen padding rows (tresHeight - visibleHeight), white.
   for (uint16_t y = _h; y < _tresH; y++) bus.data(whiteRow, _wb);
 
