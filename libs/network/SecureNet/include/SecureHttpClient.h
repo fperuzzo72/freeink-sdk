@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -319,7 +320,8 @@ class SecureHttpClient {
   std::vector<std::pair<std::string, std::string>> getHeaders() const {
     std::vector<std::pair<std::string, std::string>> out;
     out.reserve(_responseHeaders.size());
-    for (const Header& h : _responseHeaders) out.emplace_back(h.name, h.value);
+    std::transform(_responseHeaders.begin(), _responseHeaders.end(), std::back_inserter(out),
+                   [](const Header& h) { return std::make_pair(h.name, h.value); });
     return out;
   }
 
