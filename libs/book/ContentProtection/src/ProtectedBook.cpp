@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <memory>
+#include <new>
 #include <utility>
 
 #include "ContentMinizConfig.h"
@@ -299,53 +301,60 @@ bool ProtectedBook::readEntryInflated(ByteSource& source, const std::string& nam
   const ZipEntryInfo* entry = zip_.find(name);
   if (!entry) return false;
 
-  std::vector<uint8_t> raw(entry->compressedSize);
-  if (!zip_.readRaw(source, *entry, raw.data())) return false;
+  // Only metadata documents (encryption.xml / rights.xml) are read this way.
+  // Cap them: a huge (or hostile) entry must not sink a small-heap device.
+  // encryption.xml for a many-hundred-entry book measures ~60KB.
+  constexpr size_t kMaxEntrySize = 128 * 1024;
+  const size_t outSize = entry->method == 0 ? entry->compressedSize : entry->uncompressedSize;
+  if (entry->compressedSize > kMaxEntrySize || outSize > kMaxEntrySize) {
+    lastError_ = "metadata entry too large";
+    return false;
+  }
+
+  std::unique_ptr<uint8_t[]> raw(new (std::nothrow) uint8_t[entry->compressedSize]);
+  if (!raw) {
+    lastError_ = "out of memory";
+    return false;
+  }
+  if (!zip_.readRaw(source, *entry, raw.get())) return false;
+
+  // Inflate straight into the output string: one output buffer total, where
+  // the previous shape peaked at compressed + 2x uncompressed. String growth
+  // cannot report failure (it aborts with exceptions disabled), so prove the
+  // allocation is possible with a nothrow probe first.
+  {
+    void* probe = malloc(outSize + 32);
+    if (!probe) {
+      lastError_ = "out of memory";
+      return false;
+    }
+    free(probe);
+  }
+  out->resize(outSize);
 
   if (entry->method == 0) {
-    out->assign(reinterpret_cast<const char*>(raw.data()), raw.size());
+    memcpy(out->data(), raw.get(), outSize);
     return true;
   }
   if (entry->method != 8) return false;
-
-  std::vector<uint8_t> inflated;
-  if (!inflateRaw(raw.data(), raw.size(), entry->uncompressedSize, &inflated)) return false;
-  out->assign(reinterpret_cast<const char*>(inflated.data()), inflated.size());
-  return true;
+  return inflateTo(raw.get(), entry->compressedSize, reinterpret_cast<uint8_t*>(out->data()), outSize);
 }
 
-bool ProtectedBook::inflateRaw(const uint8_t* in, size_t inLen, size_t expectedOut,
-                           std::vector<uint8_t>* out) {
-  out->clear();
-  out->reserve(expectedOut > 0 ? expectedOut : inLen * 3);
-
+bool ProtectedBook::inflateTo(const uint8_t* in, size_t inLen, uint8_t* out, size_t outLen) {
   mz_stream stream;
   memset(&stream, 0, sizeof(stream));
   stream.next_in = in;
   stream.avail_in = static_cast<unsigned int>(inLen);
+  stream.next_out = out;
+  stream.avail_out = static_cast<unsigned int>(outLen);
 
   if (mz_inflateInit2(&stream, -15) != MZ_OK) return false;
-
-  uint8_t chunk[4096];
-  int status;
-  do {
-    stream.next_out = chunk;
-    stream.avail_out = sizeof(chunk);
-    status = mz_inflate(&stream, MZ_NO_FLUSH);
-    if (status != MZ_OK && status != MZ_STREAM_END && status != MZ_BUF_ERROR) {
-      mz_inflateEnd(&stream);
-      return false;
-    }
-    const size_t produced = sizeof(chunk) - stream.avail_out;
-    out->insert(out->end(), chunk, chunk + produced);
-    if (status == MZ_BUF_ERROR && produced == 0) {
-      mz_inflateEnd(&stream);
-      return false;  // no progress possible
-    }
-  } while (status != MZ_STREAM_END);
-
+  // The whole input and output are in memory, so a single MZ_FINISH pass
+  // suffices; anything but a clean end at exactly outLen is a corrupt entry.
+  const int status = mz_inflate(&stream, MZ_FINISH);
+  const bool ok = status == MZ_STREAM_END && stream.avail_out == 0;
   mz_inflateEnd(&stream);
-  return true;
+  return ok;
 }
 
 }  // namespace content
