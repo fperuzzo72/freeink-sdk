@@ -21,8 +21,8 @@
 namespace freeink {
 
 struct Uc8179Config {
-  // PSR (0x00) byte 0: 0x1B = 0x3B & 0xDF (REG bit cleared -> OTP LUTs), KW mode,
-  // orientation/scan bits at panel default.
+  // PSR (0x00) byte 0, as written at INIT. The OEM writes 0x3B here (REG bit5=1)
+  // and re-asserts (psr0 & 0xDF)=0x1B (REG=0 -> OTP LUTs) just before every PON.
   uint8_t psr0;
   // PSR (0x00) byte 1.
   uint8_t psr1;
@@ -36,11 +36,15 @@ struct Uc8179Config {
   uint8_t e0;
   // VCOM_DC (cmd 0xE5).
   uint8_t vcomDc;
-  // CDI (0x50) byte0: full refresh vs fast/partial. byte1 is always 0x07.
-  uint8_t cdiFull;
-  uint8_t cdiFast;
-  // TCON (0x60): S2G/G2S non-overlap.
-  uint8_t tcon;
+  // CDI (0x50) byte0 asserted during a refresh (before DRF); byte1 is 0x07.
+  uint8_t cdiActive;
+  // CDI (0x50) byte0 restored after the refresh completes; byte1 is 0x07.
+  uint8_t cdiIdle;
+  // TRES (0x61) gate count. The X4 Pro panel is addressed as 800x600 even though
+  // only 480 rows are visible — the OTP waveform is tuned for the full 600-gate
+  // scan, so the DTM transfer is padded to this height. (Visible height comes
+  // from the board profile.)
+  uint16_t tresHeight;
 };
 
 const Uc8179Config& uc8179DefaultConfig();
@@ -69,14 +73,13 @@ class Uc8179Driver : public PanelDriver {
 
   const Uc8179Config& _cfg;
 
-  uint16_t _w;
-  uint16_t _h;
-  uint16_t _wb;
+  uint16_t _w;        // visible width (800)
+  uint16_t _h;        // visible height (480)
+  uint16_t _wb;       // width in bytes (100)
+  uint16_t _tresH;    // addressed gate count (600) — DTM padded to this
   uint32_t _bufferSize;
 
   bool _isScreenOn = false;
-  bool _oldPlaneSynced = false;
-  bool _forceFullSyncNext = false;
 
   // Async split state (see Uc8279Driver for the contract).
   bool _pendingRefresh = false;
