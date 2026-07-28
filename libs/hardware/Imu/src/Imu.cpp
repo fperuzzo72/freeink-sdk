@@ -39,6 +39,7 @@ constexpr uint8_t QMI8658_REG_AX_L = 0x35;
 constexpr uint8_t QMI8658_REG_GX_L = 0x3B;
 constexpr uint8_t QMI8658_CTRL1_BIG_ENDIAN = 1U << 5;
 constexpr uint8_t QMI8658_CTRL1_AUTO_INC = 1U << 6;
+constexpr uint8_t QMI8658_CTRL1_SENSOR_DISABLE = 1U << 0;
 constexpr uint8_t QMI8658_CTRL1_BASE = QMI8658_CTRL1_AUTO_INC | QMI8658_CTRL1_BIG_ENDIAN;
 constexpr uint8_t QMI8658_CTRL2_FS_2G = 0U << 4;
 constexpr uint8_t QMI8658_CTRL2_ODR_28HZ = 0x08;
@@ -168,7 +169,10 @@ bool Imu::sleep() {
     case BoardConfig::ImuType::Lsm6ds3:
       return writeReg(addr, REG_CTRL1_XL, CTRL_ODR_POWER_DOWN) && writeReg(addr, REG_CTRL2_G, CTRL_ODR_POWER_DOWN);
     case BoardConfig::ImuType::Qmi8658:
-      return writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_DISABLE_ALL);
+      // CTRL7 only disables sampling; the internal oscillator keeps running.
+      // SensorDisable is required for the QMI8658's full power-down mode.
+      return writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_DISABLE_ALL) &&
+             writeReg(addr, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE | QMI8658_CTRL1_SENSOR_DISABLE);
     case BoardConfig::ImuType::None:
       return false;
   }
@@ -182,7 +186,9 @@ bool Imu::wake() {
     case BoardConfig::ImuType::Lsm6ds3:
       return writeReg(addr, REG_CTRL1_XL, CTRL1_XL_104HZ_2G) && writeReg(addr, REG_CTRL2_G, CTRL2_G_104HZ_245DPS);
     case BoardConfig::ImuType::Qmi8658:
-      return writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
+      // Re-enable the internal oscillator before restarting the sensors.
+      return writeReg(addr, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE) &&
+             writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
     case BoardConfig::ImuType::None:
       return false;
   }
