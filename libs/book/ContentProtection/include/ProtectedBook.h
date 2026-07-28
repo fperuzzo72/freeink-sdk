@@ -57,9 +57,9 @@ class ProtectedBook {
   bool isEncrypted(const std::string& name) const;
   size_t decryptedSize(const std::string& name) const;
 
-  // Access + inflate one protected entry (in memory; chapters are small).
-  bool decryptEntry(ByteSource& source, Crypto& crypto, const std::string& name,
-                    std::vector<uint8_t>* out);
+  // Access + inflate one protected entry, streamed through the sink. The only
+  // read path: callers own their buffering, so no whole-entry allocation can
+  // hide in here.
   bool decryptEntryToSink(ByteSource& source, Crypto& crypto, const std::string& name,
                           ContentChunkSink sink, void* context);
 
@@ -76,10 +76,15 @@ class ProtectedBook {
   bool finishOpen(ByteSource& source, Crypto& crypto, const Credential& identity,
                   const std::string& rightsXmlOverride);
   bool unwrapBookKey(Crypto& crypto, const Credential& identity, uint8_t out[16]);
+  // Stream-parses encryption.xml out of the zip in chunks, keeping only path
+  // hashes. The manifest scales with the container's file count, so it is
+  // never materialized whole.
+  bool scanEncryptionXml(ByteSource& source, const ZipEntryInfo& entry);
 
   ZipScan zip_;
   Rights rights_;
-  std::vector<std::string> encryptedUris_;
+  // Sorted FNV-1a hashes of the aes128-cbc encrypted entry paths.
+  std::vector<uint64_t> encryptedUriHashes_;
   uint8_t bookKey_[16] = {0};
   bool protected_ = false;
   std::string lastError_;

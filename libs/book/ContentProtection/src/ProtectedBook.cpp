@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
 #include <memory>
 #include <new>
 #include <utility>
@@ -17,6 +18,36 @@ namespace {
 constexpr const char* kEncryptionXml = "META-INF/encryption.xml";
 constexpr const char* kRightsXml = "META-INF/rights.xml";
 constexpr size_t kRsaBlock = 128;  // RSA-1024
+
+bool tagHas(const char* tag, size_t len, const char* token) {
+  const size_t tlen = strlen(token);
+  if (tlen > len) return false;
+  for (size_t i = 0; i + tlen <= len; i++) {
+    if (memcmp(tag + i, token, tlen) == 0) return true;
+  }
+  return false;
+}
+
+// Extract one attribute value from a raw tag slice ('<' .. '>'). Requires
+// whitespace before the name so URI= cannot match inside another attribute.
+// ADEPT manifests are machine-generated with quoted attributes; both quote
+// styles accepted.
+bool tagAttr(const char* tag, size_t len, const char* attr, std::string* out) {
+  const size_t alen = strlen(attr);
+  for (size_t i = 1; i + alen + 2 < len; i++) {
+    if (memcmp(tag + i, attr, alen) != 0 || tag[i + alen] != '=') continue;
+    const char before = tag[i - 1];
+    if (before != ' ' && before != '\t' && before != '\r' && before != '\n') continue;
+    const char quote = tag[i + alen + 1];
+    if (quote != '"' && quote != '\'') continue;
+    const char* start = tag + i + alen + 2;
+    const char* end = static_cast<const char*>(memchr(start, quote, len - (start - tag)));
+    if (!end) return false;
+    out->assign(start, static_cast<size_t>(end - start));
+    return true;
+  }
+  return false;
+}
 }  // namespace
 
 bool ProtectedBook::open(ByteSource& source, Crypto& crypto, const Credential& identity,
@@ -44,23 +75,23 @@ bool ProtectedBook::openFromScan(ByteSource& source, Crypto& crypto,
 bool ProtectedBook::finishOpen(ByteSource& source, Crypto& crypto,
                                const Credential& identity,
                                const std::string& rightsXmlOverride) {
-  if (!zip_.find(kEncryptionXml)) {
+  const ZipEntryInfo* encEntry = zip_.find(kEncryptionXml);
+  if (!encEntry) {
     return true;  // plain EPUB; nothing to do
   }
 
-  std::string encryptionXml;
-  if (!readEntryInflated(source, kEncryptionXml, &encryptionXml)) {
-    lastError_ = "failed to read encryption.xml";
-    return false;
-  }
-  if (!parseEncryptionXml(encryptionXml, &encryptedUris_)) {
-    lastError_ = "failed to parse encryption.xml";
+  // Stream-parse the manifest straight out of the zip: it enumerates every
+  // encrypted resource, so its size scales with the container's file count
+  // (measured ~60KB for a many-hundred-entry book) and materializing it
+  // whole was OOM-aborting small-heap devices at open.
+  if (!scanEncryptionXml(source, *encEntry)) {
+    if (lastError_.empty()) lastError_ = "failed to read encryption.xml";
     return false;
   }
 
   // A manifest containing only embedded-font obfuscation needs no key unwrap
   // or alternate read path.
-  if (encryptedUris_.empty()) {
+  if (encryptedUriHashes_.empty()) {
     return true;  // protected_ stays false
   }
 
@@ -91,10 +122,8 @@ bool ProtectedBook::finishOpen(ByteSource& source, Crypto& crypto,
 }
 
 bool ProtectedBook::isEncrypted(const std::string& name) const {
-  for (const auto& uri : encryptedUris_) {
-    if (uri == name) return true;
-  }
-  return false;
+  return std::binary_search(encryptedUriHashes_.begin(), encryptedUriHashes_.end(),
+                            fnv1a64(name.data(), name.size()));
 }
 
 size_t ProtectedBook::decryptedSize(const std::string& name) const {
@@ -158,27 +187,6 @@ bool ProtectedBook::unwrapBookKey(Crypto& crypto, const Credential& identity, ui
   if (block[0] != 0x00 || block[1] != 0x02 || block[sizeof(block) - 16 - 1] != 0x00) return false;
   memcpy(out, block + sizeof(block) - 16, 16);
   return true;
-}
-
-bool ProtectedBook::decryptEntry(ByteSource& source, Crypto& crypto, const std::string& name,
-                             std::vector<uint8_t>* out) {
-  out->clear();
-  const ZipEntryInfo* entry = zip_.find(name);
-  if (!entry) {
-    lastError_ = "entry not found: " + name;
-    return false;
-  }
-  if (entry->uncompressedSize > 256 * 1024) {
-    lastError_ = "entry too large for in-memory read";
-    return false;
-  }
-  out->reserve(entry->uncompressedSize);
-  auto append = [](void* context, const uint8_t* data, size_t size) {
-    auto* target = static_cast<std::vector<uint8_t>*>(context);
-    target->insert(target->end(), data, data + size);
-    return true;
-  };
-  return decryptEntryToSink(source, crypto, name, append, out);
 }
 
 bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
@@ -295,6 +303,129 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
   mz_inflateEnd(&stream);
   free(buffers);
   return ok && ended;
+}
+
+bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& entry) {
+  encryptedUriHashes_.clear();
+
+  uint64_t at = 0;
+  if (!zip_.dataOffset(source, entry, &at)) {
+    lastError_ = "entry offset unavailable";
+    return false;
+  }
+  if (entry.method != 0 && entry.method != 8) return false;
+
+  constexpr size_t kChunk = 2048;
+  auto* bufs = static_cast<uint8_t*>(malloc(kChunk * 2));  // freed below; kept raw for the single free
+  if (!bufs) {
+    lastError_ = "out of memory";
+    return false;
+  }
+  uint8_t* inBuf = bufs;
+  uint8_t* outBuf = bufs + kChunk;
+
+  // Tag-level scan. Inter-tag text is discarded; only element attributes
+  // matter here. `carry` holds an unterminated tag across chunk boundaries —
+  // manifest tags run ~200 bytes, so a tag that never closes within the cap
+  // is a malformed document, not a real split.
+  std::string carry;
+  bool aes128 = false;
+  bool malformed = false;
+  std::string value;
+  auto handleTag = [&](const char* tag, size_t len) {
+    if (len < 3 || tag[1] == '/' || tag[1] == '?' || tag[1] == '!') return;
+    if (tagHas(tag, len, "EncryptionMethod")) {
+      aes128 = tagAttr(tag, len, "Algorithm", &value) && value.find("aes128-cbc") != std::string::npos;
+    } else if (tagHas(tag, len, "CipherReference")) {
+      if (aes128 && tagAttr(tag, len, "URI", &value) && !value.empty()) {
+        encryptedUriHashes_.push_back(fnv1a64(value.data(), value.size()));
+      }
+      aes128 = false;
+    }
+  };
+  auto feed = [&](const uint8_t* data, size_t size) -> bool {
+    carry.append(reinterpret_cast<const char*>(data), size);
+    size_t pos = 0;
+    for (;;) {
+      const size_t lt = carry.find('<', pos);
+      if (lt == std::string::npos) {
+        carry.clear();
+        return true;
+      }
+      const size_t gt = carry.find('>', lt);
+      if (gt == std::string::npos) {
+        carry.erase(0, lt);
+        if (carry.size() > 4096) {
+          malformed = true;
+          return false;
+        }
+        return true;
+      }
+      handleTag(carry.data() + lt, gt - lt + 1);
+      pos = gt + 1;
+    }
+  };
+
+  bool ok = true;
+  uint32_t remaining = entry.compressedSize;
+  if (entry.method == 0) {
+    while (remaining > 0 && ok) {
+      const size_t amount = remaining < kChunk ? remaining : kChunk;
+      ok = source.readAt(at, inBuf, amount) == static_cast<int32_t>(amount) && feed(inBuf, amount);
+      at += amount;
+      remaining -= static_cast<uint32_t>(amount);
+    }
+  } else {
+    mz_stream stream;
+    memset(&stream, 0, sizeof(stream));
+    if (mz_inflateInit2(&stream, -15) != MZ_OK) {
+      free(bufs);
+      return false;
+    }
+    bool ended = false;
+    while (remaining > 0 && ok && !ended) {
+      const size_t amount = remaining < kChunk ? remaining : kChunk;
+      if (source.readAt(at, inBuf, amount) != static_cast<int32_t>(amount)) {
+        ok = false;
+        break;
+      }
+      at += amount;
+      remaining -= static_cast<uint32_t>(amount);
+      stream.next_in = inBuf;
+      stream.avail_in = static_cast<unsigned int>(amount);
+      size_t produced;
+      do {
+        const unsigned int before = stream.avail_in;
+        stream.next_out = outBuf;
+        stream.avail_out = kChunk;
+        const int status = mz_inflate(&stream, MZ_NO_FLUSH);
+        produced = kChunk - stream.avail_out;
+        if (produced && !feed(outBuf, produced)) {
+          ok = false;
+          break;
+        }
+        if (status == MZ_STREAM_END) {
+          ended = true;
+          break;
+        }
+        if (status != MZ_OK && status != MZ_BUF_ERROR) {
+          ok = false;
+          break;
+        }
+        if (status == MZ_BUF_ERROR && produced == 0 && stream.avail_in == before) break;
+      } while (stream.avail_in > 0 || produced == kChunk);
+    }
+    mz_inflateEnd(&stream);
+    ok = ok && ended;
+  }
+  free(bufs);
+
+  if (!ok || malformed) {
+    if (lastError_.empty()) lastError_ = "encryption manifest unreadable";
+    return false;
+  }
+  std::sort(encryptedUriHashes_.begin(), encryptedUriHashes_.end());
+  return true;
 }
 
 bool ProtectedBook::readEntryInflated(ByteSource& source, const std::string& name, std::string* out) {

@@ -19,8 +19,11 @@
 namespace freeink {
 namespace content {
 
+// Entry names are held as FNV-1a 64-bit hashes: a fixed 20 bytes per entry
+// instead of a heap string apiece, which for many-hundred-file containers
+// keeps ~tens of KB out of a session-resident index.
 struct ZipEntryInfo {
-  std::string name;
+  uint64_t nameHash = 0;
   uint32_t compressedSize = 0;
   uint32_t uncompressedSize = 0;
   uint32_t localHeaderOffset = 0;
@@ -33,7 +36,6 @@ class ZipScan {
   bool open(ByteSource& source);
 
   const ZipEntryInfo* find(const std::string& name) const;
-  const std::vector<ZipEntryInfo>& entries() const { return entries_; }
 
   // Offset of an entry's raw stored data (past its local header).
   bool dataOffset(ByteSource& source, const ZipEntryInfo& entry, uint64_t* out) const;

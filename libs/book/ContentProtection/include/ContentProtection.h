@@ -16,15 +16,15 @@ namespace content {
 
 using ContentChunkSink = bool (*)(void* context, const uint8_t* data, size_t size);
 
-// Provides in-memory access to protected items of an opened container.
+// Provides streamed access to protected items of an opened container.
 class ContentDecryptor {
  public:
   virtual ~ContentDecryptor() = default;
   // Is this container-relative item stored encrypted?
   virtual bool isEncrypted(const std::string& itemPath) const = 0;
-  // Read one protected item fully into `out` (transient, RAM only).
-  virtual bool decrypt(const std::string& itemPath, std::vector<uint8_t>& out) = 0;
   virtual size_t decryptedSize(const std::string& itemPath) const = 0;
+  // Read one protected item as chunks through the sink; the caller owns all
+  // buffering (no whole-entry allocation happens on this side).
   virtual bool decryptToSink(const std::string& itemPath, ContentChunkSink sink,
                              void* context) = 0;
 };

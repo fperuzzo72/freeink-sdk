@@ -10,6 +10,18 @@
 namespace freeink {
 namespace content {
 
+// FNV-1a 64-bit. Entry paths are tracked as hashes (8 bytes each instead of a
+// heap string apiece); at 64 bits a collision within one container's few
+// hundred names is negligible.
+inline uint64_t fnv1a64(const char* s, size_t n) {
+  uint64_t h = 1469598103934665603ULL;
+  for (size_t i = 0; i < n; i++) {
+    h ^= static_cast<uint8_t>(s[i]);
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
 inline int b64Val(char c) {
   if (c >= 'A' && c <= 'Z') return c - 'A';
   if (c >= 'a' && c <= 'z') return c - 'a' + 26;

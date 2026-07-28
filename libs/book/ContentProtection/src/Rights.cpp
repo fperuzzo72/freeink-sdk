@@ -8,13 +8,6 @@ namespace content {
 
 namespace {
 
-std::string attrValue(const XmlScanner::Event& ev, const char* name) {
-  for (const auto& a : ev.attrs) {
-    if (a.name == name) return a.value;
-  }
-  return std::string();
-}
-
 std::string trim(const std::string& s) {
   const size_t a = s.find_first_not_of(" \t\r\n");
   if (a == std::string::npos) return std::string();
@@ -91,27 +84,6 @@ bool parseRightsXml(const std::string& xml, Rights* out) {
   }
 
   return !out->encryptedKey.empty();
-}
-
-bool parseEncryptionXml(const std::string& xml, std::vector<std::string>* uris) {
-  XmlScanner scanner(xml);
-  bool aes128 = false;
-  for (;;) {
-    XmlScanner::Event ev = scanner.nextEvent();
-    if (ev.type == XmlScanner::Event::DONE) break;
-    if (ev.type == XmlScanner::Event::ERROR) return false;
-    if (ev.type != XmlScanner::Event::START) continue;
-
-    if (XmlScanner::named(ev.name, "EncryptionMethod")) {
-      const std::string algo = attrValue(ev, "Algorithm");
-      aes128 = algo.find("aes128-cbc") != std::string::npos;
-    } else if (XmlScanner::named(ev.name, "CipherReference")) {
-      const std::string uri = attrValue(ev, "URI");
-      if (aes128 && !uri.empty()) uris->push_back(uri);
-      aes128 = false;
-    }
-  }
-  return true;
 }
 
 }  // namespace content

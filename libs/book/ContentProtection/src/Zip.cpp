@@ -2,6 +2,10 @@
 
 #include <string.h>
 
+#include <algorithm>
+
+#include "Util.h"
+
 namespace freeink {
 namespace content {
 
@@ -40,10 +44,10 @@ bool ZipScan::open(ByteSource& source) {
   const uint32_t cdOffset = rd32(&tail[static_cast<size_t>(eocd) + 16]);
 
   entries_.clear();
-  // Cap the reserve hint: `count` is an untrusted uint16 (up to 65535) and each
-  // entry holds a std::string, so a crafted EOCD could force a multi-MB reserve
-  // that OOMs a low-heap device. The loop still handles a genuinely large
-  // directory — it just grows as valid entries are actually read.
+  // Cap the reserve hint: `count` is an untrusted uint16 (up to 65535), so a
+  // crafted EOCD could force an outsized reserve that OOMs a low-heap device.
+  // The loop still handles a genuinely large directory — it just grows as
+  // valid entries are actually read.
   entries_.reserve(count < 256 ? count : 256);
 
   uint8_t header[46];
@@ -63,19 +67,21 @@ bool ZipScan::open(ByteSource& source) {
     if (nameLen > 0 && nameLen < 512) {
       char name[512];
       if (source.readAt(p + 46, name, nameLen) != nameLen) return false;
-      e.name.assign(name, nameLen);
-      entries_.push_back(std::move(e));
+      e.nameHash = fnv1a64(name, nameLen);
+      entries_.push_back(e);
     }
     p += 46 + nameLen + extraLen + commentLen;
   }
+  std::sort(entries_.begin(), entries_.end(),
+            [](const ZipEntryInfo& a, const ZipEntryInfo& b) { return a.nameHash < b.nameHash; });
   return true;
 }
 
 const ZipEntryInfo* ZipScan::find(const std::string& name) const {
-  for (const auto& e : entries_) {
-    if (e.name == name) return &e;
-  }
-  return nullptr;
+  const uint64_t hash = fnv1a64(name.data(), name.size());
+  const auto it = std::lower_bound(entries_.begin(), entries_.end(), hash,
+                                   [](const ZipEntryInfo& e, uint64_t h) { return e.nameHash < h; });
+  return (it != entries_.end() && it->nameHash == hash) ? &*it : nullptr;
 }
 
 bool ZipScan::dataOffset(ByteSource& source, const ZipEntryInfo& entry, uint64_t* out) const {

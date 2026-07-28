@@ -24,9 +24,5 @@ struct Rights {
 // encryptedKey. Expiry comes from permissions/display (until or duration).
 bool parseRightsXml(const std::string& xml, Rights* out);
 
-// Parses META-INF/encryption.xml; appends the URIs of aes128-cbc-encrypted
-// resources to `uris`. Returns false on malformed input.
-bool parseEncryptionXml(const std::string& xml, std::vector<std::string>* uris);
-
 }  // namespace content
 }  // namespace freeink
