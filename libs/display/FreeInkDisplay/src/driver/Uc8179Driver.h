@@ -34,8 +34,10 @@ struct Uc8179Config {
   uint8_t e1;
   // cmd 0xE0.
   uint8_t e0;
-  // VCOM_DC (cmd 0xE5).
+  // VCOM_DC (cmd 0xE5) for a full refresh.
   uint8_t vcomDc;
+  // VCOM_DC (cmd 0xE5) for a fast/partial refresh (the OEM uses a different value).
+  uint8_t vcomDcFast;
   // CDI (0x50) byte0 asserted during a refresh (before DRF); byte1 is 0x07.
   uint8_t cdiActive;
   // CDI (0x50) byte0 restored after the refresh completes; byte1 is 0x07.
@@ -68,8 +70,24 @@ class Uc8179Driver : public PanelDriver {
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
 
+  // --- 4-level grayscale (anti-aliasing) ---
+  // Two full 1bpp planes encode 4 levels: LSB -> DTM 0x10 ("old"), MSB -> DTM
+  // 0x13 ("new"); the OTP gray waveform resolves (old,new) -> {black, 2 mids,
+  // white}. Full-buffer path only (supportsStripGrayscale stays false — the
+  // UC8179 has no RAM-window addressing and our row-reversal orientation can't
+  // span strips; the X4 Pro's PSRAM absorbs the two full planes).
+  void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
+  void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
+  void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+  void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+
  private:
   void initController(EpdBus& bus);
+  // Stream a framebuffer into a RAM plane (ramCmd): mirror-Y via row reversal
+  // (sendPlaneFlipped, as the UC8279 sibling does), padded with white to the
+  // addressed gate count. Mirror-X is done in hardware via the PSR SHL bit. Used
+  // for both the NEW plane (0x13) and the OLD-plane sync (0x10).
+  void streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb);
 
   const Uc8179Config& _cfg;
 
@@ -80,10 +98,14 @@ class Uc8179Driver : public PanelDriver {
   uint32_t _bufferSize;
 
   bool _isScreenOn = false;
+  // Force the first refresh after begin() to a full flash, so a partial update
+  // never runs against an unknown on-screen state (e.g. a retained boot image).
+  bool _needFullClear = true;
 
   // Async split state (see Uc8279Driver for the contract).
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;
+  bool _pendingPartial = false;  // this refresh used the PTIN/PTOUT partial path
 };
 
 PanelDriver& uc8179Driver();
