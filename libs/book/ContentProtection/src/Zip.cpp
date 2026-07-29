@@ -3,6 +3,8 @@
 #include <string.h>
 
 #include <algorithm>
+#include <memory>
+#include <new>
 
 #include "Util.h"
 
@@ -25,23 +27,35 @@ bool ZipScan::open(ByteSource& source) {
   const uint64_t size = source.size();
   if (size < 22) return false;
 
-  // EOCD lives in the last 64KB + 22 bytes.
-  const uint64_t window = size < (0xFFFF + 22) ? size : (0xFFFF + 22);
-  const uint64_t windowStart = size - window;
-  std::vector<uint8_t> tail(static_cast<size_t>(window));
-  if (source.readAt(windowStart, tail.data(), static_cast<uint32_t>(window)) < 0) return false;
-
+  // EOCD lives in the last (zip comment length + 22) bytes. The spec allows a
+  // 64KB comment, but real containers have none, so search a small tail first
+  // and widen only when it's genuinely absent — the common path must never
+  // demand a 64KB contiguous block (measured aborting on the fragmented heap
+  // a reading session leaves). All buffers are nothrow: running out of memory
+  // fails the scan instead of the device.
   int64_t eocd = -1;
-  for (int64_t i = static_cast<int64_t>(window) - 22; i >= 0; i--) {
-    if (rd32(&tail[static_cast<size_t>(i)]) == EOCD_SIG) {
-      eocd = i;
-      break;
+  uint64_t window = 0;
+  std::unique_ptr<uint8_t[]> tail;
+  const uint64_t attempts[] = {4 * 1024, 0xFFFF + 22};
+  for (const uint64_t attempt : attempts) {
+    window = size < attempt ? size : attempt;
+    const uint64_t windowStart = size - window;
+    tail.reset(new (std::nothrow) uint8_t[static_cast<size_t>(window)]);
+    if (!tail) return false;
+    if (source.readAt(windowStart, tail.get(), static_cast<uint32_t>(window)) < 0) return false;
+    for (int64_t i = static_cast<int64_t>(window) - 22; i >= 0; i--) {
+      if (rd32(&tail[static_cast<size_t>(i)]) == EOCD_SIG) {
+        eocd = i;
+        break;
+      }
     }
+    if (eocd >= 0 || window == size) break;
   }
   if (eocd < 0) return false;
 
   const uint16_t count = rd16(&tail[static_cast<size_t>(eocd) + 10]);
   const uint32_t cdOffset = rd32(&tail[static_cast<size_t>(eocd) + 16]);
+  tail.reset();  // the entry loop reads from the source; free the window first
 
   entries_.clear();
   // Cap the reserve hint: `count` is an untrusted uint16 (up to 65535), so a
