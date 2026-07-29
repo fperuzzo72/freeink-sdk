@@ -44,6 +44,9 @@
 #if FREEINK_DRIVER_IT8951
 #include "driver/It8951Driver.h"
 #endif
+#if FREEINK_DRIVER_SSD1683
+#include "driver/Ssd1683Driver.h"
+#endif
 
 namespace freeink {
 namespace {
@@ -132,6 +135,8 @@ void FreeInkDisplay::selectDriver() {
     default:
 #if FREEINK_DRIVER_SSD1677
       _driver = &ssd1677Driver();
+#elif FREEINK_DRIVER_SSD1683
+      _driver = &ssd1683Driver();
 #elif FREEINK_DRIVER_UC8253_MURPHY
       _driver = &uc8253MurphyDriver();
 #elif FREEINK_DRIVER_M5_OFFICIAL
@@ -702,6 +707,14 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
   _driver->displayGray(_bus, frameBuffer, turnOffScreen, lut, factoryMode);
 }
 
+void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH) {
+  if (_inverted) return;
+  syncPendingAsync();
+  _shadowValid = false;
+  _redRamSynced = false;
+  _driver->displayGrayCalibration(_bus, frameBuffer, customX, customY, customW, customH);
+}
+
 void FreeInkDisplay::refreshDisplay(RefreshMode mode, bool turnOffScreen) { displayBuffer(mode, turnOffScreen); }
 
 void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
@@ -784,6 +797,20 @@ void FreeInkDisplay::requestResync(uint8_t settlePasses) {
 
 void FreeInkDisplay::skipInitialResync() {
   if (_driver) _driver->skipInitialResync();
+}
+
+void FreeInkDisplay::abortPostRefresh() {
+  if (_driver) _driver->abortPostRefresh();
+}
+
+bool FreeInkDisplay::postRefreshAborted() const {
+  return _driver && _driver->postRefreshAborted();
+}
+
+void FreeInkDisplay::runMaintenance() {
+  if (!_driver) return;
+  syncPendingAsync();
+  _driver->runMaintenance(_bus);
 }
 
 void FreeInkDisplay::requestCompleteWaveformNextRefresh() {

@@ -4,6 +4,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+extern "C" void freeink_board_epd_power(bool enabled) __attribute__((weak));
+extern "C" void freeink_board_epd_reset(bool high) __attribute__((weak));
+
 namespace freeink {
 
 // ── ISR-driven waveform-completion notification ──────────────────────────────
@@ -43,13 +46,16 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     pinMode(pins.powerEnable, OUTPUT);
     digitalWrite(pins.powerEnable, HIGH);
     delay(100);
+  } else if (freeink_board_epd_power) {
+    freeink_board_epd_power(true);
+    delay(100);
   }
 
   SPI.begin(pins.sclk, spiMiso, pins.mosi, pins.cs);
 
   pinMode(pins.cs, OUTPUT);
   pinMode(pins.dc, OUTPUT);
-  pinMode(pins.rst, OUTPUT);
+  if (pins.rst >= 0) pinMode(pins.rst, OUTPUT);
   pinMode(pins.busy, busy == BusyPolarity::ActiveLow ? INPUT_PULLUP : INPUT);
   if (_coCs >= 0) {
     pinMode(_coCs, OUTPUT);
@@ -60,12 +66,19 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 }
 
 void EpdBus::reset(uint16_t extraSettleMs) {
-  digitalWrite(_pins.rst, HIGH);
-  delay(20);
-  digitalWrite(_pins.rst, LOW);
-  delay(2);
-  digitalWrite(_pins.rst, HIGH);
-  delay(20);
+  const auto setReset = [this](bool high) {
+    if (_pins.rst >= 0) {
+      digitalWrite(_pins.rst, high ? HIGH : LOW);
+    } else if (freeink_board_epd_reset) {
+      freeink_board_epd_reset(high);
+    }
+  };
+  setReset(true);
+  delay(10);
+  setReset(false);
+  delay(10);
+  setReset(true);
+  delay(10);
   if (extraSettleMs) {
     delay(extraSettleMs);
   }

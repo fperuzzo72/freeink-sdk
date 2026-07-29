@@ -128,11 +128,31 @@ class PanelDriver {
     (void)factoryMode;
     display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
   }
+  // Diagnostic four-gray comparison. The full frame is first rendered with
+  // the controller's flashing OTP waveform; `custom*` is then rebuilt with the
+  // driver's non-flashing grayscale path. Default drivers keep the OTP frame.
+  virtual void displayGrayCalibration(EpdBus& bus, const uint8_t* fb, uint16_t customX, uint16_t customY,
+                                      uint16_t customW, uint16_t customH) {
+    (void)customX;
+    (void)customY;
+    (void)customW;
+    (void)customH;
+    displayGray(bus, fb, false, nullptr, true);
+  }
   virtual void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) { (void)bus; (void)bw; }
 
   // --- optional, controller-specific hooks (no-op by default) ---
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
   virtual void skipInitialResync() {}
+  // Cancel optional work which follows the primary B/W refresh (grayscale
+  // refinement or ghost cleanup). Drivers should only stop between panel
+  // waveforms: an already-triggered waveform must still run to completion.
+  virtual void abortPostRefresh() {}
+  virtual bool postRefreshAborted() const { return false; }
+  // Run deferred panel maintenance after the visible frame has been committed.
+  // The default is deliberately empty; only panels with a non-flashing cleanup
+  // waveform need it.
+  virtual void runMaintenance(EpdBus& bus) { (void)bus; }
   virtual void requestCompleteWaveformNextRefresh() {}
   // Interrupted-refresh cutoff tuning (ED2208: where the gate scan freezes).
   virtual void setFastRefreshCutoffMs(uint16_t ms) { (void)ms; }
