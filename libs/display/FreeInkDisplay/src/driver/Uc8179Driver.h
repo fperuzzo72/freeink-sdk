@@ -101,6 +101,10 @@ class Uc8179Driver : public PanelDriver {
   // Force the first refresh after begin() to a full flash, so a partial update
   // never runs against an unknown on-screen state (e.g. a retained boot image).
   bool _needFullClear = true;
+  // True once the OLD plane (0x10) holds a valid previous displayed frame, so a
+  // differential partial has a real baseline to diff against (no ghosting).
+  // Cleared after grayscale (which overwrites the planes) so the next B/W is full.
+  bool _oldPlaneValid = false;
 
   // Async split state (see Uc8279Driver for the contract).
   bool _pendingRefresh = false;

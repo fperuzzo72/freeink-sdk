@@ -125,22 +125,28 @@ void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb) {
 bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;
   // Full OTP flash on an explicit Full request or the forced first-clear;
-  // otherwise the OEM PARTIAL refresh (PTIN/PTOUT). Both write the same planes
-  // (0x13 = new, 0x10 = flat 0xFF) and run OTP; fast differs ONLY by the frame-
-  // rate lever (E5=0x5A + 0x03/0xE1) and the PTIN/PTOUT wrap — that is what makes
-  // it shorter and non-flashing (verified byte-for-byte against stock).
-  const bool fast = (mode != RefreshMode::Full) && !_needFullClear;
+  // otherwise a DIFFERENTIAL partial refresh (PTIN/PTOUT). Fast additionally uses
+  // the frame-rate lever (E5=0x5A + 0x03/0xE1) that shortens the waveform.
+  //
+  // GHOSTING FIX: the OLD plane (0x10) MUST hold the PREVIOUS displayed frame for
+  // a partial, not a flat 0xFF. In KW mode the (old,new) pair selects the per-
+  // pixel LUT; with old=0xFF only WW/WK fire (white-stays and white->black), so
+  // KW (black->white) NEVER runs and last page's text is never erased = heavy
+  // ghosting. Feeding the previous frame lets KW clear it. (0x10 is synced to the
+  // just-displayed frame in displayFinish; a full refresh reseeds it to white.)
+  const bool fast = (mode != RefreshMode::Full) && !_needFullClear && _oldPlaneValid;
 
-  // NEW plane (0x13) = new frame; OLD plane (0x10) = flat 0xFF (both modes, per
-  // the OEM DTM writer — it never seeds the previous frame).
+  // NEW plane (0x13) = new frame.
   streamPlane(bus, CMD_DTM2, fb);
-  {
+  if (!fast) {
+    // Full flash: seed OLD plane white for the absolute GC-from-white waveform.
     uint8_t whiteRow[128];
     const uint16_t wb = _wb <= sizeof(whiteRow) ? _wb : sizeof(whiteRow);
     memset(whiteRow, 0xFF, wb);
     bus.cmd(CMD_DTM1);
     for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
   }
+  // (Fast: OLD plane already holds the previous frame from the last displayFinish.)
 
   // --- Refresh setup (exact OEM order) -----------------------------------------
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
@@ -194,6 +200,12 @@ void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_cfg.cdiIdle);  // 0xA9
   bus.data(CDI_INTERVAL);
+
+  // Sync the OLD plane (0x10) with the just-displayed frame so the NEXT partial
+  // diffs against it (KW clears erased pixels -> no ghosting). This is the piece
+  // that makes fast page turns clean.
+  streamPlane(bus, CMD_DTM1, fb);
+  _oldPlaneValid = true;
   _needFullClear = false;
 
   if (_pendingTurnOff) {
@@ -271,14 +283,16 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   // The panel now holds grayscale planes; the next B/W refresh must be a full
   // flash (a partial diff can't run against gray plane content).
   _needFullClear = true;
+  _oldPlaneValid = false;
 }
 
 void Uc8179Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   (void)bus;
   (void)bw;
-  // The B/W path always seeds a flat old plane, so there is no baseline to
-  // resync — just force the next B/W refresh to a full flash to clear the gray.
+  // Gray overwrote both planes, so the differential baseline is gone — force the
+  // next B/W refresh to a full flash (which reseeds the old plane).
   _needFullClear = true;
+  _oldPlaneValid = false;
 }
 
 // Per-board config injection, same idiom as the other drivers: define
