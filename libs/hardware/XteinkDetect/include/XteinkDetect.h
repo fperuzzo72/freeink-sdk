@@ -60,6 +60,36 @@ enum class X3DisplayVerdict : uint8_t { Uc8253Assumed, Uc8279Confirmed, Inconclu
 // FREEINK_DEVICE_X3 this is a no-op returning Uc8253Assumed.
 X3DisplayVerdict detectX3DisplayController(uint8_t verBytes[5] = nullptr, uint8_t* flg = nullptr);
 
+// --- Board-agnostic display-controller fingerprint ---------------------------
+// Newer production runs of several Xteink panels swap their default controller
+// for an UltraChip sibling that shares the UC81xx KW-mode command set: the X3's
+// UC8253 -> UC8279d, and the X4 / X4 Pro's SSD1677 -> UC8179. All UC81xx parts
+// answer a VER (0x70) / FLG (0x71) read; the SSD-family and UC8253 parts do not
+// answer 0x70 the same way, so a matching UC81xx signature in two independent
+// passes confirms the sibling silicon. Unlike detectX3DisplayController (which
+// hard-codes the X3 C3 pinout), this reads the pins from BoardConfig::ACTIVE,
+// so it works on any Xteink profile — including the S3 X4 Pro, where the X3 I2C
+// probe would be unsafe. Bit-bangs a half-duplex 4-wire SPI after a reset pulse
+// and leaves the pins released; safe to call before FreeInkDisplay::begin().
+enum class DisplayControllerVerdict : uint8_t { PrimaryAssumed, Uc81xxConfirmed, Inconclusive };
+
+DisplayControllerVerdict detectXteinkDisplayController(uint8_t verBytes[5] = nullptr, uint8_t* flg = nullptr);
+
+// Convenience: resolve which panel controller this unit carries and, when it is
+// the UltraChip sibling, promote BoardConfig::ACTIVE.displayController to it
+// (SSD1677 -> UC8179, UC8253 -> UC8279) so FreeInkDisplay::begin() selects the
+// matching driver. Resolution order:
+//   1. The OEM factory value in NVS (namespace hw_calib, key screenType) — never
+//      rewritten by the factory, so authoritative when present; the bus probe is
+//      skipped entirely.
+//   2. Otherwise the display-bus probe (detectXteinkDisplayController()).
+// Leaves the profile's default controller in place otherwise (a valid non-
+// UltraChip factory value, or an Inconclusive probe, never switches — a flaky
+// boot falls back to the shipping controller). Returns true iff the controller
+// was promoted. Call before FreeInkDisplay::begin(). In builds without a
+// probe-capable profile this is a no-op returning false.
+bool applyXteinkDisplayController();
+
 // Convenience: run detectXteinkIsX3(), set BoardConfig::ACTIVE to the matching
 // profile via selectDevice(), and return whether an X3 was detected (so the
 // caller can put FreeInkDisplay in X3 mode with setDisplayX3()). On a

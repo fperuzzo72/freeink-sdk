@@ -94,14 +94,24 @@
 #else
 #define FREEINK_DRIVER_UC8253_X3 0
 #endif
-// Newer X3 units ship the same 792x528 glass on a UC8279d controller (Xteink
-// heads-up, 2026-07). Both X3 drivers link whenever X3 is in the build; the
-// running unit's controller is fingerprinted at boot (XteinkDetect display
-// probe) and the matching sibling profile selected before display begin().
+// UltraChip controller variants. Newer batches of several Xteink panels ship an
+// UltraChip controller in place of the original. Both are in the UC81xx KW
+// command family but are separate drivers (different power/LUT bring-up):
+//   * UC8279d — X3 (792x528), replaces the UC8253. Runs pure OTP waveforms.
+//   * UC8179  — X4 / X4 Pro (800x480), replaces the SSD1677. Needs an explicit
+//     PLL/booster/VCOM bring-up.
+// Which controller a given unit runs is resolved at boot (OEM hw_calib/screenType
+// in NVS first, then a display-bus probe) and the matching driver is selected
+// before display begin(). Link each driver wherever a batch might carry it.
 #if FREEINK_DEVICE_X3
 #define FREEINK_DRIVER_UC8279 1
 #else
 #define FREEINK_DRIVER_UC8279 0
+#endif
+#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO
+#define FREEINK_DRIVER_UC8179 1
+#else
+#define FREEINK_DRIVER_UC8179 0
 #endif
 // M5 PaperColor has two interchangeable display backends: the fast hand-rolled
 // ED2208 driver (default), or M5's official M5GFX/M5Unified path (opt in with
@@ -316,7 +326,13 @@ enum class InputStyle : uint8_t {
 // Panel controller silicon. Drivers are selected from this at begin().
 // LgfxEpd = a raw-parallel EPD with no on-glass controller, driven via LovyanGFX
 // (e.g. ED047TC1 on LilyGo T5 S3).
-enum class DisplayController : uint8_t { SSD1677, UC8253, ED2208, LgfxEpd, IT8951, UC8279 };
+// UC8179 is the UltraChip sibling that newer X4 / X4 Pro batches ship in place
+// of the SSD1677 (as UC8279 replaces UC8253 on the X3). Same UC81xx KW command
+// family, but its own driver — the UC8179 needs an explicit PLL/booster/VCOM
+// bring-up. Which one a unit carries is resolved at boot: the OEM factory value
+// in NVS (hw_calib/screenType) first, then a display-bus probe (0x70 VER / 0x71
+// FLG read, which SSD1677 lacks). See XteinkDetect::applyXteinkDisplayController.
+enum class DisplayController : uint8_t { SSD1677, UC8253, ED2208, LgfxEpd, IT8951, UC8279, UC8179 };
 
 // Optional capacitive touch controller.
 enum class TouchController : uint8_t { None, Chsc6x, Gt911 };
@@ -686,7 +702,17 @@ constexpr BoardProfile XTEINK_X4 = {Board::XteinkX4,
                                     NO_LEDS,
                                     NO_FLIP,
                                     NO_SDMMC,
-                                    NO_GAUGE};
+                                    NO_GAUGE,
+                                    NO_MIC,
+                                    NO_SENSORS,
+                                    1.0f,
+                                    // GPIO13 gates the battery MOSFET. Known units self-latch through a
+                                    // pull once the power button bridges the rail, so firmware never had
+                                    // to assert it — but at least one hardware revision in the field does
+                                    // not self-latch and stays powered only while the button is held.
+                                    // Asserting the latch is a no-op on self-latching units. Driving it
+                                    // LOW is the battery power-off (see consumers' deep-sleep path).
+                                    {13, PIN_UNASSIGNED}};
 
 // --- Xteink X3 — ESP32-C3, UC8253 (792x528) ----------------------------------
 // Same board/pinout as X4; differs only in panel controller + size. Selected at
@@ -1172,6 +1198,8 @@ constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X4;
 // own hardware detection, before any pin is used.
 inline BoardProfile ACTIVE = DEFAULT_DEVICE;
 
+inline void holdPowerRails();  // defined below; used by selectDevice()
+
 // Set ACTIVE to one of the devices compiled into this build. Returns false (and
 // leaves ACTIVE unchanged) if `which` was not included via -DFREEINK_DEVICE_*.
 inline bool selectDevice(Board which) {
@@ -1179,55 +1207,60 @@ inline bool selectDevice(Board which) {
 #if FREEINK_DEVICE_X4
     case Board::XteinkX4:
       ACTIVE = XTEINK_X4;
-      return true;
+      break;
 #endif
 #if FREEINK_DEVICE_X3
     case Board::XteinkX3:
       ACTIVE = XTEINK_X3;
-      return true;
+      break;
     case Board::XteinkX3Uc8279:
       ACTIVE = XTEINK_X3_UC8279;
-      return true;
+      break;
 #endif
 #if FREEINK_DEVICE_M5
     case Board::M5StackPaperColor:
       ACTIVE = M5STACK_PAPER_COLOR;
-      return true;
+      break;
 #endif
 #if FREEINK_DEVICE_MURPHY
     case Board::MurphyM3:
       ACTIVE = MURPHY_M3;
-      return true;
+      break;
 #endif
 #if FREEINK_DEVICE_DELINK
     case Board::DeLink:
       ACTIVE = DE_LINK;
-      return true;
+      break;
 #endif
 #if FREEINK_DEVICE_LILYGO
     case Board::LilyGoT5S3:
       ACTIVE = LILYGO_T5S3;
-      return true;
+      break;
 #endif
 #if FREEINK_DEVICE_M5PAPER
     case Board::M5PaperV11:
       ACTIVE = M5PAPER_V11;
-      return true;
+      break;
 #endif
 #if FREEINK_DEVICE_STICKY
     case Board::Sticky:
       ACTIVE = STICKY;
-      return true;
+      break;
 #endif
 #if FREEINK_DEVICE_X4PRO
     case Board::XteinkX4Pro:
       ACTIVE = XTEINK_X4_PRO;
-      return true;
+      break;
 #endif
     default:
-      break;
+      return false;
   }
-  return false;
+  // Runtime-selected boards resolve after the consumer's first-thing-in-setup()
+  // holdPowerRails() call (the dual X3+X4 binary boots with the X4 profile and
+  // detects the real board here), so re-assert the selected board's latch pins
+  // now that they are known.
+  holdPowerRails();
+  return true;
 }
 
 inline bool isM5StackPaperColor() { return ACTIVE.board == Board::M5StackPaperColor; }
@@ -1248,6 +1281,10 @@ inline bool hasAudio() { return ACTIVE.audio.output != AudioOutput::None; }
 inline void holdPowerRails() {
   for (const int8_t pin : {ACTIVE.power.latch0, ACTIVE.power.latch1}) {
     if (pin >= 0) {
+      // A previous power-off may have latched the pin LOW with gpio_hold_en —
+      // a state that survives a reset and a USB-powered deep-sleep wake, and
+      // silently defeats the digitalWrite below. Release it first.
+      gpio_hold_dis(static_cast<gpio_num_t>(pin));
       pinMode(pin, OUTPUT);
       digitalWrite(pin, HIGH);
     }

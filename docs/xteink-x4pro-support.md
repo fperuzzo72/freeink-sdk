@@ -1,14 +1,19 @@
 # Xteink X4 Pro
 
-ESP32-S3 (16 MB flash, 8 MB PSRAM) e-reader. **SSD1677 800×480 B/W** panel (same
-controller as X4 / de-link / Sticky), **GT911** capacitive touch, and a **dual
-warm/cold color-temperature frontlight**. Distinct device from the ESP32-C3
-`XTEINK_X4` — it has its own S3 profile, `BoardConfig::XTEINK_X4_PRO`.
+ESP32-S3 (16 MB flash, 8 MB PSRAM) e-reader. 800×480 B/W panel, **GT911**
+capacitive touch, and a **dual warm/cold color-temperature frontlight**. Distinct
+device from the ESP32-C3 `XTEINK_X4` — it has its own S3 profile,
+`BoardConfig::XTEINK_X4_PRO`.
+
+The panel controller **varies by production batch**: original units carry an
+**SSD1677**, newer batches a **UC8179** (an UltraChip part). Both drive the same
+800×480 glass and the same pinout; the SDK selects the right driver at boot — see
+[Display controller variants](#display-controller-variants--runtime-detection).
 
 Build: `-DFREEINK_DEVICE_X4PRO=1` (see `platformio.sample.ini` `[env:x4pro]`).
-`FREEINK_DRIVER_SSD1677`, `FREEINK_CAP_TOUCH`, and `FREEINK_CAP_FRONTLIGHT`
-auto-enable. The SD path additionally requires `USE_BLOCK_DEVICE_INTERFACE=1` in
-the consumer build (the `x4pro` env defines it).
+`FREEINK_DRIVER_SSD1677`, `FREEINK_DRIVER_UC8179`, `FREEINK_CAP_TOUCH`, and
+`FREEINK_CAP_FRONTLIGHT` auto-enable. The SD path additionally requires
+`USE_BLOCK_DEVICE_INTERFACE=1` in the consumer build (the `x4pro` env defines it).
 
 This doc reflects a hardware bring-up + reverse-engineering session. Items are
 marked **Confirmed on hardware** where directly probed, **Corrected** where an

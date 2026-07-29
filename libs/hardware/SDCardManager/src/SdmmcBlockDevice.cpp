@@ -42,12 +42,11 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     return false;
   }
 
-  // The slot's INTERNAL_PULLUP flag frequently does NOT engage on ESP32-S3 SDMMC
-  // pins routed through the GPIO matrix, leaving CMD/DAT floating — the card's
-  // command line works but the first data read (ACMD13/SSR) times out. Force the
-  // pull-ups explicitly after the driver has claimed the pins.
-  gpio_pullup_en(static_cast<gpio_num_t>(pins.cmd));
-  gpio_pullup_en(static_cast<gpio_num_t>(pins.d0));
+  // NOTE: we used to force gpio_pullup_en() on CMD/DAT0 here (the slot's
+  // INTERNAL_PULLUP flag doesn't always engage on GPIO-matrix SDMMC pins). It proved
+  // redundant once the GPIO5 power-cycle below was in place — old-batch units mount
+  // fine without it — and it deviated from the OEM (slot flag only), a suspected
+  // cause of "no card in" on newer socket revisions. Removed.
 
   auto* card = static_cast<sdmmc_card_t*>(malloc(sizeof(sdmmc_card_t)));
   if (!card) {

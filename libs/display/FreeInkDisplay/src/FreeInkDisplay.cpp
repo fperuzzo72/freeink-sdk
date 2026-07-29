@@ -29,6 +29,9 @@
 #if FREEINK_DRIVER_UC8279
 #include "driver/Uc8279Driver.h"
 #endif
+#if FREEINK_DRIVER_UC8179
+#include "driver/Uc8179Driver.h"
+#endif
 #if FREEINK_DRIVER_ED2208
 #include "driver/Ed2208M5Driver.h"
 #endif
@@ -130,6 +133,16 @@ void FreeInkDisplay::selectDriver() {
 #endif
     case PanelSel::X4:
     default:
+#if FREEINK_DRIVER_UC8179
+      // Newer X4 / X4 Pro batches swap the SSD1677 for an UltraChip UC8179.
+      // Which silicon a unit carries is decided before begin() by the boot-time
+      // controller resolution (OEM hw_calib/screenType, then a bus probe), which
+      // sets ACTIVE.displayController.
+      if (BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8179) {
+        _driver = &uc8179Driver();
+        break;
+      }
+#endif
 #if FREEINK_DRIVER_SSD1677
       _driver = &ssd1677Driver();
 #elif FREEINK_DRIVER_UC8253_MURPHY
