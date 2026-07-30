@@ -29,20 +29,24 @@ constexpr uint8_t CMD_VCOM_DC = 0xE5;             // VDCS (VCOM_DC)
 
 constexpr uint8_t CDI_INTERVAL = 0x07;  // CDI byte1, constant
 
-// 4-level grayscale (AA) waveform LUTs — the OEM's FULL grayscale set (6-frame
-// phases), recovered from app1 DROM (the gray_full custom-LUT bank). Each row is
-// [cmd][41 data bytes]; cmd is the LUT register (0x20 VCOM/LUTC, 0x21 LUTWW,
-// 0x22 LUTKW, 0x23 LUTWK, 0x24 LUTKK). Uploaded in custom-LUT mode (PSR REG bit
-// set) so the mid-tones are actively driven and HELD — the OTP path under-drove
-// them and the image relaxed to grey after settling. The trailing bytes are
-// zero (aggregate-init pads the rest of each 42-byte row).
-constexpr uint8_t GRAY_LUT_LEN = 42;  // 0x2A: cmd + 41 data (matches the OEM blob)
-const uint8_t kGrayLuts[5][GRAY_LUT_LEN] = {
-    {0x20, 0x00, 0x06, 0x01, 0x06, 0x06, 0x01, 0x00, 0x04, 0x01, 0x01, 0x00, 0x01},  // LUTC / VCOM
-    {0x21, 0x20, 0x06, 0x01, 0x06, 0x06, 0x01, 0x00, 0x04, 0x01, 0x01, 0x00, 0x01},  // LUTWW
-    {0x22, 0xAA, 0x06, 0x01, 0x06, 0x06, 0x01, 0xA0, 0x04, 0x01, 0x01, 0x00, 0x01},  // LUTKW
-    {0x23, 0x55, 0x06, 0x01, 0x06, 0x06, 0x01, 0x50, 0x04, 0x01, 0x01, 0x00, 0x01},  // LUTWK
-    {0x24, 0x00, 0x06, 0x01, 0x06, 0x06, 0x01, 0x04, 0x04, 0x01, 0x01, 0x00, 0x01},  // LUTKK
+// 4-level grayscale (AA) waveform LUTs — stock's REAL grayscale set (the short
+// 2-frame LUTs FUN_4214ebd0 actually uploads @app1 DROM 0x3c5d8994..), uploaded
+// in custom-LUT mode (PSR REG=1). NOTE: unlike the (dead, grainy) gray_full set,
+// here the register command is sent SEPARATELY — blob byte0 is DATA, not the cmd.
+// Each LUT is 42 (0x2A) data bytes; only the first ~12 are non-zero. Level select
+// by (old=0x10/LSB, new=0x13/MSB): (0,0)=LUTKK black, (0,1)=LUTKW, (1,0)=LUTWK,
+// (1,1)=LUTWW white.
+constexpr uint8_t GRAY_LUT_LEN = 42;  // 0x2A data bytes, command sent separately
+struct GrayLut {
+  uint8_t cmd;
+  uint8_t data[GRAY_LUT_LEN];
+};
+const GrayLut kGrayLuts[5] = {
+    {0x20, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTC / VCOM
+    {0x21, {0x08, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTWW (white)
+    {0x22, {0x20, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTKW
+    {0x23, {0x20, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTWK
+    {0x24, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTKK (black)
 };
 }  // namespace
 
@@ -265,28 +269,26 @@ void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                bool factoryMode) {
   (void)fb;           // the two planes are already loaded (copyGrayscaleLsb/Msb)
-  (void)lut;          // waveform comes from the built-in gray LUT set below
+  (void)lut;          // waveform comes from the built-in gray LUT set (kGrayLuts)
   (void)factoryMode;  // 4-level is absolute (defined by the planes)
+  (void)turnOff;      // gray_aa always powers off at the end (stock cleanup)
 
-  // Custom-LUT 4-level grayscale. The OTP path under-drove the mids (image
-  // relaxed to grey after settling), so drive the OEM's full gray waveform from
-  // registers: PSR with REG bit SET (custom LUT) — our psr0 (0x3F) is sent
-  // UNMASKED here so bit5=1; the B/W path masks it to 0x1F (OTP). SHL (mirror-X)
-  // stays set. Then upload the 5 LUTs and refresh over the loaded planes.
+  // Custom-LUT 4-level grayscale — the EXACT stock gray_aa stream (FUN_4214ec2c),
+  // byte-for-byte: PSR unmasked (0x3F => REG bit5=1 custom LUT, + SHL mirror-X;
+  // the B/W path masks to 0x1F/OTP) -> upload the 5 short LUTs (command sent
+  // separately, 42 data bytes each) -> CDI 0x29/07 -> PON -> DRF -> POF. Stock
+  // sends NO E0/E5/booster here (those belong to the grainy prebw/gray_full
+  // paths); adding them scattered the background.
   bus.cmd(CMD_PANEL_SETTING);
   bus.data(_cfg.psr0);  // 0x3F: REG=1 (custom LUT) + KW + SHL mirror-X
   bus.data(_cfg.psr1);
   for (const auto& l : kGrayLuts) {
-    bus.cmd(l[0]);
-    bus.data(&l[1], GRAY_LUT_LEN - 1);
+    bus.cmd(l.cmd);
+    bus.data(l.data, GRAY_LUT_LEN);
   }
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_cfg.cdiActive);  // 0x29
   bus.data(CDI_INTERVAL);
-  bus.cmd(CMD_E0);
-  bus.data(_cfg.e0);  // 0x02
-  bus.cmd(CMD_VCOM_DC);
-  bus.data(_cfg.vcomDc);  // 0x1E (VCOM_DC; the LUTC also carries VCOM)
 
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
@@ -295,15 +297,10 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" 8179_gray");
-  bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_cfg.cdiIdle);  // 0xA9 restore
-  bus.data(CDI_INTERVAL);
+  bus.cmd(CMD_POWER_OFF);  // stock gray_aa cleanup
+  bus.waitBusy(" 8179_gray_POF");
+  _isScreenOn = false;
 
-  if (turnOff) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" 8179_gray_POF");
-    _isScreenOn = false;
-  }
   // The panel now holds grayscale planes; the next B/W refresh must be a full
   // flash (a partial diff can't run against gray plane content).
   _needFullClear = true;
