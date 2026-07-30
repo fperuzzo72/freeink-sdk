@@ -1274,20 +1274,45 @@ inline bool hasHomeKey() { return ACTIVE.touch.hasHomeKey; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED; }
 inline bool hasAudio() { return ACTIVE.audio.output != AudioOutput::None; }
 
+// Safety guard: a power-latch pin must never coincide with a display or SDMMC
+// bus pin. A latch is driven hard HIGH (asserted) or LOW (power-off) and held
+// across sleep — if that pin is really, say, the display CS (GPIO13 on the X4
+// Pro) or an SDMMC line, asserting the "latch" would clobber the bus. This
+// catches a mis-set profile or an X4-vs-X4Pro config mixup before it drives the
+// wrong pin. (The GPIO13 battery latch is correct on the C3 X4, where 13 is not
+// a bus pin; on the X4 Pro 13 is the display CS, so a latch there is rejected.)
+inline bool latchConflictsWithBus(int8_t pin) {
+  if (pin < 0) return false;
+  const DisplayPins& d = ACTIVE.display;
+  if (pin == d.sclk || pin == d.mosi || pin == d.cs || pin == d.dc || pin == d.rst || pin == d.busy) return true;
+  const SdmmcPins& s = ACTIVE.sdmmc;
+  if (s.busWidth != 0 &&
+      (pin == s.clk || pin == s.cmd || pin == s.d0 || pin == s.d1 || pin == s.d2 || pin == s.d3)) {
+    return true;
+  }
+  return false;
+}
+
 // Assert the board's power-rail latch pins. Battery-latched boards (e.g. the
 // Sticky) must call this first thing in setup() or the board powers off when
 // the user releases the power button. Releasing the pins (driving them LOW)
 // is a software power-off. No-op on boards without a latch.
 inline void holdPowerRails() {
   for (const int8_t pin : {ACTIVE.power.latch0, ACTIVE.power.latch1}) {
-    if (pin >= 0) {
-      // A previous power-off may have latched the pin LOW with gpio_hold_en —
-      // a state that survives a reset and a USB-powered deep-sleep wake, and
-      // silently defeats the digitalWrite below. Release it first.
-      gpio_hold_dis(static_cast<gpio_num_t>(pin));
-      pinMode(pin, OUTPUT);
-      digitalWrite(pin, HIGH);
+    if (pin < 0) continue;
+    if (latchConflictsWithBus(pin)) {
+      // Refuse to drive a bus pin as a latch — see latchConflictsWithBus().
+#if defined(ENABLE_SERIAL_LOG)
+      if (Serial) Serial.printf("[BOARD] power latch pin %d collides with a display/SD bus pin; skipping\n", pin);
+#endif
+      continue;
     }
+    // A previous power-off may have latched the pin LOW with gpio_hold_en —
+    // a state that survives a reset and a USB-powered deep-sleep wake, and
+    // silently defeats the digitalWrite below. Release it first.
+    gpio_hold_dis(static_cast<gpio_num_t>(pin));
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, HIGH);
   }
 }
 
