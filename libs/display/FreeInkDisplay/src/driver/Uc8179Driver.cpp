@@ -210,7 +210,6 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
 }
 
 void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
-  (void)fb;
   if (!_pendingRefresh) return;
   _pendingRefresh = false;
 
@@ -268,7 +267,7 @@ void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 
 void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                bool factoryMode) {
-  (void)fb;           // the two planes are already loaded (copyGrayscaleLsb/Msb)
+  // fb = the reader's current frame; used to re-seed the B/W baseline below.
   (void)lut;          // waveform comes from the built-in gray LUT set (kGrayLuts)
   (void)factoryMode;  // 4-level is absolute (defined by the planes)
   (void)turnOff;      // gray_aa always powers off at the end (stock cleanup)
@@ -301,19 +300,37 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   bus.waitBusy(" 8179_gray_POF");
   _isScreenOn = false;
 
-  // The panel now holds grayscale planes; the next B/W refresh must be a full
-  // flash (a partial diff can't run against gray plane content).
-  _needFullClear = true;
-  _oldPlaneValid = false;
+  // Re-seed the OLD plane (0x10) with this frame so the NEXT B/W page turn runs a
+  // fast differential instead of a forced full flash — otherwise the gray LSB
+  // plane left in 0x10 makes every AA page turn black-clear. (The reader's
+  // non-tiled path never calls cleanupGrayscaleBuffers(), so we seed here; the
+  // tiled path refines it later with the exact B/W baseline.) RAM write only —
+  // the panel is powered off, which is fine.
+  if (fb) {
+    streamPlane(bus, CMD_DTM1, fb);
+    _oldPlaneValid = true;
+    _needFullClear = false;
+  } else {
+    _needFullClear = true;
+    _oldPlaneValid = false;
+  }
 }
 
 void Uc8179Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
-  (void)bus;
-  (void)bw;
-  // Gray overwrote both planes, so the differential baseline is gone — force the
-  // next B/W refresh to a full flash (which reseeds the old plane).
-  _needFullClear = true;
-  _oldPlaneValid = false;
+  if (!bw) {
+    // No baseline provided — fall back to a full flash on the next B/W refresh.
+    _needFullClear = true;
+    _oldPlaneValid = false;
+    return;
+  }
+  // Re-seed the OLD plane (0x10) with the clean B/W frame the reader restored, so
+  // the NEXT B/W page turn runs a fast differential against a real baseline
+  // instead of a forced full flash. The gray refresh left the LSB gray plane in
+  // 0x10; without this the next base frame full-flashes (the black clear seen on
+  // AA page turns). Mirrors the SSD1677 driver's post-grayscale RED-RAM resync.
+  streamPlane(bus, CMD_DTM1, bw);
+  _oldPlaneValid = true;
+  _needFullClear = false;
 }
 
 // Per-board config injection, same idiom as the other drivers: define
