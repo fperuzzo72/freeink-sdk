@@ -834,6 +834,12 @@ bool FreeInkDisplay::hasPendingMaintenance() const {
   return _driver && _driver->hasPendingMaintenance();
 }
 
+void FreeInkDisplay::controllerIdle() {
+  if (!_driver) return;
+  syncPendingAsync();
+  _driver->controllerIdle(_bus);
+}
+
 void FreeInkDisplay::requestCompleteWaveformNextRefresh() {
   if (_driver) _driver->requestCompleteWaveformNextRefresh();
 }

@@ -163,6 +163,10 @@ class PanelDriver {
   // waveform need it.
   virtual void runMaintenance(EpdBus& bus) { (void)bus; }
   virtual bool hasPendingMaintenance() const { return false; }
+  // Called by the single controller-work consumer only after both foreground
+  // and maintenance queues are empty. Panels which keep their analog/clock
+  // domains alive across adjacent waveforms can shut them down here.
+  virtual void controllerIdle(EpdBus& bus) { (void)bus; }
   virtual void requestCompleteWaveformNextRefresh() {}
   // Interrupted-refresh cutoff tuning (ED2208: where the gate scan freezes).
   virtual void setFastRefreshCutoffMs(uint16_t ms) { (void)ms; }

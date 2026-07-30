@@ -18,6 +18,15 @@ constexpr uint16_t WIDTH_BYTES = WIDTH / 8;
 constexpr uint32_t BUFFER_SIZE = static_cast<uint32_t>(WIDTH_BYTES) * HEIGHT;
 constexpr uint32_t BIN_BUFFER_SIZE = static_cast<uint32_t>(WIDTH) * HEIGHT / 4;
 constexpr uint16_t ROTATE_CHUNK_BYTES = 16384;
+// SSD1683 Display Update Control 2 bits. 0xFC performs the Paper Mono OTP
+// B/W update but intentionally omits ANALOG_OFF/CLOCK_OFF. Subsequent custom
+// passes can then use 0x0C while the rails remain ready; 0x03 is issued only
+// after ActivityManager proves the controller queue is empty.
+constexpr uint8_t CTRL_OTP_BW_HOLD = 0xFC;
+constexpr uint8_t CTRL_CUSTOM_HOLD_COLD = 0xCC;
+constexpr uint8_t CTRL_DISPLAY_HOLD_WARM = 0x0C;
+constexpr uint8_t CTRL_POWER_OFF = 0x03;
+constexpr uint8_t GRAY_DEGHOST_INTERVAL = 6;
 // Paper Mono's 180-degree mount requires a reversed staging buffer. Keep one
 // controller-worker-owned block in internal RAM: larger bursts cut the Arduino
 // SPI transaction setup count from 94 to 3 per plane without consuming the
@@ -58,8 +67,20 @@ constexpr std::array<uint8_t, 16> makeSpreadNibbleLut() {
   return lut;
 }
 
+constexpr std::array<uint8_t, 256> makeReverseBitsLut() {
+  std::array<uint8_t, 256> lut{};
+  for (uint16_t input = 0; input < 256; ++input) {
+    uint8_t value = static_cast<uint8_t>(input);
+    value = static_cast<uint8_t>(((value & 0x55u) << 1) | ((value >> 1) & 0x55u));
+    value = static_cast<uint8_t>(((value & 0x33u) << 2) | ((value >> 2) & 0x33u));
+    lut[input] = static_cast<uint8_t>((value << 4) | (value >> 4));
+  }
+  return lut;
+}
+
 constexpr auto PACKED_BIN_MASK_LUT = makePackedBinMaskLut();
 constexpr auto SPREAD_NIBBLE_LUT = makeSpreadNibbleLut();
+constexpr auto REVERSE_BITS_LUT = makeReverseBitsLut();
 static_assert(PACKED_BIN_MASK_LUT[0x00].gray == 0x00 && PACKED_BIN_MASK_LUT[0x55].gray == 0x0F &&
                   PACKED_BIN_MASK_LUT[0xAA].gray == 0x0F && PACKED_BIN_MASK_LUT[0xFF].gray == 0x00,
               "packed four-gray mask mapping must preserve endpoint pixels");
@@ -75,10 +96,13 @@ constexpr uint8_t packFourBins(uint8_t highNibble, uint8_t lowNibble) {
 static_assert(GRAY_PLANE_SCHEME_B[1] == 2, "dark gray must select LUT entry 10");
 static_assert(GRAY_PLANE_SCHEME_B[2] == 1, "light gray must select LUT entry 01");
 
-uint8_t reverseBits(uint8_t value) {
-  value = static_cast<uint8_t>(((value & 0x55u) << 1) | ((value >> 1) & 0x55u));
-  value = static_cast<uint8_t>(((value & 0x33u) << 2) | ((value >> 2) & 0x33u));
-  return static_cast<uint8_t>((value << 4) | (value >> 4));
+void rotatePlane180InPlace(uint8_t* data) {
+  for (uint32_t front = 0, back = BUFFER_SIZE - 1; front < back; ++front, --back) {
+    const uint8_t frontValue = data[front];
+    const uint8_t backValue = data[back];
+    data[front] = REVERSE_BITS_LUT[backValue];
+    data[back] = REVERSE_BITS_LUT[frontValue];
+  }
 }
 
 void setVsFrames(uint8_t* entry, uint8_t voltage, uint8_t frames) {
@@ -106,7 +130,6 @@ Ssd1683Driver& ssd1683Driver() {
 }
 
 void ssd1683SetGrayParams(const Ssd1683GrayParams& params) { ssd1683Driver().setGrayParams(params); }
-void ssd1683SetFastGrayBase(bool enabled) { ssd1683Driver().setFastGrayBase(enabled); }
 void ssd1683AbortGray() { ssd1683Driver().abortGray(); }
 void ssd1683ResetGray() { ssd1683Driver().resetGray(); }
 
@@ -121,10 +144,18 @@ bool Ssd1683Driver::allocateGrayBuffers() {
     if (!ptr) ptr = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     return ptr != nullptr;
   };
+  const bool binsWereMissing = _bins == nullptr;
+  const bool preparedBinsWereMissing = _preparedBins == nullptr;
   const bool ok = alloc(_lastBw, BUFFER_SIZE) && alloc(_grayLsb, BUFFER_SIZE) && alloc(_grayMsb, BUFFER_SIZE) &&
                   alloc(_base, BUFFER_SIZE) && alloc(_oldEffective, BUFFER_SIZE) &&
-                  alloc(_whiteCleanupMask, BUFFER_SIZE) && alloc(_bins, BIN_BUFFER_SIZE);
-  if (ok && !_grayArmed) memset(_bins, 0, BIN_BUFFER_SIZE);
+                  alloc(_whiteCleanupMask, BUFFER_SIZE) && alloc(_bins, BIN_BUFFER_SIZE) &&
+                  alloc(_preparedBins, BIN_BUFFER_SIZE);
+  // Allocation must not mutate committed panel history. In particular, the
+  // balanced gray maintenance path temporarily clears _grayArmed before it
+  // reconstructs selectors from _bins. Clearing here turned that entire pass
+  // into an all-00 custom update while the software still reported restored=1.
+  if (binsWereMissing && _bins) memset(_bins, 0, BIN_BUFFER_SIZE);
+  if (preparedBinsWereMissing && _preparedBins) memset(_preparedBins, 0, BIN_BUFFER_SIZE);
   return ok;
 }
 
@@ -141,6 +172,8 @@ void Ssd1683Driver::begin(EpdBus& bus) {
   _grayRefinePending.store(false);
   _abortedAtTwoLevelBase = false;
   _asyncPending = false;
+  _controllerPowered = false;
+  _lutState = LutState::Unknown;
   _bwUpdatesSinceMaintenance = 0;
   _grayPagesSinceMaintenance = 0;
   resetGray();
@@ -149,6 +182,8 @@ void Ssd1683Driver::begin(EpdBus& bus) {
 void Ssd1683Driver::initController(EpdBus& bus) {
   bus.cmd(CMD_SOFT_RESET);
   bus.waitBusy("SSD1683 reset");
+  _controllerPowered = false;
+  _lutState = LutState::Unknown;
 
   bus.cmd(0x18);
   bus.data(0x80);
@@ -214,9 +249,8 @@ void Ssd1683Driver::writePlane(EpdBus& bus, uint8_t command, const uint8_t* data
     const uint16_t count =
         static_cast<uint16_t>((BUFFER_SIZE - sent) < ROTATE_CHUNK_BYTES ? (BUFFER_SIZE - sent) : ROTATE_CHUNK_BYTES);
     const uint32_t transformStarted = micros();
-    for (uint16_t i = 0; i < count; ++i) {
-      ROTATE_CHUNK[i] = reverseBits(data[BUFFER_SIZE - 1 - sent - i]);
-    }
+    for (uint16_t i = 0; i < count; ++i)
+      ROTATE_CHUNK[i] = REVERSE_BITS_LUT[data[BUFFER_SIZE - 1 - sent - i]];
     transformUs += micros() - transformStarted;
     const uint32_t spiStarted = micros();
     bus.rawWriteBytes(ROTATE_CHUNK, count);
@@ -227,6 +261,18 @@ void Ssd1683Driver::writePlane(EpdBus& bus, uint8_t command, const uint8_t* data
   Serial.printf("[%lu] SSD1683 plane 0x%02X: transform=%luus spi=%luus chunks=%u\n", millis(), command,
                 static_cast<unsigned long>(transformUs), static_cast<unsigned long>(spiUs),
                 static_cast<unsigned>((BUFFER_SIZE + ROTATE_CHUNK_BYTES - 1) / ROTATE_CHUNK_BYTES));
+#endif
+}
+
+void Ssd1683Driver::writePhysicalPlane(EpdBus& bus, uint8_t command, const uint8_t* data) {
+  if (!data) return;
+  resetRamCounter(bus);
+  bus.cmd(command);
+  const uint32_t startedUs = micros();
+  bus.data(data, static_cast<uint16_t>(BUFFER_SIZE));
+#ifdef ENABLE_SERIAL_LOG
+  Serial.printf("[%lu] SSD1683 plane 0x%02X: pretransformed spi=%luus\n", millis(), command,
+                static_cast<unsigned long>(micros() - startedUs));
 #endif
 }
 
@@ -241,12 +287,41 @@ void Ssd1683Driver::activate(EpdBus& bus, uint8_t control) {
   bus.waitRefreshComplete("SSD1683 refresh");
 }
 
+void Ssd1683Driver::activateOtpStart(EpdBus& bus) {
+  // When the preceding task was another OTP B/W update, the loaded Mono LUT
+  // and powered rails are still valid. Otherwise 0xFC reloads the temperature
+  // selected Paper Mono OTP waveform and powers the analog domain in the same
+  // master activation, without shutting it down at the tail.
+  const bool warmOtp = _controllerPowered && _lutState == LutState::OtpBw;
+  activateStart(bus, warmOtp ? CTRL_DISPLAY_HOLD_WARM : CTRL_OTP_BW_HOLD);
+  _controllerPowered = true;
+  _lutState = LutState::OtpBw;
+#ifdef ENABLE_SERIAL_LOG
+  Serial.printf("[%lu] SSD1683 OTP activation: powered=hold source=%s\n", millis(), warmOtp ? "resident" : "mono-otp");
+#endif
+}
+
+void Ssd1683Driver::activateOtp(EpdBus& bus) {
+  activateOtpStart(bus);
+  bus.waitRefreshComplete("SSD1683 OTP refresh");
+}
+
+void Ssd1683Driver::powerOffController(EpdBus& bus) {
+  if (!_controllerPowered) return;
+  const unsigned long started = millis();
+  activate(bus, CTRL_POWER_OFF);
+  _controllerPowered = false;
+#ifdef ENABLE_SERIAL_LOG
+  Serial.printf("[%lu] SSD1683 controller idle: analog+clock off in %lums\n", millis(), millis() - started);
+#endif
+}
+
 void Ssd1683Driver::absolutePass(EpdBus& bus, const uint8_t* target) {
   if (!target || !allocateGrayBuffers()) return;
   for (uint32_t i = 0; i < BUFFER_SIZE; ++i) _oldEffective[i] = static_cast<uint8_t>(~target[i]);
   writePlane(bus, CMD_WRITE_NEW, target);
   writePlane(bus, CMD_WRITE_OLD, _oldEffective);
-  activate(bus, 0xFF);
+  activateOtp(bus);
   writePlane(bus, CMD_WRITE_NEW, target);
   writePlane(bus, CMD_WRITE_OLD, target);
 }
@@ -262,20 +337,30 @@ void Ssd1683Driver::loadCustomLut(EpdBus& bus, const uint8_t lut[111]) {
   bus.data(lut[108]);
   bus.cmd(0x2C);
   bus.data(lut[109]);
+  _lutState = LutState::Custom;
 }
 
-void Ssd1683Driver::customPass(EpdBus& bus, const uint8_t* p24, const uint8_t* p26, const uint8_t lut[111]) {
+void Ssd1683Driver::customPass(EpdBus& bus, const uint8_t* p24, const uint8_t* p26, const uint8_t lut[111],
+                               bool planesPhysical) {
   bus.cmd(0x3C);
   bus.data(0x80);
-  writePlane(bus, CMD_WRITE_NEW, p24);
-  writePlane(bus, CMD_WRITE_OLD, p26);
+  if (planesPhysical) {
+    writePhysicalPlane(bus, CMD_WRITE_NEW, p24);
+    writePhysicalPlane(bus, CMD_WRITE_OLD, p26);
+  } else {
+    writePlane(bus, CMD_WRITE_NEW, p24);
+    writePlane(bus, CMD_WRITE_OLD, p26);
+  }
   loadCustomLut(bus, lut);
   bus.cmd(0x21);
   bus.data(0x00);
   bus.data(0x00);
-  // 0xCF intentionally omits OTP LUT/temp reload bits 0x10/0x20. Including
-  // either silently replaces the custom waveform and brings the flash back.
-  activate(bus, 0xCF);
+  // The custom trigger intentionally omits OTP LUT/temp reload bits 0x10/0x20.
+  // Including either silently replaces the injected waveform.
+  const uint8_t control = _controllerPowered ? CTRL_DISPLAY_HOLD_WARM : CTRL_CUSTOM_HOLD_COLD;
+  activate(bus, control);
+  _controllerPowered = true;
+  _lutState = LutState::Custom;
 }
 
 void Ssd1683Driver::prepareWhiteCleanup(const uint8_t* bw, const uint8_t* oldBw, bool oldFrameHadGray,
@@ -328,6 +413,26 @@ void Ssd1683Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
     _needsFull = true;
   }
   allocateGrayBuffers();
+  const uint8_t* const settledBw = _lastBwValid ? _lastBw : prev;
+  if (!_needsFull && mode != RefreshMode::Full && !_panelHasGray && settledBw &&
+      memcmp(settledBw, fb, BUFFER_SIZE) == 0) {
+    // A UI may request a follow-up render after asynchronous data/covers are
+    // ready even when the resulting pixels are identical. Keep the cleanup
+    // queued by the first frame, but submit no redundant panel waveform.
+    _grayMaintenancePending.store(false);
+    _grayRefinePending.store(false);
+    _grayTargetPrepared = false;
+    _graySelectorsPhysical = false;
+    discardPreparedBins();
+    _grayLsbReady = false;
+    _grayMsbReady = false;
+    if (_preparingGray) _maintenancePending.store(false);
+#ifdef ENABLE_SERIAL_LOG
+    Serial.printf("[%lu] SSD1683 unchanged target: waveform skipped cleanup_pending=%u\n", millis(),
+                  static_cast<unsigned>(_maintenancePending.load()));
+#endif
+    return;
+  }
   // This primary refresh supersedes maintenance for the previous frame. The
   // cancellation generation was captured before CPU composition began; never
   // reset it here or an input which raced layout would be lost.
@@ -335,6 +440,9 @@ void Ssd1683Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   _grayMaintenancePending.store(false);
   _grayRefinePending.store(false);
   _grayTargetPrepared = false;
+  _graySelectorsPhysical = false;
+  discardPreparedBins();
+  bool foregroundChanged = false;
 
   if (_needsFull || mode == RefreshMode::Full) {
     _whiteCleanupPixels = 0;
@@ -354,7 +462,7 @@ void Ssd1683Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
     } else {
       // Allocation failure still gets a deterministic absolute target frame.
       writePlane(bus, CMD_WRITE_NEW, fb);
-      activate(bus, 0xFF);
+      activateOtp(bus);
       writePlane(bus, CMD_WRITE_NEW, fb);
       writePlane(bus, CMD_WRITE_OLD, fb);
     }
@@ -365,6 +473,7 @@ void Ssd1683Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   } else {
     const bool hadGray = _panelHasGray;
     const uint8_t* const oldBw = _lastBwValid ? _lastBw : prev;
+    foregroundChanged = !oldBw || memcmp(oldBw, fb, BUFFER_SIZE) != 0;
     bus.cmd(0x3C);
     bus.data(0x80);
     writePlane(bus, CMD_WRITE_NEW, fb);
@@ -390,17 +499,10 @@ void Ssd1683Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
       }
       writePlane(bus, CMD_WRITE_OLD, differentialOld);
     }
-    if (_fastGrayBase) {
-      uint8_t fastLut[111];
-      makeFastBaseLut(fastLut);
-      loadCustomLut(bus, fastLut);
-      bus.cmd(0x21);
-      bus.data(0x00);
-      bus.data(0x00);
-      activate(bus, 0xCF);
-    } else {
-      activate(bus, 0xFF);
-    }
+    // Keep the binary precursor on Paper Mono's own OTP partial waveform.
+    // Custom fast-base LUTs borrowed from other panels under-drive this W21
+    // panel and leave severe, persistent endpoint ghosts.
+    activateOtp(bus);
     writePlane(bus, CMD_WRITE_OLD, fb);
     _grayArmed = false;
     _panelHasGray = false;
@@ -416,6 +518,10 @@ void Ssd1683Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
     memcpy(_lastBw, fb, BUFFER_SIZE);
     _lastBwValid = true;
   }
+  // Every settled binary UI transition gets a balanced, all-pixel Mono OTP
+  // cleanup. A following foreground render clears/replaces this task before it
+  // starts; once started it is indivisible and the new render runs afterward.
+  if (!_preparingGray && foregroundChanged) _maintenancePending.store(true);
   _grayLsbReady = false;
   _grayMsbReady = false;
 }
@@ -431,12 +537,30 @@ bool Ssd1683Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 
   (void)turnOff;
   allocateGrayBuffers();
+  const uint8_t* const settledBw = _lastBwValid ? _lastBw : prev;
+  if (!_panelHasGray && settledBw && memcmp(settledBw, fb, BUFFER_SIZE) == 0) {
+    _grayMaintenancePending.store(false);
+    _grayRefinePending.store(false);
+    _grayTargetPrepared = false;
+    _graySelectorsPhysical = false;
+    discardPreparedBins();
+    _grayLsbReady = false;
+    _grayMsbReady = false;
+    if (_preparingGray) _maintenancePending.store(false);
+#ifdef ENABLE_SERIAL_LOG
+    Serial.printf("[%lu] SSD1683 unchanged async target: waveform skipped cleanup_pending=%u\n", millis(),
+                  static_cast<unsigned>(_maintenancePending.load()));
+#endif
+    return false;
+  }
   // beginDisplayWork() captured the generation before CPU composition. Do not
   // clear cancellation here: this may already be an obsolete rendered page.
   _maintenancePending.store(false);
   _grayMaintenancePending.store(false);
   _grayRefinePending.store(false);
   _grayTargetPrepared = false;
+  _graySelectorsPhysical = false;
+  discardPreparedBins();
 
   _asyncHadGray = _panelHasGray;
   _asyncPreparingGray = _preparingGray;
@@ -467,21 +591,14 @@ bool Ssd1683Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 
   _asyncStartedMs = millis();
   _asyncPending = true;
-  uint8_t control = 0xFF;
-  if (_fastGrayBase) {
-    uint8_t fastLut[111];
-    makeFastBaseLut(fastLut);
-    loadCustomLut(bus, fastLut);
-    bus.cmd(0x21);
-    bus.data(0x00);
-    bus.data(0x00);
-    control = 0xCF;
-  }
-  activateStart(bus, control);
+  // Mode 2 with LUT/temp reload uses the Paper Mono controller's own OTP
+  // partial waveform. CPU-side grayscale staging still overlaps this BUSY
+  // interval, and the gray pass can reuse its NEW RAM plane afterward.
+  activateOtpStart(bus);
 #ifdef ENABLE_SERIAL_LOG
-  Serial.printf("[%lu] SSD1683 async start: mode=%u changed=%lu gray=%u lut=%s\n", _asyncStartedMs,
+  Serial.printf("[%lu] SSD1683 async start: mode=%u changed=%lu gray=%u lut=mono-otp\n", _asyncStartedMs,
                 static_cast<unsigned>(_asyncMode), static_cast<unsigned long>(_asyncChangedPixels),
-                static_cast<unsigned>(_asyncHadGray), _fastGrayBase ? "fast" : "otp");
+                static_cast<unsigned>(_asyncHadGray));
 #endif
   return true;
 }
@@ -494,19 +611,34 @@ void Ssd1683Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   _asyncPending = false;
   if (!fb) return;
 
-  writePlane(bus, CMD_WRITE_OLD, fb);
+  // A prepared gray pass will immediately consume the controller planes. Do
+  // not spend another full-plane transfer seeding OLD in the narrow gap. If an
+  // input cancelled the generation, retain the ordinary seed so the visible
+  // two-level frame remains a complete standalone commit.
+  const bool preparedGray = _grayTargetPrepared && _preparedBinsReady &&
+                            _preparedGrayGeneration == _displayWorkGeneration && !displayWorkCancelled();
+  if (!preparedGray) writePlane(bus, CMD_WRITE_OLD, fb);
   _panelHasGray = false;
-  if (!_asyncPreparingGray) ++_bwUpdatesSinceMaintenance;
+  if (!_asyncPreparingGray) {
+    ++_bwUpdatesSinceMaintenance;
+    if (_asyncChangedPixels > 0) _maintenancePending.store(true);
+  }
   if (_lastBw) {
     memcpy(_lastBw, fb, BUFFER_SIZE);
     _lastBwValid = true;
   }
-  _grayLsbReady = false;
-  _grayMsbReady = false;
+  if (!preparedGray) {
+    _grayTargetPrepared = false;
+    _graySelectorsPhysical = false;
+    discardPreparedBins();
+    _grayLsbReady = false;
+    _grayMsbReady = false;
+  }
 #ifdef ENABLE_SERIAL_LOG
   const unsigned long finished = millis();
-  Serial.printf("[%lu] SSD1683 async finish: flight=%lums wait=%lums post=%lums\n", finished,
-                waveformDone - _asyncStartedMs, waveformDone - waitStarted, finished - waveformDone);
+  Serial.printf("[%lu] SSD1683 async finish: flight=%lums wait=%lums post=%lums gray_prepared=%u\n", finished,
+                waveformDone - _asyncStartedMs, waveformDone - waitStarted, finished - waveformDone,
+                static_cast<unsigned>(preparedGray));
 #endif
 }
 
@@ -551,6 +683,8 @@ void Ssd1683Driver::runMaintenance(EpdBus& bus) {
   if (grayRefine) {
     if (!_grayRefinePending.exchange(false)) return;
     if (maintenanceGeneration != _grayRefineGeneration) {
+      _graySelectorsPhysical = false;
+      discardPreparedBins();
 #ifdef ENABLE_SERIAL_LOG
       Serial.printf("[%lu] SSD1683 gray refine dropped: staged_gen=%lu current_gen=%lu\n", millis(),
                     static_cast<unsigned long>(_grayRefineGeneration),
@@ -562,7 +696,12 @@ void Ssd1683Driver::runMaintenance(EpdBus& bus) {
     uint8_t customLut[111];
     makeGrayLut(customLut);
     const unsigned long started = millis();
-    customPass(bus, _grayLsb, _grayMsb, customLut);
+    // Explicitly submit both selectors. Reusing NEW saved one SPI transfer but
+    // made correctness depend on an implicit controller-RAM state spanning an
+    // async OTP pass, cancellation and retained power.
+    customPass(bus, _grayLsb, _grayMsb, customLut, _graySelectorsPhysical);
+    _graySelectorsPhysical = false;
+    commitPreparedBins();
 
     // The custom selector planes are not a differential baseline. Restore both
     // controller RAM planes before another page can start; this is the last
@@ -574,6 +713,12 @@ void Ssd1683Driver::runMaintenance(EpdBus& bus) {
     _grayLsbReady = false;
     _grayMsbReady = false;
     const bool cancelledDuring = _abortGeneration.load() != maintenanceGeneration;
+    if (_panelHasGray && !cancelledDuring) {
+      ++_grayPagesSinceMaintenance;
+      if (_grayPagesSinceMaintenance >= GRAY_DEGHOST_INTERVAL) {
+        _grayMaintenancePending.store(true);
+      }
+    }
 #ifdef ENABLE_SERIAL_LOG
     Serial.printf("[%lu] SSD1683 gray refine committed: gen=%lu pixels=%lu elapsed=%lums cancelled_during=%u\n",
                   millis(), static_cast<unsigned long>(_grayRefineGeneration),
@@ -583,30 +728,56 @@ void Ssd1683Driver::runMaintenance(EpdBus& bus) {
   } else if (grayCleanup && _panelHasGray) {
     if (!_grayMaintenancePending.exchange(false)) return;
     if (_abortGeneration.load() != maintenanceGeneration) {
-      _grayMaintenancePending.store(true);
       return;
     }
-    encodeCleanup();
-    uint8_t customLut[111];
-    makeCleanupLut(customLut);
-    uint8_t pass = 0;
-    for (; pass < _grayParams.cleanupPasses && _abortGeneration.load() == maintenanceGeneration; ++pass) {
-      customPass(bus, _base, _oldEffective, customLut);
+    const unsigned long started = millis();
+    // Re-establish every pixel from its inverse through Paper Mono's own OTP
+    // waveform. This is balanced and represented by the controller baseline;
+    // unlike the removed one-way reinforce LUT it cannot accumulate a hidden
+    // image-correlated charge state.
+    absolutePass(bus, _lastBw);
+    _panelHasGray = false;
+    _grayArmed = false;
+    _grayPagesSinceMaintenance = 0;
+
+    bool grayRestored = false;
+    if (_abortGeneration.load() == maintenanceGeneration) {
+      encodeCommittedGraySelectors();
+      uint8_t customLut[111];
+      makeGrayLut(customLut);
+      customPass(bus, _grayLsb, _grayMsb, customLut);
+      writePlane(bus, CMD_WRITE_NEW, _lastBw);
+      writePlane(bus, CMD_WRITE_OLD, _lastBw);
+      _grayArmed = true;
+      _panelHasGray = true;
+      grayRestored = true;
     }
-    if (pass < _grayParams.cleanupPasses) _grayMaintenancePending.store(true);
 #ifdef ENABLE_SERIAL_LOG
-    Serial.printf("[%lu] SSD1683 gray cleanup committed: gen=%lu passes=%u cancelled=%u\n", millis(),
-                  static_cast<unsigned long>(maintenanceGeneration), static_cast<unsigned>(pass),
-                  static_cast<unsigned>(pass < _grayParams.cleanupPasses));
+    Serial.printf("[%lu] SSD1683 balanced gray deghost: gen=%lu elapsed=%lums restored=%u\n", millis(),
+                  static_cast<unsigned long>(maintenanceGeneration), millis() - started,
+                  static_cast<unsigned>(grayRestored));
 #endif
   } else if (grayCleanup) {
     // A newer foreground B/W frame removed the gray page before this low
     // priority task reached the head of the controller queue.
     _grayMaintenancePending.store(false);
   } else if (bwCleanup) {
-    _maintenancePending.store(false);
+    if (!_maintenancePending.exchange(false)) return;
+    if (_abortGeneration.load() != maintenanceGeneration) return;
+    const unsigned long started = millis();
+    absolutePass(bus, _lastBw);
+    _bwUpdatesSinceMaintenance = 0;
+    _grayArmed = false;
+    _panelHasGray = false;
+#ifdef ENABLE_SERIAL_LOG
+    Serial.printf("[%lu] SSD1683 balanced BW deghost: gen=%lu elapsed=%lums cancelled=%u\n", millis(),
+                  static_cast<unsigned long>(maintenanceGeneration), millis() - started,
+                  static_cast<unsigned>(_abortGeneration.load() != maintenanceGeneration));
+#endif
   }
 }
+
+void Ssd1683Driver::controllerIdle(EpdBus& bus) { powerOffController(bus); }
 
 void Ssd1683Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
@@ -616,6 +787,7 @@ void Ssd1683Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   _maintenancePending.store(false);
   memcpy(_grayLsb, lsb, BUFFER_SIZE);
   _grayLsbReady = true;
+  _graySelectorsPhysical = false;
 }
 
 void Ssd1683Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
@@ -624,6 +796,7 @@ void Ssd1683Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   _maintenancePending.store(false);
   memcpy(_grayMsb, msb, BUFFER_SIZE);
   _grayMsbReady = true;
+  _graySelectorsPhysical = false;
 }
 
 void Ssd1683Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
@@ -638,29 +811,43 @@ void Ssd1683Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const
   } else {
     _grayMsbReady = true;
   }
+  _graySelectorsPhysical = false;
 }
 
 void Ssd1683Driver::prepareGrayscaleTarget(const uint8_t* bw) {
   _grayTargetPrepared = false;
+  _graySelectorsPhysical = false;
+  discardPreparedBins();
   if (!bw || !_grayLsbReady || !_grayMsbReady || !allocateGrayBuffers() || displayWorkCancelled()) return;
 
   // Perform the 48 KB transition encoding while the controller is still
   // scanning the B/W waveform. Old-page cleanup is deliberately excluded:
   // that base waveform already drove it to the current binary endpoint.
   _whiteCleanupForGray = false;
+  const uint32_t startedUs = micros();
   _preparedGrayPixels = encodeGrayTarget(bw);
+  if (!displayWorkCancelled()) {
+    if (BoardConfig::ACTIVE.orientation.mirrorX && BoardConfig::ACTIVE.orientation.mirrorY) {
+      rotatePlane180InPlace(_grayLsb);
+      rotatePlane180InPlace(_grayMsb);
+    }
+    _graySelectorsPhysical = true;
+  }
   _preparedMergedWhiteCleanup = false;
   _preparedGrayGeneration = _displayWorkGeneration;
-  _grayTargetPrepared = !displayWorkCancelled();
+  _grayTargetPrepared = _preparedBinsReady && !displayWorkCancelled();
+  if (!_grayTargetPrepared) discardPreparedBins();
 #ifdef ENABLE_SERIAL_LOG
-  Serial.printf("[%lu] SSD1683 gray target prepared: gen=%lu gray=%lu cleanup=%lu ready=%u\n", millis(),
+  Serial.printf("[%lu] SSD1683 gray target prepared: gen=%lu gray=%lu cleanup=%lu ready=%u encode=%luus\n", millis(),
                 static_cast<unsigned long>(_preparedGrayGeneration), static_cast<unsigned long>(_preparedGrayPixels),
                 static_cast<unsigned long>(_preparedMergedWhiteCleanup ? _whiteCleanupPixels : 0),
-                static_cast<unsigned>(_grayTargetPrepared));
+                static_cast<unsigned>(_grayTargetPrepared), static_cast<unsigned long>(micros() - startedUs));
 #endif
 }
 
 uint32_t Ssd1683Driver::encodeGrayTarget(const uint8_t* bwOverride) {
+  if (!_preparedBins) return 0;
+  _graySelectorsPhysical = false;
   const bool schemeB = _grayParams.scheme == 1;
   uint32_t grayPixels = 0;
 
@@ -700,11 +887,37 @@ uint32_t Ssd1683Driver::encodeGrayTarget(const uint8_t* bwOverride) {
       _grayMsb[i] = lightMask;
     }
 
-    _bins[binIndex] = packFourBins(static_cast<uint8_t>(binHigh >> 4), static_cast<uint8_t>(binLow >> 4));
-    _bins[binIndex + 1] = packFourBins(binHigh, binLow);
+    _preparedBins[binIndex] = packFourBins(static_cast<uint8_t>(binHigh >> 4), static_cast<uint8_t>(binLow >> 4));
+    _preparedBins[binIndex + 1] = packFourBins(binHigh, binLow);
     grayPixels += static_cast<uint32_t>(__builtin_popcount(static_cast<unsigned int>(grayMask)));
   }
+  _preparedBinsReady = true;
   return grayPixels;
+}
+
+void Ssd1683Driver::commitPreparedBins() {
+  if (!_preparedBinsReady) return;
+  std::swap(_bins, _preparedBins);
+  _preparedBinsReady = false;
+}
+
+void Ssd1683Driver::discardPreparedBins() { _preparedBinsReady = false; }
+
+void Ssd1683Driver::encodeCommittedGraySelectors() {
+  if (!allocateGrayBuffers()) return;
+  for (uint32_t i = 0; i < BUFFER_SIZE; ++i) {
+    const auto& upper = PACKED_BIN_MASK_LUT[_bins[i * 2]];
+    const auto& lower = PACKED_BIN_MASK_LUT[_bins[i * 2 + 1]];
+    const uint8_t high = static_cast<uint8_t>((upper.high << 4) | lower.high);
+    const uint8_t low = static_cast<uint8_t>((upper.low << 4) | lower.low);
+    if (_grayParams.scheme == 1) {
+      _grayLsb[i] = high;
+      _grayMsb[i] = low;
+    } else {
+      _grayLsb[i] = static_cast<uint8_t>(low & ~high);   // dark selector
+      _grayMsb[i] = static_cast<uint8_t>(high & ~low);  // light selector
+    }
+  }
 }
 
 void Ssd1683Driver::encodeCleanup() {
@@ -746,20 +959,6 @@ void Ssd1683Driver::makeGrayLut(uint8_t out[111]) const {
   setCommonGrayTail(out, _grayParams.frameRate);
 }
 
-void Ssd1683Driver::makeFastBaseLut(uint8_t out[111]) const {
-  memset(out, 0, 111);
-  out[10] = 0x80;  // entry 01: new white, old black -> white
-  out[20] = 0x40;  // entry 10: new black, old white -> black
-  out[50] = 0x30;
-  out[51] = 0x01;
-  for (uint8_t i = 0; i < 5; ++i) out[100 + i] = 0x22;
-  out[105] = 0x25;
-  out[106] = 0x30;
-  out[107] = 0x32;
-  out[108] = 0x58;
-  out[109] = 0x3A;
-}
-
 void Ssd1683Driver::makeCleanupLut(uint8_t out[111]) const {
   memset(out, 0, 111);
   setVsFrames(out + 10, 0x01, 7);
@@ -784,6 +983,8 @@ void Ssd1683Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   // must be able to skip every remaining grayscale stage.
   if (displayWorkCancelled()) {
     _grayTargetPrepared = false;
+    _graySelectorsPhysical = false;
+    discardPreparedBins();
     stageWhiteCleanup(false);
     _grayArmed = false;
     _panelHasGray = false;
@@ -803,6 +1004,8 @@ void Ssd1683Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   const bool baseAlreadyVisible = memcmp(_base, _lastBw, BUFFER_SIZE) == 0;
 
   if (displayWorkCancelled()) {
+    _graySelectorsPhysical = false;
+    discardPreparedBins();
     stageWhiteCleanup(false);
     _grayArmed = false;
     _panelHasGray = false;
@@ -827,6 +1030,8 @@ void Ssd1683Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
                     static_cast<unsigned long>(_grayRefineGeneration), static_cast<unsigned long>(grayPixels));
 #endif
     } else {
+      commitPreparedBins();
+      _graySelectorsPhysical = false;
       _grayArmed = true;
       _panelHasGray = false;
     }
@@ -839,31 +1044,30 @@ void Ssd1683Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   // their first visible frame. Only legacy/custom callers need this conversion
   // pass; skipping it removes one 543 ms waveform and the thick-then-thin edge.
   if (!baseAlreadyVisible) {
-    if (_fastGrayBase) {
-      makeFastBaseLut(customLut);
-      customPass(bus, _base, _oldEffective, customLut);
-    } else {
-      bus.cmd(0x3C);
-      bus.data(0x80);
-      writePlane(bus, CMD_WRITE_NEW, _base);
-      writePlane(bus, CMD_WRITE_OLD, _oldEffective);
-      activate(bus, 0xFF);
-    }
+    bus.cmd(0x3C);
+    bus.data(0x80);
+    writePlane(bus, CMD_WRITE_NEW, _base);
+    writePlane(bus, CMD_WRITE_OLD, _oldEffective);
+    activateOtp(bus);
   }
   if (_grayParams.baseDouble && !displayWorkCancelled()) {
     writePlane(bus, CMD_WRITE_NEW, _base);
     writePlane(bus, CMD_WRITE_OLD, _oldEffective);
-    activate(bus, 0xFF);
+    activateOtp(bus);
   }
 
   if ((grayPixels > 0 || mergedWhiteCleanup) && !displayWorkCancelled()) {
     makeGrayLut(customLut);
-    customPass(bus, _grayLsb, _grayMsb, customLut);
+    customPass(bus, _grayLsb, _grayMsb, customLut, _graySelectorsPhysical);
+    _graySelectorsPhysical = false;
+    commitPreparedBins();
     grayApplied = true;
   }
 
   if (displayWorkCancelled()) {
     if (!grayApplied) {
+      _graySelectorsPhysical = false;
+      discardPreparedBins();
       // The two-level base pass is already the visible endpoint. Re-seed the
       // exact physical base so the next rapid page turn differentially replaces
       // it instead of diffing against the pre-gray approximation.
@@ -879,9 +1083,13 @@ void Ssd1683Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     // bins reached the panel. Do not queue a stale cleanup before the new page.
     if (grayApplied) _grayArmed = true;
   } else {
+    if (!grayApplied) discardPreparedBins();
     _grayArmed = true;
     _panelHasGray = grayPixels > 0;
-    if (grayPixels > 0) ++_grayPagesSinceMaintenance;
+    if (grayPixels > 0) {
+      ++_grayPagesSinceMaintenance;
+      if (_grayPagesSinceMaintenance >= GRAY_DEGHOST_INTERVAL) _grayMaintenancePending.store(true);
+    }
   }
   _grayLsbReady = false;
   _grayMsbReady = false;
@@ -901,9 +1109,10 @@ void Ssd1683Driver::displayGrayCalibration(EpdBus& bus, const uint8_t* fb, uint1
   _lastBwValid = true;
   _grayArmed = false;
   encodeGrayTarget();
+  const uint8_t* const calibrationBins = _preparedBinsReady ? _preparedBins : _bins;
 
-  const auto binAt = [this](const uint32_t pixel) {
-    return static_cast<uint8_t>((_bins[pixel >> 2] >> (6 - 2 * (pixel & 3))) & 0x03);
+  const auto binAt = [calibrationBins](const uint32_t pixel) {
+    return static_cast<uint8_t>((calibrationBins[pixel >> 2] >> (6 - 2 * (pixel & 3))) & 0x03);
   };
   const auto inCustomRect = [=](const uint32_t pixel) {
     const uint32_t x = pixel % WIDTH;
@@ -931,6 +1140,8 @@ void Ssd1683Driver::displayGrayCalibration(EpdBus& bus, const uint8_t* fb, uint1
   writePlane(bus, CMD_WRITE_NEW, _base);
   writePlane(bus, CMD_WRITE_OLD, _oldEffective);
   activate(bus, 0xD7);
+  _controllerPowered = false;
+  _lutState = LutState::OtpBw;
 
   // Reset back to the normal controller setup without touching the ink. The
   // following passes are no-drive outside the requested comparison rectangle,
@@ -949,20 +1160,15 @@ void Ssd1683Driver::displayGrayCalibration(EpdBus& bus, const uint8_t* fb, uint1
   }
 
   uint8_t customLut[111];
-  if (_fastGrayBase) {
-    makeFastBaseLut(customLut);
-    customPass(bus, _base, _oldEffective, customLut);
-  } else {
-    bus.cmd(0x3C);
-    bus.data(0x80);
-    writePlane(bus, CMD_WRITE_NEW, _base);
-    writePlane(bus, CMD_WRITE_OLD, _oldEffective);
-    activate(bus, 0xFF);
-  }
+  bus.cmd(0x3C);
+  bus.data(0x80);
+  writePlane(bus, CMD_WRITE_NEW, _base);
+  writePlane(bus, CMD_WRITE_OLD, _oldEffective);
+  activateOtp(bus);
   if (_grayParams.baseDouble) {
     writePlane(bus, CMD_WRITE_NEW, _base);
     writePlane(bus, CMD_WRITE_OLD, _oldEffective);
-    activate(bus, 0xFF);
+    activateOtp(bus);
   }
 
   // Use the exact reading-path mapping and LUT, not a calibration-only carrier:
@@ -1030,6 +1236,8 @@ void Ssd1683Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
     // The B/W base completed but input cancelled before displayGray() consumed
     // the CPU-prepared selectors. They never reached the panel.
     _grayTargetPrepared = false;
+    _graySelectorsPhysical = false;
+    discardPreparedBins();
     _grayArmed = false;
     _panelHasGray = false;
     _grayLsbReady = false;
@@ -1084,14 +1292,19 @@ void Ssd1683Driver::resetGray() {
   _grayLsbReady = false;
   _grayMsbReady = false;
   _grayMaintenancePending.store(false);
+  _maintenancePending.store(false);
   _grayRefinePending.store(false);
   _grayRefineGeneration = 0;
   _grayRefinePixels = 0;
   _grayRefineLeavesGray = false;
   _grayTargetPrepared = false;
+  _graySelectorsPhysical = false;
+  discardPreparedBins();
   _preparedMergedWhiteCleanup = false;
   _preparedGrayGeneration = 0;
   _preparedGrayPixels = 0;
+  if (_bins) memset(_bins, 0, BIN_BUFFER_SIZE);
+  if (_preparedBins) memset(_preparedBins, 0, BIN_BUFFER_SIZE);
   _whiteCleanupGeneration = 0;
   _whiteCleanupPixels = 0;
   _whiteCleanupForGray = false;
@@ -1101,6 +1314,7 @@ void Ssd1683Driver::resetGray() {
 void Ssd1683Driver::deepSleep(EpdBus& bus) {
   if (!_initialized) return;
   bus.waitBusy("SSD1683 idle");
+  powerOffController(bus);
   bus.cmd(0x10);
   bus.data(0x01);
   delay(100);

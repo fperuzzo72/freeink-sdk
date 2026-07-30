@@ -230,6 +230,7 @@ class FreeInkDisplay {
   bool postRefreshAborted() const;
   void runMaintenance();
   bool hasPendingMaintenance() const;
+  void controllerIdle();
 
   // debug function
   void grayscaleRevert();
