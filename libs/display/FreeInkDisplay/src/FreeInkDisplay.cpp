@@ -799,6 +799,10 @@ void FreeInkDisplay::skipInitialResync() {
   if (_driver) _driver->skipInitialResync();
 }
 
+void FreeInkDisplay::beginDisplayWork() {
+  if (_driver) _driver->beginDisplayWork();
+}
+
 void FreeInkDisplay::abortPostRefresh() {
   if (_driver) _driver->abortPostRefresh();
 }

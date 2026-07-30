@@ -29,7 +29,8 @@ public:
         bool externalPower = false;
         // Raw M5PM1 telemetry for diagnostics; -1 when not read (non-PM1 boards
         // or failed I/O). VIN is the DC input rail, 5VINOUT the bidirectional
-        // USB-C rail, powerSource the PM1's PWR_SRC report (reg 0x04 [2:0]).
+        // USB-C rail, powerSource the PM1's PWR_SRC bitmap (reg 0x04 [2:0]:
+        // bit0=5VIN, bit1=5VINOUT, bit2=BAT).
         int32_t pm1VinMv = -1;
         int32_t pm1VinOutMv = -1;
         int16_t pm1PowerSource = -1;

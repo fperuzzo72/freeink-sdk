@@ -30,6 +30,10 @@ class Ssd1683Driver final : public PanelDriver {
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  bool supportsAsyncDisplay() const override { return true; }
+  bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
+                    bool turnOff) override;
+  void displayFinish(EpdBus& bus, const uint8_t* fb) override;
   void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) override;
 
   bool supportsStripGrayscale() const override { return true; }
@@ -45,12 +49,12 @@ class Ssd1683Driver final : public PanelDriver {
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
   void requestResync(uint8_t settlePasses) override;
-  // Paper Mono cuts EPD power in deep sleep. The first paint still needs an
-  // absolute update, but display() implements it with a direct, non-flashing
-  // partial waveform rather than the OTP full-refresh waveform.
+  // Paper Mono cuts EPD power in deep sleep. Force the first paint through one
+  // all-pixel absolute OTP waveform before presenting its target frame.
   void skipInitialResync() override { _needsFull = true; }
+  void beginDisplayWork() override;
   void abortPostRefresh() override;
-  bool postRefreshAborted() const override { return _workAbort.load(); }
+  bool postRefreshAborted() const override;
   void runMaintenance(EpdBus& bus) override;
 
   void setGrayParams(const Ssd1683GrayParams& params);
@@ -63,7 +67,9 @@ class Ssd1683Driver final : public PanelDriver {
   void initController(EpdBus& bus);
   void resetRamCounter(EpdBus& bus);
   void writePlane(EpdBus& bus, uint8_t command, const uint8_t* data);
+  void activateStart(EpdBus& bus, uint8_t control);
   void activate(EpdBus& bus, uint8_t control);
+  void absolutePass(EpdBus& bus, const uint8_t* target);
   void loadCustomLut(EpdBus& bus, const uint8_t lut[111]);
   void customPass(EpdBus& bus, const uint8_t* p24, const uint8_t* p26, const uint8_t lut[111]);
   void cleanupChangedWhite(EpdBus& bus, const uint8_t* bw, const uint8_t* oldBw);
@@ -73,6 +79,7 @@ class Ssd1683Driver final : public PanelDriver {
   void makeGrayLut(uint8_t out[111]) const;
   void makeFastBaseLut(uint8_t out[111]) const;
   void makeCleanupLut(uint8_t out[111]) const;
+  bool displayWorkCancelled() const;
 
   bool _initialized = false;
   bool _needsFull = true;
@@ -84,11 +91,22 @@ class Ssd1683Driver final : public PanelDriver {
   bool _grayMsbReady = false;
   bool _fastGrayBase = false;
   bool _abortedAtTwoLevelBase = false;
-  std::atomic<bool> _workAbort{false};
-  std::atomic<bool> _grayAbort{false};
-  std::atomic<bool> _maintenanceAbort{false};
+  bool _asyncPending = false;
+  bool _asyncHadGray = false;
+  bool _asyncPreparingGray = false;
+  RefreshMode _asyncMode = RefreshMode::Fast;
+  uint32_t _asyncChangedPixels = 0;
+  unsigned long _asyncStartedMs = 0;
+  std::atomic<uint32_t> _abortGeneration{0};
+  uint32_t _displayWorkGeneration = 0;
   std::atomic<bool> _maintenancePending{false};
   std::atomic<bool> _grayMaintenancePending{false};
+  // Reader AA is staged during the foreground render and applied only after
+  // ActivityManager observes a quiet input window. A new page invalidates it
+  // before any waveform starts.
+  std::atomic<bool> _grayRefinePending{false};
+  uint32_t _grayRefineGeneration = 0;
+  uint32_t _grayRefinePixels = 0;
   uint8_t _bwUpdatesSinceMaintenance = 0;
   uint8_t _grayPagesSinceMaintenance = 0;
   Ssd1683GrayParams _grayParams{};

@@ -144,6 +144,10 @@ class PanelDriver {
   // --- optional, controller-specific hooks (no-op by default) ---
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
   virtual void skipInitialResync() {}
+  // Capture the cancellation generation at the start of a logical UI render.
+  // This must happen before CPU-side composition: input arriving while an old
+  // frame is being composed must still cancel its optional post-refresh work.
+  virtual void beginDisplayWork() {}
   // Cancel optional work which follows the primary B/W refresh (grayscale
   // refinement or ghost cleanup). Drivers should only stop between panel
   // waveforms: an already-triggered waveform must still run to completion.

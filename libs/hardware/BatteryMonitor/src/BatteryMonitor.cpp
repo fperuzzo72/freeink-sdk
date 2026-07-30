@@ -220,16 +220,12 @@ bool readGaugeCharging(bool& known) {
 
 namespace {
 constexpr uint8_t M5PM1_REG_PWR_SRC = 0x04;
-constexpr uint8_t M5PM1_REG_VBAT_L = 0x22;
-constexpr uint8_t M5PM1_REG_VIN_L = 0x24;
-constexpr uint8_t M5PM1_REG_5VINOUT_L = 0x26;
-constexpr uint16_t M5PM1_EXTERNAL_POWER_PRESENT_MV = 1000;
+constexpr uint8_t M5PM1_REG_VREF_L = 0x20;
+constexpr uint8_t M5PM1_PWR_SRC_5VIN = 1u << 0;
+constexpr uint8_t M5PM1_PWR_SRC_5VINOUT = 1u << 1;
 
-bool readM5Pm1Reg16(uint8_t reg, uint16_t& out) {
-  uint16_t raw = 0;
-  if (!freeink::m5pm1::readReg16(reg, &raw)) return false;
-  out = raw & 0x0FFF;  // voltage registers carry 12 significant bits
-  return true;
+uint16_t readLe16(const uint8_t* bytes) {
+  return static_cast<uint16_t>(bytes[0]) | (static_cast<uint16_t>(bytes[1]) << 8);
 }
 }  // namespace
 
@@ -406,37 +402,40 @@ bool BatteryMonitor::readM5Pm1Status(Status& status) const {
 
   freeink::m5pm1::beginBus();
 
-  uint16_t batMv = 0;
-  if (readM5Pm1Reg16(M5PM1_REG_VBAT_L, batMv)) {
+  // VREF/VBAT/VIN/5VOUT are four complete 16-bit little-endian millivolt
+  // registers (0x20..0x27). Only ADC_RES at 0x28 is 12-bit. Read the whole
+  // block atomically so paired bytes and the three rails share one sample.
+  uint8_t rails[8] = {};
+  const bool railsKnown = freeink::m5pm1::readBytes(M5PM1_REG_VREF_L, rails, sizeof(rails));
+  if (railsKnown) {
+    const uint16_t batMv = readLe16(rails + 2);
+    const uint16_t vinMv = readLe16(rails + 4);
+    const uint16_t vinOutMv = readLe16(rails + 6);
     status.millivoltsKnown = true;
     status.millivolts = batMv;
     status.percentageKnown = true;
     status.percentage = percentageFromMillivolts(batMv);
+    status.pm1VinMv = vinMv;
+    status.pm1VinOutMv = vinOutMv;
   }
 
-  // External power can arrive on either rail: 5VIN (DC input) or 5VINOUT (the
-  // bidirectional USB-C port on PaperColor), so a supply on either one counts.
-  uint16_t vinMv = 0;
-  uint16_t vinOutMv = 0;
-  const bool vinKnown = readM5Pm1Reg16(M5PM1_REG_VIN_L, vinMv);
-  const bool vinOutKnown = readM5Pm1Reg16(M5PM1_REG_5VINOUT_L, vinOutMv);
-  if (vinKnown) status.pm1VinMv = vinMv;
-  if (vinOutKnown) status.pm1VinOutMv = vinOutMv;
   uint8_t powerSource = 0;
   const bool pwrSrcKnown = freeink::m5pm1::readReg(M5PM1_REG_PWR_SRC, &powerSource);
-  if (pwrSrcKnown) status.pm1PowerSource = powerSource & 0x07;
-  if (vinKnown || vinOutKnown) {
+  if (pwrSrcKnown) {
+    const uint8_t sources = powerSource & 0x07;
+    status.pm1PowerSource = sources;
     status.externalPowerKnown = true;
-    status.externalPower = (vinKnown && vinMv > M5PM1_EXTERNAL_POWER_PRESENT_MV) ||
-                           (vinOutKnown && vinOutMv > M5PM1_EXTERNAL_POWER_PRESENT_MV);
-  } else if (pwrSrcKnown) {
-    status.externalPowerKnown = true;
-    status.externalPower = (powerSource & 0x07) == 0;
+    // PM1 manual: PWR_SRC is a bitmap, not the enum used by older M5PM1
+    // wrappers. Multiple bits may be set at once (the connected Paper Mono
+    // reports 0x05 = BAT | 5VIN). Unlike the ADC rail samples, these validity
+    // bits drop when the cable is removed, so they are the authoritative
+    // source for the charging badge.
+    status.externalPower = (sources & (M5PM1_PWR_SRC_5VIN | M5PM1_PWR_SRC_5VINOUT)) != 0;
   }
 
-  // M5PM1 exposes input power and battery voltage on PaperColor here. It does
-  // not expose a proven separate charge-phase bit in this lightweight PM1 map,
-  // so keep charging unknown instead of equating USB power with active charging.
+  // Product semantics for Paper Mono: external supply present means charging.
+  status.chargingKnown = status.externalPowerKnown;
+  status.charging = status.externalPower;
   return status.percentageKnown || status.millivoltsKnown || status.externalPowerKnown;
 }
 
