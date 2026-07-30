@@ -119,10 +119,15 @@ class PanelDriver {
   }
   virtual void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) { (void)bus; (void)lsb; }
   virtual void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) { (void)bus; (void)msb; }
+  // Host-retained selector planes can be copied and encoded while the previous
+  // B/W waveform is BUSY. Drivers returning true must not touch SPI in either
+  // writeGrayscalePlaneStrip() or prepareGrayscaleTarget().
+  virtual bool supportsBusyGrayscaleStaging() const { return false; }
   virtual void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                         uint16_t numRows) {
     (void)bus; (void)plane; (void)rows; (void)yStart; (void)numRows;
   }
+  virtual void prepareGrayscaleTarget(const uint8_t* bw) { (void)bw; }
   virtual void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) {
     (void)lut;
     (void)factoryMode;
@@ -157,6 +162,7 @@ class PanelDriver {
   // The default is deliberately empty; only panels with a non-flashing cleanup
   // waveform need it.
   virtual void runMaintenance(EpdBus& bus) { (void)bus; }
+  virtual bool hasPendingMaintenance() const { return false; }
   virtual void requestCompleteWaveformNextRefresh() {}
   // Interrupted-refresh cutoff tuning (ED2208: where the gate scan freezes).
   virtual void setFastRefreshCutoffMs(uint16_t ms) { (void)ms; }

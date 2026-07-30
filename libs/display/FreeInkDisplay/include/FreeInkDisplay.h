@@ -97,6 +97,8 @@ class FreeInkDisplay {
   void copyGrayscaleMsbBuffers(const uint8_t* msbBuffer);
   enum GrayPlane { GRAY_PLANE_LSB, GRAY_PLANE_MSB };
   void writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart, uint16_t numRows);
+  bool supportsBusyGrayscaleStaging() const;
+  void prepareGrayscaleTarget();
   bool supportsStripGrayscale() const;
   // Restore controller RAM and frameBuffer to the given BW baseline after
   // grayscale. Available in both buffer modes (CrossPoint's dual-buffer HAL
@@ -227,6 +229,7 @@ class FreeInkDisplay {
   void abortPostRefresh();
   bool postRefreshAborted() const;
   void runMaintenance();
+  bool hasPendingMaintenance() const;
 
   // debug function
   void grayscaleRevert();

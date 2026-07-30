@@ -937,7 +937,22 @@ void InputManager::pollFt5x06(const unsigned long now) {
   // Register 0x02 is TD_STATUS followed by the first point's XH/XL/YH/YL.
   // One contact is enough for the app's tap/swipe/drag gesture model.
   uint8_t data[5] = {};
-  if (!ft5x06ReadReg(0x02, data, sizeof(data)) || (data[0] & 0x0F) == 0) {
+  if (!ft5x06ReadReg(0x02, data, sizeof(data))) {
+    return;
+  }
+  if ((data[0] & 0x0F) == 0) {
+    // FT6336 may keep INT low until TD_STATUS has been drained. Treat the
+    // controller's zero-contact frame as authoritative; waiting only for the
+    // GPIO to rise leaves touchPressed latched and drops every later tap.
+    if (touchPressed) {
+      touchPressed = false;
+      touchPoint.valid = false;
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+#ifdef TOUCH_PROBE_DEBUG
+      touchDebugPrintf("[touch] FT release via TD_STATUS=0 held=%lums\n", lastTouchHeldDurationMs);
+#endif
+    }
     return;
   }
   const uint16_t rawX = static_cast<uint16_t>((data[1] & 0x0F) << 8) | data[2];

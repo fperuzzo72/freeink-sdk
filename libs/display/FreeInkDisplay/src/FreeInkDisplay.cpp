@@ -761,9 +761,22 @@ void FreeInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
 void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                               uint16_t numRows) {
   if (_inverted) return;
-  syncPendingAsync();  // no-op in the reader flow (it waits first); guards misuse
+  // SSD1683 retains these bytes in PSRAM and performs no bus access here, so
+  // staging can overlap the B/W waveform. Other drivers may write controller
+  // RAM and must drain the pending refresh first.
+  if (!_driver->supportsBusyGrayscaleStaging()) syncPendingAsync();
   _driver->writeGrayscalePlaneStrip(_bus, plane == GRAY_PLANE_LSB ? freeink::GrayPlane::Lsb : freeink::GrayPlane::Msb,
                                     rows, yStart, numRows);
+}
+
+bool FreeInkDisplay::supportsBusyGrayscaleStaging() const {
+  return !_inverted && _driver && _driver->supportsBusyGrayscaleStaging();
+}
+
+void FreeInkDisplay::prepareGrayscaleTarget() {
+  if (!_inverted && _driver && _driver->supportsBusyGrayscaleStaging()) {
+    _driver->prepareGrayscaleTarget(frameBuffer);
+  }
 }
 
 bool FreeInkDisplay::supportsStripGrayscale() const {
@@ -815,6 +828,10 @@ void FreeInkDisplay::runMaintenance() {
   if (!_driver) return;
   syncPendingAsync();
   _driver->runMaintenance(_bus);
+}
+
+bool FreeInkDisplay::hasPendingMaintenance() const {
+  return _driver && _driver->hasPendingMaintenance();
 }
 
 void FreeInkDisplay::requestCompleteWaveformNextRefresh() {
