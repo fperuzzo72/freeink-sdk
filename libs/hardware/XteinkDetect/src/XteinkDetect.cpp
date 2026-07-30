@@ -88,13 +88,27 @@ void epdCmdRead(const EpdProbePins& p, uint8_t cmd, uint8_t* out, uint8_t len) {
 // that is neither a floating-low nor a floating-high bus. A released SDA reads
 // back all-0x00 or all-0xFF through the pull-up, and neither the UC8253 nor the
 // SSD1677 answers 0x70 with this shape (the SSD-family has no such read), so a
-// genuine 0x00 lead followed by a non-trivial byte is discriminating. FLG must
 // additionally report idle (BUSY_N=1) without being a floating pattern.
+//
+// Match on the FLG status plus a non-uniform VER. A UC81xx drives 0x71 to a real
+// status byte (BUSY_N=D0=1 when idle) and returns a structured VER; an SSD-family
+// controller doesn't answer 0x70/0x71 at all, so the half-duplex line floats to a
+// uniform level (all 0xFF via the pull-up, or all 0x00). We deliberately do NOT
+// require any specific CHIP_VER value: a shipping X4 Pro UC8179 was observed
+// returning VER=00 00 01 FF FF (CHIP_VER byte = 0x00) with FLG=0x13 — an earlier
+// matcher that required ver[1] != 0 wrongly rejected it.
+bool verIsFloating(const uint8_t ver[5]) {
+  for (int i = 1; i < 5; i++)
+    if (ver[i] != ver[0]) return false;  // any variation => a real, driven response
+  return true;                           // all five bytes identical => floating bus
+}
+
 bool matchUc81xx(const uint8_t ver[5], uint8_t flg) {
-  if (ver[0] != 0x00) return false;
-  if (ver[1] == 0x00 || ver[1] == 0xFF) return false;
+  // FLG must be a real, non-floating status with BUSY_N (bit0) asserted (idle).
   if (flg == 0x00 || flg == 0xFF) return false;
-  return (flg & 0x01) == 0x01;
+  if ((flg & 0x01) != 0x01) return false;
+  // VER must be an actually-driven (non-uniform) pattern, not a floating bus.
+  return !verIsFloating(ver);
 }
 
 bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg) {
@@ -170,11 +184,11 @@ namespace {
 
 // The OEM records the panel controller per unit in NVS namespace `hw_calib`,
 // key `screenType` (u8): 1/0x0B = UC8179, 2/0x0C = UC8279, anything else (incl.
-// the default 3) = the shipping SSD-family / UC8253 part. This value is written
-// once at the factory and never rewritten, so it survives a reflash to a
-// different firmware as long as the NVS partition isn't erased — making it the
-// authoritative, probe-free answer when present. Returns false if NVS has no
-// such namespace/key (fresh chip, erased NVS, or a non-Xteink board).
+// the default 3) = the shipping SSD-family / UC8253 part. We READ it only for
+// diagnostics/cross-reference — NOT for the decision. It is unreliable in the
+// field: a full-flash from another unit overwrites this namespace, so it can
+// describe the wrong panel entirely. The live bus probe is the ground truth.
+// Returns false if NVS has no such namespace/key.
 bool readOemScreenType(uint8_t* out) {
   nvs_handle_t h;
   if (nvs_open("hw_calib", NVS_READONLY, &h) != ESP_OK) return false;
@@ -188,31 +202,38 @@ bool readOemScreenType(uint8_t* out) {
 
 bool screenTypeIsUltraChip(uint8_t st) { return st == 1 || st == 2 || st == 0x0B || st == 0x0C; }
 
+// Run the display-bus probe and report the verdict with a diagnostic log line.
+bool probeSaysUltraChip() {
+  uint8_t ver[5] = {0};
+  uint8_t flg = 0;
+  const DisplayControllerVerdict v = detectXteinkDisplayController(ver, &flg);
+  if (Serial)
+    Serial.printf("[%lu] [XTDET] bus probe VER=%02X %02X %02X %02X %02X FLG=%02X -> %s\n", millis(), ver[0], ver[1],
+                  ver[2], ver[3], ver[4], flg,
+                  v == DisplayControllerVerdict::Uc81xxConfirmed  ? "UltraChip"
+                  : v == DisplayControllerVerdict::PrimaryAssumed ? "default controller"
+                                                                  : "inconclusive (default)");
+  return v == DisplayControllerVerdict::Uc81xxConfirmed;
+}
+
 }  // namespace
 
 bool applyXteinkDisplayController() {
-  bool ultraChip;
+  // Decide from the live display-bus probe — the ground truth. The OEM NVS
+  // hw_calib/screenType is read only for diagnostics: it's unreliable in the
+  // field (a full-flash from another unit overwrites it, so it can name the wrong
+  // panel). Log it — and flag when it disagrees with the probe — but never
+  // decide on it.
   uint8_t screenType = 0;
   if (readOemScreenType(&screenType)) {
-    // Authoritative: trust the factory value and skip the bus probe entirely. A
-    // valid non-UltraChip value means the shipping controller — don't promote.
-    ultraChip = screenTypeIsUltraChip(screenType);
     if (Serial)
-      Serial.printf("[%lu] [XTDET] screenType=%u (NVS hw_calib) -> %s\n", millis(), screenType,
-                    ultraChip ? "UltraChip" : "default controller");
-  } else {
-    // No factory value (erased/absent NVS): fall back to the display-bus probe.
-    uint8_t ver[5] = {0};
-    uint8_t flg = 0;
-    const DisplayControllerVerdict v = detectXteinkDisplayController(ver, &flg);
-    ultraChip = v == DisplayControllerVerdict::Uc81xxConfirmed;
-    if (Serial)
-      Serial.printf("[%lu] [XTDET] no NVS screenType; bus probe VER=%02X %02X %02X %02X %02X FLG=%02X -> %s\n",
-                    millis(), ver[0], ver[1], ver[2], ver[3], ver[4], flg,
-                    v == DisplayControllerVerdict::Uc81xxConfirmed  ? "UltraChip"
-                    : v == DisplayControllerVerdict::PrimaryAssumed ? "default controller"
-                                                                    : "inconclusive (default)");
+      Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType=%u (%s) [info only]\n", millis(), screenType,
+                    screenTypeIsUltraChip(screenType) ? "UltraChip" : "default");
+  } else if (Serial) {
+    Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType: not set [info only]\n", millis());
   }
+
+  const bool ultraChip = probeSaysUltraChip();
   if (!ultraChip) return false;
 
   // Promote the profile's default controller to its UltraChip sibling. screenType

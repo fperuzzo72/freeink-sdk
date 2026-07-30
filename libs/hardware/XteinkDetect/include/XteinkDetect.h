@@ -78,16 +78,15 @@ DisplayControllerVerdict detectXteinkDisplayController(uint8_t verBytes[5] = nul
 // Convenience: resolve which panel controller this unit carries and, when it is
 // the UltraChip sibling, promote BoardConfig::ACTIVE.displayController to it
 // (SSD1677 -> UC8179, UC8253 -> UC8279) so FreeInkDisplay::begin() selects the
-// matching driver. Resolution order:
-//   1. The OEM factory value in NVS (namespace hw_calib, key screenType) — never
-//      rewritten by the factory, so authoritative when present; the bus probe is
-//      skipped entirely.
-//   2. Otherwise the display-bus probe (detectXteinkDisplayController()).
-// Leaves the profile's default controller in place otherwise (a valid non-
-// UltraChip factory value, or an Inconclusive probe, never switches — a flaky
-// boot falls back to the shipping controller). Returns true iff the controller
-// was promoted. Call before FreeInkDisplay::begin(). In builds without a
-// probe-capable profile this is a no-op returning false.
+// matching driver. The decision is made from the live display-bus probe
+// (detectXteinkDisplayController()) — the ground truth for what silicon is
+// actually present. The OEM NVS value (hw_calib/screenType) is read only for
+// diagnostics and logged for cross-reference; it is NOT used to decide, because
+// it is unreliable in the field (a full-flash from another unit overwrites that
+// namespace and can name the wrong panel). Leaves the profile's default
+// controller in place when the probe doesn't confirm an UltraChip part. Returns
+// true iff the controller was promoted. Call before FreeInkDisplay::begin(). In
+// builds without a probe-capable profile this is a no-op returning false.
 bool applyXteinkDisplayController();
 
 // Convenience: run detectXteinkIsX3(), set BoardConfig::ACTIVE to the matching
