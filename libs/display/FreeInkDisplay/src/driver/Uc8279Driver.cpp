@@ -45,21 +45,6 @@ uint32_t Uc8279Driver::spiHz() const {
 
 PanelGeometry Uc8279Driver::geometry() const { return {_w, _h, _wb, _bufferSize}; }
 
-void Uc8279Driver::triggerRefresh(EpdBus& bus, bool turnOff) {
-  if (!_isScreenOn) {
-    bus.cmd(CMD_POWER_ON);
-    bus.waitBusy(" 8279_PON");
-    _isScreenOn = true;
-  }
-  bus.cmd(CMD_DISPLAY_REFRESH);
-  bus.waitBusy(" 8279_DRF");
-  if (turnOff) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" 8279_POF");
-    _isScreenOn = false;
-  }
-}
-
 void Uc8279Driver::initController(EpdBus& bus) {
   bus.cmd(CMD_PANEL_SETTING);
   bus.data(_cfg.psr0);

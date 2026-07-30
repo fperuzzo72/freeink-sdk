@@ -61,7 +61,6 @@ class Uc8279Driver : public PanelDriver {
 
  private:
   void initController(EpdBus& bus);
-  void triggerRefresh(EpdBus& bus, bool turnOff);
 
   const Uc8279Config& _cfg;
 
