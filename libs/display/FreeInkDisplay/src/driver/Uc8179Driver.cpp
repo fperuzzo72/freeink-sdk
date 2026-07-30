@@ -28,6 +28,22 @@ constexpr uint8_t CMD_E1 = 0xE1;                  // power/analog control
 constexpr uint8_t CMD_VCOM_DC = 0xE5;             // VDCS (VCOM_DC)
 
 constexpr uint8_t CDI_INTERVAL = 0x07;  // CDI byte1, constant
+
+// 4-level grayscale (AA) waveform LUTs — the OEM's FULL grayscale set (6-frame
+// phases), recovered from app1 DROM (the gray_full custom-LUT bank). Each row is
+// [cmd][41 data bytes]; cmd is the LUT register (0x20 VCOM/LUTC, 0x21 LUTWW,
+// 0x22 LUTKW, 0x23 LUTWK, 0x24 LUTKK). Uploaded in custom-LUT mode (PSR REG bit
+// set) so the mid-tones are actively driven and HELD — the OTP path under-drove
+// them and the image relaxed to grey after settling. The trailing bytes are
+// zero (aggregate-init pads the rest of each 42-byte row).
+constexpr uint8_t GRAY_LUT_LEN = 42;  // 0x2A: cmd + 41 data (matches the OEM blob)
+const uint8_t kGrayLuts[5][GRAY_LUT_LEN] = {
+    {0x20, 0x00, 0x06, 0x01, 0x06, 0x06, 0x01, 0x00, 0x04, 0x01, 0x01, 0x00, 0x01},  // LUTC / VCOM
+    {0x21, 0x20, 0x06, 0x01, 0x06, 0x06, 0x01, 0x00, 0x04, 0x01, 0x01, 0x00, 0x01},  // LUTWW
+    {0x22, 0xAA, 0x06, 0x01, 0x06, 0x06, 0x01, 0xA0, 0x04, 0x01, 0x01, 0x00, 0x01},  // LUTKW
+    {0x23, 0x55, 0x06, 0x01, 0x06, 0x06, 0x01, 0x50, 0x04, 0x01, 0x01, 0x00, 0x01},  // LUTWK
+    {0x24, 0x00, 0x06, 0x01, 0x06, 0x06, 0x01, 0x04, 0x04, 0x01, 0x01, 0x00, 0x01},  // LUTKK
+};
 }  // namespace
 
 const Uc8179Config& uc8179DefaultConfig() {
@@ -234,9 +250,10 @@ void Uc8179Driver::deepSleep(EpdBus& bus) {
 
 // --- 4-level grayscale (anti-aliasing) --------------------------------------
 // Load the two bitplanes (oriented + padded like the B/W path) into controller
-// RAM; displayGray() then triggers the OTP gray waveform. LSB -> 0x10 ("old"),
-// MSB -> 0x13 ("new"). If the two mid grays come out swapped on hardware, swap
-// the LSB/MSB plane assignment here.
+// RAM; displayGray() then runs the custom-LUT grayscale waveform. LSB -> 0x10
+// ("old"), MSB -> 0x13 ("new"); the (old,new) pair selects the WW/KW/WK/KK LUT
+// per pixel for the 4 levels. If the two mid greys come out swapped on hardware,
+// swap the LSB/MSB plane assignment here.
 void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (lsb) streamPlane(bus, CMD_DTM1, lsb);  // 0x10 = LSB / "old" plane
 }
@@ -248,21 +265,28 @@ void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                bool factoryMode) {
   (void)fb;           // the two planes are already loaded (copyGrayscaleLsb/Msb)
-  (void)lut;          // OTP gray waveform — no custom LUT (matches stock gray_full)
+  (void)lut;          // waveform comes from the built-in gray LUT set below
   (void)factoryMode;  // 4-level is absolute (defined by the planes)
 
-  // OEM gray_full stream: E0/E5 (frame value 0x5A) + CDI 0x29 + PSR (OTP) then
-  // PON/DRF over the loaded planes. TRES/PLL/BTST were set at begin().
-  bus.cmd(CMD_E0);
-  bus.data(_cfg.e0);  // 0x02
-  bus.cmd(CMD_VCOM_DC);
-  bus.data(_cfg.vcomDcFast);  // 0x5A gray frame value
+  // Custom-LUT 4-level grayscale. The OTP path under-drove the mids (image
+  // relaxed to grey after settling), so drive the OEM's full gray waveform from
+  // registers: PSR with REG bit SET (custom LUT) — our psr0 (0x3F) is sent
+  // UNMASKED here so bit5=1; the B/W path masks it to 0x1F (OTP). SHL (mirror-X)
+  // stays set. Then upload the 5 LUTs and refresh over the loaded planes.
+  bus.cmd(CMD_PANEL_SETTING);
+  bus.data(_cfg.psr0);  // 0x3F: REG=1 (custom LUT) + KW + SHL mirror-X
+  bus.data(_cfg.psr1);
+  for (const auto& l : kGrayLuts) {
+    bus.cmd(l[0]);
+    bus.data(&l[1], GRAY_LUT_LEN - 1);
+  }
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_cfg.cdiActive);  // 0x29
   bus.data(CDI_INTERVAL);
-  bus.cmd(CMD_PANEL_SETTING);
-  bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // OTP (bit5=0) + SHL mirror-X
-  bus.data(_cfg.psr1);
+  bus.cmd(CMD_E0);
+  bus.data(_cfg.e0);  // 0x02
+  bus.cmd(CMD_VCOM_DC);
+  bus.data(_cfg.vcomDc);  // 0x1E (VCOM_DC; the LUTC also carries VCOM)
 
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
