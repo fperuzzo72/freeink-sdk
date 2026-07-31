@@ -121,17 +121,19 @@ bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg) {
   pinMode(p.mosi, OUTPUT);
   if (p.busy >= 0) pinMode(p.busy, INPUT);
 
-  // Hardware reset pulse (RST_N min low width 50 us; give it 1 ms) then wait a
-  // fixed settle time. We can't trust BUSY polarity here — the controller (and
-  // therefore its idle level) is exactly what we're trying to identify — so we
-  // don't gate on BUSY; a flat delay covers every UC81xx power-up. The panel
-  // driver's own begin() resets again afterwards, so this leaves no state.
+  // Hardware reset pulse. The vendor identification path holds RST_N low for at
+  // least 50 ms (well beyond the datasheet's 50 us minimum — the ID readback is
+  // less forgiving than normal operation), then a fixed settle. We can't trust
+  // BUSY polarity here — the controller (and therefore its idle level) is
+  // exactly what we're trying to identify — so we don't gate on BUSY; a flat
+  // delay covers every UC81xx power-up. The panel driver's own begin() resets
+  // again afterwards, so this leaves no state.
   if (p.rst >= 0) {
     pinMode(p.rst, OUTPUT);
     digitalWrite(p.rst, HIGH);
     delay(2);
     digitalWrite(p.rst, LOW);
-    delay(1);
+    delay(50);
     digitalWrite(p.rst, HIGH);
   }
   delay(30);
@@ -203,10 +205,13 @@ bool readOemScreenType(uint8_t* out) {
 bool screenTypeIsUltraChip(uint8_t st) { return st == 1 || st == 2 || st == 0x0B || st == 0x0C; }
 
 // Run the display-bus probe and report the verdict with a diagnostic log line.
-bool probeSaysUltraChip() {
+// On a confirmed UltraChip part, `verOut` receives the 5 VER bytes (byte2 is
+// LUT_VER, which identifies the silicon variant).
+bool probeSaysUltraChip(uint8_t verOut[5]) {
   uint8_t ver[5] = {0};
   uint8_t flg = 0;
   const DisplayControllerVerdict v = detectXteinkDisplayController(ver, &flg);
+  memcpy(verOut, ver, 5);
   if (Serial)
     Serial.printf("[%lu] [XTDET] bus probe VER=%02X %02X %02X %02X %02X FLG=%02X -> %s\n", millis(), ver[0], ver[1],
                   ver[2], ver[3], ver[4], flg,
@@ -233,17 +238,34 @@ bool applyXteinkDisplayController() {
     Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType: not set [info only]\n", millis());
   }
 
-  const bool ultraChip = probeSaysUltraChip();
+  uint8_t ver[5] = {0};
+  const bool ultraChip = probeSaysUltraChip(ver);
   if (!ultraChip) return false;
 
-  // Promote the profile's default controller to its UltraChip sibling. screenType
-  // 1/0x0B (UC8179) pairs with the SSD1677 boards, 2/0x0C (UC8279) with UC8253,
-  // so promoting by the profile default lands on the right driver either way.
+  // Promote the profile's default controller to its UltraChip sibling.
   switch (BoardConfig::ACTIVE.displayController) {
-    case BoardConfig::DisplayController::SSD1677:
-      BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8179;
-      if (Serial) Serial.printf("[%lu] [XTDET] promoted SSD1677 -> UC8179\n", millis());
+    case BoardConfig::DisplayController::SSD1677: {
+      // X4-family boards can carry either UltraChip part; VER byte2 (LUT_VER)
+      // tells them apart per the vendor reference: 0x01 = UC8179, 0x02/0x68 =
+      // UC8279 (800x480 variant), 0x69 = reserved UC8279. Anything else is
+      // unrecognized — take the UC8179 driver, the variant every unit benched
+      // so far has carried (observed VER=00 00 01 FF FF).
+      const uint8_t lutVer = ver[2];
+      if (lutVer == 0x02 || lutVer == 0x68 || lutVer == 0x69) {
+        BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
+        BoardConfig::ACTIVE.displayControllerVariant = lutVer;
+        if (Serial)
+          Serial.printf("[%lu] [XTDET] promoted SSD1677 -> UC8279 800x480 (LUT_VER=%02X%s)\n", millis(), lutVer,
+                        lutVer == 0x69 ? ", reserved" : "");
+      } else {
+        BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8179;
+        BoardConfig::ACTIVE.displayControllerVariant = lutVer;
+        if (Serial)
+          Serial.printf("[%lu] [XTDET] promoted SSD1677 -> UC8179 (LUT_VER=%02X%s)\n", millis(), lutVer,
+                        lutVer == 0x01 ? "" : ", unrecognized -> UC8179 default");
+      }
       return true;
+    }
     case BoardConfig::DisplayController::UC8253:
       BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
       if (Serial) Serial.printf("[%lu] [XTDET] promoted UC8253 -> UC8279\n", millis());

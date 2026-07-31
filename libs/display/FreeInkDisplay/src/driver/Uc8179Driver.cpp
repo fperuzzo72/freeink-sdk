@@ -11,7 +11,7 @@ namespace {
 // UC8179 command set (UC8179 datasheet + OEM UC8179_800x480 stream, via Ghidra).
 constexpr uint8_t CMD_PANEL_SETTING = 0x00;       // PSR
 constexpr uint8_t CMD_POWER_OFF = 0x02;           // POF
-constexpr uint8_t CMD_PLL = 0x03;                 // PLL/OSC control
+constexpr uint8_t CMD_PFS = 0x03;                 // PFS (power-off sequence; PLL is 0x30)
 constexpr uint8_t CMD_POWER_ON = 0x04;            // PON
 constexpr uint8_t CMD_BOOSTER_SOFT_START = 0x06;  // BTST
 constexpr uint8_t CMD_DEEP_SLEEP = 0x07;          // DSLP (check code 0xA5)
@@ -22,10 +22,10 @@ constexpr uint8_t CMD_PARTIAL_IN = 0x91;          // PTIN (partial refresh in)
 constexpr uint8_t CMD_PARTIAL_OUT = 0x92;         // PTOUT (partial refresh out)
 constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50;  // CDI
 constexpr uint8_t CMD_RESOLUTION = 0x61;          // TRES
-constexpr uint8_t CMD_GATE_SOURCE_START = 0x65;   // GSST
-constexpr uint8_t CMD_E0 = 0xE0;                  // power/analog control
-constexpr uint8_t CMD_E1 = 0xE1;                  // power/analog control
-constexpr uint8_t CMD_VCOM_DC = 0xE5;             // VDCS (VCOM_DC)
+constexpr uint8_t CMD_GATE_SOURCE_START = 0x65;   // GSST (4 data bytes)
+constexpr uint8_t CMD_CCSET = 0xE0;               // CCSET (cascade/output enable)
+constexpr uint8_t CMD_GATE_SCAN = 0xE1;           // gate-scan selection
+constexpr uint8_t CMD_TSSET = 0xE5;               // TSSET (forced temperature; frame-rate lever)
 
 constexpr uint8_t CDI_INTERVAL = 0x07;  // CDI byte1, constant
 
@@ -55,12 +55,12 @@ const Uc8179Config& uc8179DefaultConfig() {
       0x3F,                      // psr0 (init): 0x3B + SHL bit2 set (mirror-X in hardware);
                                  // refresh re-asserts psr0 & 0xDF = 0x1F (OTP + SHL)
       0x0A,                      // psr1
-      0x20,                      // pll (0x03)
+      0x20,                      // pfs (0x03 power-off sequence)
       {0x25, 0x25, 0x3C, 0x25},  // btst (0x06 booster soft-start)
-      0x02,                      // e1 (0xE1)
-      0x02,                      // e0 (0xE0)
-      0x1E,                      // vcomDc (0xE5) full refresh (frame-rate/temp value)
-      0x5A,                      // vcomDcFast (0xE5) fast refresh — REQUIRED: this is the
+      0x02,                      // gateScan (0xE1)
+      0x02,                      // ccset (0xE0)
+      0x1E,                      // tsset (0xE5) full refresh (forced-temperature value)
+      0x5A,                      // tssetFast (0xE5) fast refresh — REQUIRED: this is the
                                  // frame-rate lever that makes the partial shorter (per RE)
       0x29,                      // cdiActive (0x50, during refresh)
       0xA9,                      // cdiIdle (0x50, restored after)
@@ -85,7 +85,7 @@ uint32_t Uc8179Driver::spiHz() const {
 
 PanelGeometry Uc8179Driver::geometry() const { return {_w, _h, _wb, _bufferSize}; }
 
-// The OEM init (FUN_4214dff8): PSR, TRES (800x600), GSST, PLL, BTST, E1. No plane
+// The OEM init (FUN_4214dff8): PSR, TRES (800x600), GSST, PFS, BTST, E1. No plane
 // fill, no CDI/VCOM here — those are (re)asserted per refresh. OTP waveforms
 // (PSR REG bit cleared at refresh), so no LUT upload.
 void Uc8179Driver::initController(EpdBus& bus) {
@@ -101,12 +101,16 @@ void Uc8179Driver::initController(EpdBus& bus) {
   bus.data(static_cast<uint8_t>((_tresH >> 8) & 0xFF));
   bus.data(static_cast<uint8_t>(_tresH & 0xFF));
 
+  // GSST is a 4-byte register (S_START, banks, G_START x2); the vendor reference
+  // writes all four zero bytes.
   bus.cmd(CMD_GATE_SOURCE_START);
   bus.data(0x00);
   bus.data(0x00);
+  bus.data(0x00);
+  bus.data(0x00);
 
-  bus.cmd(CMD_PLL);
-  bus.data(_cfg.pll);
+  bus.cmd(CMD_PFS);
+  bus.data(_cfg.pfs);
 
   bus.cmd(CMD_BOOSTER_SOFT_START);
   bus.data(_cfg.btst[0]);
@@ -114,10 +118,11 @@ void Uc8179Driver::initController(EpdBus& bus) {
   bus.data(_cfg.btst[2]);
   bus.data(_cfg.btst[3]);
 
-  bus.cmd(CMD_E1);
-  bus.data(_cfg.e1);
+  bus.cmd(CMD_GATE_SCAN);
+  bus.data(_cfg.gateScan);
 
   _isScreenOn = false;
+  _grayRefreshedOnce = false;
 }
 
 void Uc8179Driver::begin(EpdBus& bus) {
@@ -172,20 +177,20 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_cfg.cdiActive);  // 0x29
   bus.data(CDI_INTERVAL);
-  bus.cmd(CMD_E0);
-  bus.data(_cfg.e0);  // 0x02
-  bus.cmd(CMD_VCOM_DC);
-  bus.data(fast ? _cfg.vcomDcFast : _cfg.vcomDc);  // fast 0x5A (frame lever) / full 0x1E
+  bus.cmd(CMD_CCSET);
+  bus.data(_cfg.ccset);  // 0x02
+  bus.cmd(CMD_TSSET);
+  bus.data(fast ? _cfg.tssetFast : _cfg.tsset);  // fast 0x5A (frame lever) / full 0x1E
   bus.cmd(CMD_PANEL_SETTING);
   bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // REG bit cleared -> OTP
   bus.data(_cfg.psr1);
   if (fast) {
-    // Fast-only: PFS/gate + cascade/active-temp. Full omits these; without them
-    // the OTP waveform runs at the full frame count (same duration + garbled).
-    bus.cmd(CMD_PLL);
-    bus.data(_cfg.pll);  // 0x03 <- 0x20
-    bus.cmd(CMD_E1);
-    bus.data(_cfg.e1);  // 0xE1 <- 0x02
+    // Fast-only: PFS/gate-scan re-assert. Full omits these; without them the OTP
+    // waveform runs at the full frame count (same duration + garbled).
+    bus.cmd(CMD_PFS);
+    bus.data(_cfg.pfs);  // 0x03 <- 0x20
+    bus.cmd(CMD_GATE_SCAN);
+    bus.data(_cfg.gateScan);  // 0xE1 <- 0x02
   }
 
   if (!_isScreenOn) {
@@ -285,9 +290,12 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     bus.cmd(l.cmd);
     bus.data(l.data, GRAY_LUT_LEN);
   }
+  // Vendor reference: the FIRST AA refresh after init drives the border (0x29);
+  // later AA refreshes hold it (0xA9) so the border doesn't flash on every page.
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_cfg.cdiActive);  // 0x29
+  bus.data(_grayRefreshedOnce ? _cfg.cdiIdle : _cfg.cdiActive);  // first 0x29, later 0xA9
   bus.data(CDI_INTERVAL);
+  _grayRefreshedOnce = true;
 
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
