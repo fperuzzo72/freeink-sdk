@@ -60,6 +60,11 @@ struct ListProps {
   // trailing chevron/value keeps air from the row edge on themes with tight
   // row padding.
   int16_t valueInset = 0;
+  // When a multi-line label would otherwise overlap its trailing value, keep
+  // the wrapped title band visually balanced with that value. Callers with a
+  // short, secondary value (such as a file extension) can disable this to
+  // use the full width remaining before the value.
+  bool balanceWrappedLabelWithValue = true;
   // Switch geometry for ListItem::toggle rows (mirrors ToggleRowProps).
   // Colors derive from the row style's foreground so the switch stays legible
   // on inverted (selected) rows.
@@ -347,7 +352,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
                                     props.textGap);
     }
 
-    if (labelStyle.maxLines > 1 && (item.toggle || item.value) && item.label) {
+    if (props.balanceWrappedLabelWithValue && labelStyle.maxLines > 1 && (item.toggle || item.value) && item.label) {
       // A label that fits stays on one line; one that must wrap breaks early
       // (60% of the band) for a balanced two-line split instead of running
       // right up against the trailing slot.
