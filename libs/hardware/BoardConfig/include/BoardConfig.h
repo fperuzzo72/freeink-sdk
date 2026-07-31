@@ -16,7 +16,8 @@
 // selectDevice); ACTIVE defaults to a compile-time default until then.
 
 #include <Arduino.h>
-#include <driver/gpio.h>  // gpio_hold_dis in releaseSdRail()
+#include <driver/gpio.h>   // gpio_hold_dis in releaseSdRail()
+#include <esp_rom_sys.h>  // esp_rom_printf in holdPowerRails()
 
 // ============================================================================
 // Build composition — devices x capabilities
@@ -1314,7 +1315,9 @@ inline void holdPowerRails() {
     if (latchConflictsWithBus(pin)) {
       // Refuse to drive a bus pin as a latch — see latchConflictsWithBus().
 #if defined(ENABLE_SERIAL_LOG)
-      if (Serial) Serial.printf("[BOARD] power latch pin %d collides with a display/SD bus pin; skipping\n", pin);
+      // esp_rom_printf, not Serial: this runs first thing in setup(), before
+      // USB CDC enumerates, and consumers deprecate Serial.printf in headers.
+      esp_rom_printf("[BOARD] power latch pin %d collides with a display/SD bus pin; skipping\n", pin);
 #endif
       continue;
     }
