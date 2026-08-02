@@ -111,7 +111,7 @@ bool matchUc81xx(const uint8_t ver[5], uint8_t flg) {
   return !verIsFloating(ver);
 }
 
-bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg) {
+bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg, uint8_t rstLowMs) {
   pinMode(p.cs, OUTPUT);
   digitalWrite(p.cs, HIGH);
   pinMode(p.sclk, OUTPUT);
@@ -121,19 +121,22 @@ bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg) {
   pinMode(p.mosi, OUTPUT);
   if (p.busy >= 0) pinMode(p.busy, INPUT);
 
-  // Hardware reset pulse. The vendor identification path holds RST_N low for at
-  // least 50 ms (well beyond the datasheet's 50 us minimum — the ID readback is
-  // less forgiving than normal operation), then a fixed settle. We can't trust
-  // BUSY polarity here — the controller (and therefore its idle level) is
-  // exactly what we're trying to identify — so we don't gate on BUSY; a flat
-  // delay covers every UC81xx power-up. The panel driver's own begin() resets
-  // again afterwards, so this leaves no state.
+  // Hardware reset pulse (rstLowMs low, then a fixed settle). The vendor
+  // identification path holds RST_N low for 50 ms (well beyond the datasheet's
+  // 50 us minimum — the ID readback is less forgiving than normal operation),
+  // but that cost is only paid on the CONFIRM pass: the screening pass uses a
+  // short pulse so the common case — an SSD-family panel that will never answer
+  // 0x70 — doesn't add ~100 ms to every boot and wake (see
+  // probeDisplayController). We can't trust BUSY polarity here — the controller
+  // (and therefore its idle level) is exactly what we're trying to identify —
+  // so we don't gate on BUSY; a flat delay covers every UC81xx power-up. The
+  // panel driver's own begin() resets again afterwards, so this leaves no state.
   if (p.rst >= 0) {
     pinMode(p.rst, OUTPUT);
     digitalWrite(p.rst, HIGH);
     delay(2);
     digitalWrite(p.rst, LOW);
-    delay(50);
+    delay(rstLowMs);
     digitalWrite(p.rst, HIGH);
   }
   delay(30);
@@ -159,15 +162,22 @@ void releaseDisplayPins(const EpdProbePins& p) {
 // both passes match the UC81xx signature AND agree on the VER bytes — a floating
 // bus can't produce the same stable non-trivial pattern twice. Disagreement is
 // Inconclusive; both-fail is PrimaryAssumed (the profile's default controller).
+//
+// Reset budget: pass 1 screens with the short (1 ms) reset that every benched
+// UC81xx answers fine; only if it matches does pass 2 confirm with the vendor
+// identification timing (RST low 50 ms), which also makes pass 2's VER the one
+// read under doc conditions. An SSD-family board (floating bus) therefore pays
+// two cheap passes (~66 ms total, as before the doc-timing change) instead of
+// two 50 ms resets on every boot and wake.
 DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t verBytes[5], uint8_t* flg) {
   uint8_t ver1[5] = {0};
   uint8_t ver2[5] = {0};
   uint8_t flg1 = 0;
-  const bool pass1 = runDisplayProbePass(p, ver1, &flg1);
+  const bool pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/1);
   delay(2);
-  const bool pass2 = runDisplayProbePass(p, ver2, nullptr);
+  const bool pass2 = runDisplayProbePass(p, ver2, nullptr, /*rstLowMs=*/pass1 ? 50 : 1);
   releaseDisplayPins(p);
-  if (verBytes) memcpy(verBytes, ver1, 5);
+  if (verBytes) memcpy(verBytes, pass1 && pass2 ? ver2 : ver1, 5);
   if (flg) *flg = flg1;
   if (pass1 && pass2 && memcmp(ver1, ver2, 5) == 0) return DisplayControllerVerdict::Uc81xxConfirmed;
   if (!pass1 && !pass2) return DisplayControllerVerdict::PrimaryAssumed;
