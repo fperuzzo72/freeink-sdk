@@ -222,6 +222,73 @@ static const KeyboardKey ES_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHI
                                       K("n", "n", 'n'), K("m", "m", 'm'),
                                       KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
 
+// ЙЦУКЕН. Key ids are the letters' code points (U+0410..U+044F): they fit
+// int16_t and stay clear of the ASCII ids and the negative control ids.
+//
+// They do overlap the localized-letter ids of the Latin layouts — э is 0x44D,
+// which is 1101, the same number as QwertzDe's ü. That is safe because ids are
+// only ever resolved within one layout (keyboardOutputFor walks the layout it
+// is handed), and two scripts are never on screen at once. Anything that maps
+// an id to a character without knowing the layout would break, which is exactly
+// why keyboardOutputFor takes the layout as its first argument.
+//
+// Keys carry no explicit `alt`, so long-press falls through to the implicit
+// case flip in keyboardAltOutputFor, exactly as the Latin layouts do. Spelling
+// the opposite case out would also make the renderer draw it as a corner hint,
+// putting "йЙ" on every key.
+//
+// The one deliberate `alt` is е/Е → ё/Ё: that letter has no key of its own in
+// this arrangement, so the hint is worth showing and the flip is worth losing.
+static const KeyboardKey RU_ROW1[] = {K("й", "й", 0x439), K("ц", "ц", 0x446), K("у", "у", 0x443),
+                                      K("к", "к", 0x43A), KA("е", "е", 0x435, "ё"), K("н", "н", 0x43D),
+                                      K("г", "г", 0x433), K("ш", "ш", 0x448), K("щ", "щ", 0x449),
+                                      K("з", "з", 0x437), K("х", "х", 0x445), K("ъ", "ъ", 0x44A)};
+static const KeyboardKey RU_ROW2[] = {K("ф", "ф", 0x444), K("ы", "ы", 0x44B), K("в", "в", 0x432),
+                                      K("а", "а", 0x430), K("п", "п", 0x43F), K("р", "р", 0x440),
+                                      K("о", "о", 0x43E), K("л", "л", 0x43B), K("д", "д", 0x434),
+                                      K("ж", "ж", 0x436), K("э", "э", 0x44D)};
+static const KeyboardKey RU_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
+                                      K("я", "я", 0x44F),
+                                      K("ч", "ч", 0x447),
+                                      K("с", "с", 0x441),
+                                      K("м", "м", 0x43C),
+                                      K("и", "и", 0x438),
+                                      K("т", "т", 0x442),
+                                      K("ь", "ь", 0x44C),
+                                      K("б", "б", 0x431),
+                                      K("ю", "ю", 0x44E),
+                                      KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+
+static const KeyboardKey RU_SHIFT_ROW1[] = {
+    K("Й", "Й", 0x419), K("Ц", "Ц", 0x426), K("У", "У", 0x423), K("К", "К", 0x41A),
+    KA("Е", "Е", 0x415, "Ё"), K("Н", "Н", 0x41D), K("Г", "Г", 0x413), K("Ш", "Ш", 0x428),
+    K("Щ", "Щ", 0x429), K("З", "З", 0x417), K("Х", "Х", 0x425), K("Ъ", "Ъ", 0x42A)};
+static const KeyboardKey RU_SHIFT_ROW2[] = {
+    K("Ф", "Ф", 0x424), K("Ы", "Ы", 0x42B), K("В", "В", 0x412), K("А", "А", 0x410),
+    K("П", "П", 0x41F), K("Р", "Р", 0x420), K("О", "О", 0x41E), K("Л", "Л", 0x41B),
+    K("Д", "Д", 0x414), K("Ж", "Ж", 0x416), K("Э", "Э", 0x42D)};
+static const KeyboardKey RU_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
+                                            K("Я", "Я", 0x42F),
+                                            K("Ч", "Ч", 0x427),
+                                            K("С", "С", 0x421),
+                                            K("М", "М", 0x41C),
+                                            K("И", "И", 0x418),
+                                            K("Т", "Т", 0x422),
+                                            K("Ь", "Ь", 0x42C),
+                                            K("Б", "Б", 0x411),
+                                            K("Ю", "Ю", 0x42E),
+                                            KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+
+// Bottom row carrying the script-switch key. Kept separate from EN_ROW4 so a
+// single-script build renders exactly as before — the key costs a slot in the
+// row, and there is no point spending it when there is nowhere to switch to.
+// Its "EN" label is a placeholder: the app overrides it per frame through
+// KeyboardProps::langLabel with the name of whatever layout comes next.
+static const KeyboardKey LANG_ROW4[] = {KS("?123", KeyKind::Mode, QWERTY_KEY_MODE, 2),
+                                        KS("EN", KeyKind::Lang, QWERTY_KEY_LANG, 2),
+                                        KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 4),
+                                        KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
+
 static const KeyboardRow EN_ROWS[] = {{EN_ROW1, 10, 0}, {EN_ROW2, 9, 1}, {EN_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
 static const KeyboardRow EN_SHIFT_ROWS[] = {{EN_SHIFT_ROW1, 10, 0}, {EN_SHIFT_ROW2, 9, 1}, {EN_SHIFT_ROW3, 9, 0},
                                            {EN_ROW4, 3, 0}};
@@ -259,6 +326,53 @@ static const KeyboardLayout FR_NUM_LAYOUT{FR_NUM_ROWS, 5};
 static const KeyboardLayout DE_NUM_LAYOUT{DE_NUM_ROWS, 5};
 static const KeyboardLayout ES_NUM_LAYOUT{ES_NUM_ROWS, 5};
 
+// Cyrillic ships only in the lang-key flavour: a Cyrillic-only keyboard cannot
+// type a Wi-Fi password or a URL, so there always has to be a way back to
+// Latin. Its rows run 12/11/11 keys against Latin's 10/9/9 — callers sizing a
+// hit-test buffer from the widest layout must account for that.
+static const KeyboardRow RU_ROWS[] = {{RU_ROW1, 12, 0}, {RU_ROW2, 11, 0}, {RU_ROW3, 11, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow RU_SHIFT_ROWS[] = {{RU_SHIFT_ROW1, 12, 0},
+                                            {RU_SHIFT_ROW2, 11, 0},
+                                            {RU_SHIFT_ROW3, 11, 0},
+                                            {LANG_ROW4, 4, 0}};
+static const KeyboardRow RU_NUM_ROWS[] = {{NUM_ROW, 10, 0},
+                                          {RU_ROW1, 12, 0},
+                                          {RU_ROW2, 11, 0},
+                                          {RU_ROW3, 11, 0},
+                                          {LANG_ROW4, 4, 0}};
+static const KeyboardRow RU_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0},
+                                                {RU_SHIFT_ROW1, 12, 0},
+                                                {RU_SHIFT_ROW2, 11, 0},
+                                                {RU_SHIFT_ROW3, 11, 0},
+                                                {LANG_ROW4, 4, 0}};
+
+// Latin layers wearing the lang-key bottom row, so a multi-script keyboard can
+// switch back. Letter rows are the plain EN tables — same QWERTY, no copies.
+static const KeyboardRow EN_LANG_ROWS[] = {{EN_ROW1, 10, 0}, {EN_ROW2, 9, 1}, {EN_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow EN_SHIFT_LANG_ROWS[] = {{EN_SHIFT_ROW1, 10, 0},
+                                                 {EN_SHIFT_ROW2, 9, 1},
+                                                 {EN_SHIFT_ROW3, 9, 0},
+                                                 {LANG_ROW4, 4, 0}};
+static const KeyboardRow EN_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0},
+                                               {EN_ROW1, 10, 0},
+                                               {EN_ROW2, 9, 1},
+                                               {EN_ROW3, 9, 0},
+                                               {LANG_ROW4, 4, 0}};
+static const KeyboardRow EN_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0},
+                                                     {EN_SHIFT_ROW1, 10, 0},
+                                                     {EN_SHIFT_ROW2, 9, 1},
+                                                     {EN_SHIFT_ROW3, 9, 0},
+                                                     {LANG_ROW4, 4, 0}};
+
+static const KeyboardLayout RU_LAYOUT{RU_ROWS, 4};
+static const KeyboardLayout RU_SHIFT_LAYOUT{RU_SHIFT_ROWS, 4};
+static const KeyboardLayout RU_NUM_LAYOUT{RU_NUM_ROWS, 5};
+static const KeyboardLayout RU_SHIFT_NUM_LAYOUT{RU_SHIFT_NUM_ROWS, 5};
+static const KeyboardLayout EN_LANG_LAYOUT{EN_LANG_ROWS, 4};
+static const KeyboardLayout EN_SHIFT_LANG_LAYOUT{EN_SHIFT_LANG_ROWS, 4};
+static const KeyboardLayout EN_LANG_NUM_LAYOUT{EN_LANG_NUM_ROWS, 5};
+static const KeyboardLayout EN_SHIFT_LANG_NUM_LAYOUT{EN_SHIFT_LANG_NUM_ROWS, 5};
+
 #undef K
 #undef K2
 #undef KS
@@ -266,12 +380,23 @@ static const KeyboardLayout ES_NUM_LAYOUT{ES_NUM_ROWS, 5};
 
 }  // namespace
 
-const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, bool symbols, bool numberRow) {
+const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, bool symbols, bool numberRow,
+                                            bool langKey) {
   // In the symbols layers `shifted` selects the second page: the shift slot
   // reads "#+=" on page one and "123" on page two, mirroring phone keyboards.
   // The symbols pages already carry digits, so numberRow only affects the
   // letter layers.
   if (symbols) return shifted ? SYMBOL2_LAYOUT : SYMBOL_LAYOUT;
+  // Cyrillic is case-explicit: both layers exist and shift picks between them,
+  // unlike FR/DE/ES which keep a single letter layer.
+  if (id == KeyboardLayoutId::CyrillicRu) {
+    if (shifted) return numberRow ? RU_SHIFT_NUM_LAYOUT : RU_SHIFT_LAYOUT;
+    return numberRow ? RU_NUM_LAYOUT : RU_LAYOUT;
+  }
+  if (id == KeyboardLayoutId::QwertyEn && langKey) {
+    if (shifted) return numberRow ? EN_SHIFT_LANG_NUM_LAYOUT : EN_SHIFT_LANG_LAYOUT;
+    return numberRow ? EN_LANG_NUM_LAYOUT : EN_LANG_LAYOUT;
+  }
   if (shifted && id == KeyboardLayoutId::QwertyEn) return numberRow ? EN_SHIFT_NUM_LAYOUT : EN_SHIFT_LAYOUT;
   switch (id) {
     case KeyboardLayoutId::AzertyFr:
@@ -307,15 +432,31 @@ const char* keyboardAltOutputFor(const KeyboardLayout& layout, int16_t value) {
       if (key.value != value) continue;
       if (key.kind != KeyKind::Normal) return nullptr;
       if (key.alt) return key.alt;
-      // ASCII letters without an explicit alt flip case (hold-for-capital).
-      // Static buffer: single UI-loop caller assumption (see header doc).
-      static char flipped[2] = {0, 0};
+      // Letters without an explicit alt flip case (hold-for-capital).
+      // Static buffer: single UI-loop caller assumption (see header doc). Three
+      // bytes because Cyrillic encodes to two in UTF-8, plus the terminator.
+      static char flipped[3] = {0, 0, 0};
       if (value >= 'a' && value <= 'z') {
         flipped[0] = static_cast<char>(value - ('a' - 'A'));
+        flipped[1] = 0;
         return flipped;
       }
       if (value >= 'A' && value <= 'Z') {
         flipped[0] = static_cast<char>(value + ('a' - 'A'));
+        flipped[1] = 0;
+        return flipped;
+      }
+      // Cyrillic: А-Я is U+0410..U+042F and а-я is U+0430..U+044F, the same
+      // 0x20 offset as ASCII. Ё/ё sit outside that block at U+0401/U+0451.
+      int32_t cp = -1;
+      if (value >= 0x0410 && value <= 0x042F) cp = value + 0x20;
+      if (value >= 0x0430 && value <= 0x044F) cp = value - 0x20;
+      if (value == 0x0401) cp = 0x0451;
+      if (value == 0x0451) cp = 0x0401;
+      if (cp > 0) {
+        // Two-byte UTF-8: 110xxxxx 10xxxxxx.
+        flipped[0] = static_cast<char>(0xC0 | (cp >> 6));
+        flipped[1] = static_cast<char>(0x80 | (cp & 0x3F));
         return flipped;
       }
       return nullptr;
