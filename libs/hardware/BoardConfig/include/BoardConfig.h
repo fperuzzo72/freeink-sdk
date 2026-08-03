@@ -744,7 +744,14 @@ constexpr BoardProfile XTEINK_X3 = {
                // (https://www.elecrow.com/download/product/DIE01237S/UC8253_Datasheet.pdf)
                // Witch Reader (a CrossPoint fork) ran a conservative 16 MHz; 20 MHz is in-spec and ~25% faster
                // on plane writes. Falls back to the driver's 16 MHz default if set to 0.
-    {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
+    // powerEnable=GPIO13 = the X3 SD-rail power switch (active-high; HIGH at boot
+    // powers the card, the sleep path drives it LOW). Confirmed by X3 factory-firmware
+    // RE: setup() does digitalWrite(13,HIGH); every deep-sleep does digitalWrite(13,LOW).
+    // Without declaring it, powerDownRailsForSleep() has no X3 SD enable to cut, so the
+    // card stays powered through sleep -> battery drain. Shares the display SPI bus
+    // (SCLK 8 / MOSI 10); MISO 7, CS 12. NOTE: X4 uses the same GPIO13 but keeps it as
+    // power.latch0 (driven by the consumer's sleep path), so it is left unchanged.
+    {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, 13, false, 0},
     {0, 1, 2, 3, 4, 5, 3, false},
     0,
     PIN_UNASSIGNED,
@@ -776,7 +783,7 @@ constexpr BoardProfile XTEINK_X3_UC8279 = {
     528,
     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
     20000000,
-    {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
+    {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, 13, false, 0},  // SD powerEnable=GPIO13 (active-high) — see XTEINK_X3
     {0, 1, 2, 3, 4, 5, 3, false},
     0,
     PIN_UNASSIGNED,
