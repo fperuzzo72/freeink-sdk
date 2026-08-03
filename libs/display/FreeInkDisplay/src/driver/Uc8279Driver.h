@@ -1,20 +1,25 @@
 #pragma once
 
 // UC8279d panel driver — Xteink X3, newer production run (792x528 B/W).
-// UltraChip UC8279d ("d_B" silicon, TFT-module variant) driven in KW mode
-// (PSR KW/R=1): 1-bpp, DTM1 = OLD plane, DTM2 = NEW plane, differential
-// refresh — the same paradigm as the UC8253 X3 driver, near-identical command
-// set. Written from the UC8279d_B 0.1 datasheet (Dec 2025); PENDING HARDWARE
-// VALIDATION on a UC8279 X3 unit.
+// UltraChip UC8279d ("d_B" silicon, TFT-module variant), driven in KW mode
+// with EXTERNAL/custom LUTs (PSR REG=1): 1-bpp differential, DTM1 (0x10) = OLD
+// plane, DTM2 (0x13) = NEW plane.
 //
-// v1 drives the panel with the factory OTP waveforms (PSR REG=0): the 4K MTP
-// holds 12 temperature-range LUT sets including per-range frame rate and rail
-// voltages, so PWR/PLL/VDCS are left at silicon defaults and every refresh is
-// temperature-compensated by the controller itself. That means Full/Half/Fast
-// all currently run the same OTP waveform (a full GC-style flash) — correct
-// but not fast. Custom register banks (REG=1, commands 0x20-0x24, 7-byte-group
-// format ≠ UC8253's 43-byte format) are the follow-up once we can tune LUTs on
-// real hardware; inject them via Uc8279Config when that lands.
+// These modules ship a BLANK MTP (address 0x000 != 0xA5, no factory command
+// defaults, no per-temperature waveforms), so the host must drive EVERYTHING:
+// PSR, the drive voltages (PWR/VDCS), booster, PLL, the full-panel PTL window
+// (used instead of TRES), and the waveform LUT banks. An OTP-mode driver runs
+// the panel with no drive rails and leaves it completely dark — the failure
+// seen on the first UC8279d field units.
+//
+// The entire register recipe and every waveform bank were reverse-engineered
+// from the stock X3 firmware (update.bin) and live in lut/Uc8279X3Luts.h:
+//   - kUc8279X3_Init  : PSR 3F 4A, PTL 792x528 window, PFS 20,
+//                       PWR 43 00 78 78 17, VDCS 24, BTST 25 25 3C, PLL 0F, E1 02
+//   - kUc8279X3_BwGc  : B/W full (GC) waveform  (5 x 43, command-prefixed)
+//   - kUc8279X3_BwDu  : B/W fast (DU) waveform  (5 x 43, command-prefixed)
+//   - CDI 0x97 first refresh / 0xD7 later; DU adds E0=02, E5=5A.
+// (XTF_AA / XTH4 grayscale banks are also captured there for a later AA path.)
 //
 // BUSY_N: low while busy (PON/DRF/POF all flag), same two-phase shape as the
 // UC8253 X3 — reuses BusyPolarity::X3TwoPhase and the async start/finish split.
@@ -23,26 +28,9 @@
 
 namespace freeink {
 
-struct Uc8279Config {
-  // PSR (0x00) byte 0: RES=00 (TRES overrides), REG=0 (OTP LUTs), KW/R=1 (KW
-  // mode), UD=1, SHL=1, SHD_N=1, RST_N=1.
-  uint8_t psr0;
-  // PSR byte 1: VCMZ=0, TS_AUTO=1 (auto temp sense before booster), TIEG=1,
-  // NORG=0, VC_LUTZ=1 (float VCOM after refresh) — datasheet defaults.
-  uint8_t psr1;
-  // CDI (0x50): VBD[1:0] | DDX[1:0] | CDI[3:0]. 0x97 = border driven white
-  // each refresh (KW mode, DDX=01: VBD=10 -> LUTWK 0->1), CDI = 10 hsync.
-  // Datasheet default 0xD7 floats the border instead.
-  uint8_t cdi;
-  // TCON (0x60): S2G/G2S non-overlap, datasheet default 0x22.
-  uint8_t tcon;
-};
-
-const Uc8279Config& uc8279DefaultConfig();
-
 class Uc8279Driver : public PanelDriver {
  public:
-  explicit Uc8279Driver(const Uc8279Config& cfg = uc8279DefaultConfig());
+  Uc8279Driver();
 
   uint32_t spiHz() const override;
   BusyPolarity busyPolarity() const override { return BusyPolarity::X3TwoPhase; }
@@ -61,16 +49,20 @@ class Uc8279Driver : public PanelDriver {
 
  private:
   void initController(EpdBus& bus);
+  // Replay a {cmd, len, data...} register script (kUc8279X3_Init).
+  void sendScript(EpdBus& bus, const uint8_t* script, uint16_t len);
+  // Load a 5-table waveform bank into LUT registers 0x20-0x24. `prefixed` banks
+  // (BW_GC/BW_DU) carry the register id in byte 0; raw banks send 0x20+i first.
+  void loadBank(EpdBus& bus, const uint8_t (*bank)[43]);
 
-  const Uc8279Config& _cfg;
-
-  uint16_t _w;
-  uint16_t _h;
-  uint16_t _wb;
+  uint16_t _w;   // visible width  (792)
+  uint16_t _h;   // visible height (528)
+  uint16_t _wb;  // width in bytes (99)
   uint32_t _bufferSize;
 
   bool _isScreenOn = false;
-  bool _oldPlaneSynced = false;
+  bool _firstRefresh = true;   // CDI 0x97 on the first refresh after init, 0xD7 after
+  bool _oldPlaneValid = false; // DTM1 holds a real previous frame (differential baseline)
   bool _forceFullSyncNext = false;
 
   // Async split state (see Uc8253X3Driver for the contract).

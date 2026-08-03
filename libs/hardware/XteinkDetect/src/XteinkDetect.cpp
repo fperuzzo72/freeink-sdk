@@ -37,8 +37,13 @@ struct EpdProbePins {
 };
 
 // UC81xx read-capable registers (UC8179 / UC8279d datasheets, identical layout).
-constexpr uint8_t UC81XX_CMD_VER = 0x70;  // reserved 0x00, CHIP_VER, LUT_VER[23:0]
-constexpr uint8_t UC81XX_CMD_FLG = 0x71;  // status; BUSY_N (D0) = 1 when idle
+constexpr uint8_t UC81XX_CMD_VER = 0x70;   // reserved 0x00, CHIP_VER, LUT_VER[23:0]
+constexpr uint8_t UC81XX_CMD_FLG = 0x71;   // status; BUSY_N (D0) = 1 when idle
+constexpr uint8_t UC81XX_CMD_RMTP = 0xA2;  // bulk MTP read: 1 dummy byte, then MTP[0..n]
+
+// Diagnostics snapshot of the last probe (see XteinkDisplayProbeDiag in the
+// header). File-scope so locked-unit firmware can persist it after the fact.
+XteinkDisplayProbeDiag g_probeDiag;
 
 inline void epdClockDelay() { delayMicroseconds(1); }  // ~500 kHz, timing-safe
 
@@ -169,19 +174,71 @@ void releaseDisplayPins(const EpdProbePins& p) {
 // read under doc conditions. An SSD-family board (floating bus) therefore pays
 // two cheap passes (~66 ms total, as before the doc-timing change) instead of
 // two 50 ms resets on every boot and wake.
-DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t verBytes[5], uint8_t* flg) {
+DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t verBytes[5], uint8_t* flg,
+                                                bool escalateReset) {
   uint8_t ver1[5] = {0};
   uint8_t ver2[5] = {0};
   uint8_t flg1 = 0;
-  const bool pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/1);
+  bool pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/1);
+  if (!pass1 && escalateReset) {
+    // Escalation for boards whose UC sibling might only answer the vendor's
+    // identification timing (RST low 50 ms): a failed short screening pass is
+    // retried once at doc timing before concluding "no UC part". Requested for
+    // X3-family boards (their boot budget tolerates it); the X4 family keeps
+    // the cheap path — its UC8179 is bench-proven to answer the 1 ms pulse.
+    delay(2);
+    pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/50);
+  }
   delay(2);
   const bool pass2 = runDisplayProbePass(p, ver2, nullptr, /*rstLowMs=*/pass1 ? 50 : 1);
+
+  const bool verAgree = memcmp(ver1, ver2, 5) == 0;
+  bool confirmed = pass1 && pass2 && verAgree;
+  // FLG is a driven idle status (not a floating 0xFF / dead 0x00, BUSY_N set).
+  const bool flgDriven = flg1 != 0x00 && flg1 != 0xFF && (flg1 & 0x01) == 0x01;
+
+  // Diagnostics snapshot for locked units (persisted by firmware, e.g. to SD).
+  g_probeDiag.valid = true;
+  memcpy(g_probeDiag.ver, pass1 && pass2 ? ver2 : ver1, 5);
+  g_probeDiag.flg = flg1;
+  g_probeDiag.promoted = false;
+  g_probeDiag.mtpValid = false;
+
+  // Ground-truth dump of the module's factory configuration: RMTP (0xA2)
+  // returns a dummy byte then MTP[0..n] — the 0xA5 refresh-enable key, the
+  // Command Default Setting block (real PSR/TRES/GSST/CDI/TCON), product ID
+  // and LUT version. Read whenever SOMETHING is driving the status line: on a
+  // confirmed part it's diagnostics; on the fallback path below it is the
+  // discriminator itself. A part without RMTP (UC8253, SSD-family) floats the
+  // line and reads uniform garbage here.
+  if (confirmed || flgDriven) {
+    uint8_t raw[sizeof(g_probeDiag.mtp) + 1] = {0};
+    epdCmdRead(p, UC81XX_CMD_RMTP, raw, sizeof(raw));
+    memcpy(g_probeDiag.mtp, raw + 1, sizeof(g_probeDiag.mtp));
+    g_probeDiag.mtpValid = true;
+  }
+
+  // Fallback match — FIELD-OBSERVED UC8279d signature: new X3 units return
+  // VER = FF FF FF FF FF (blank/unreadable LUT_VER area) with FLG = 0x13 (the
+  // datasheet's idle default), which the uniform-VER floating-bus test wrongly
+  // rejects. A pulled-up floating bus also reads FF — so require POSITIVE
+  // evidence: the RMTP dump must start with the 0xA5 MTP key, which only a
+  // real UC81xx with a programmed MTP can produce (and without which OTP-mode
+  // refreshes wouldn't run anyway). UC8253 has no RMTP command; its read
+  // floats and can never match.
+  if (!confirmed && flgDriven && verAgree && verIsFloating(ver1) && ver1[0] == 0xFF && g_probeDiag.mtpValid &&
+      g_probeDiag.mtp[0] == 0xA5) {
+    confirmed = true;
+  }
   releaseDisplayPins(p);
-  if (verBytes) memcpy(verBytes, pass1 && pass2 ? ver2 : ver1, 5);
+
+  if (verBytes) memcpy(verBytes, g_probeDiag.ver, 5);
   if (flg) *flg = flg1;
-  if (pass1 && pass2 && memcmp(ver1, ver2, 5) == 0) return DisplayControllerVerdict::Uc81xxConfirmed;
-  if (!pass1 && !pass2) return DisplayControllerVerdict::PrimaryAssumed;
-  return DisplayControllerVerdict::Inconclusive;
+  DisplayControllerVerdict v = DisplayControllerVerdict::Inconclusive;
+  if (confirmed) v = DisplayControllerVerdict::Uc81xxConfirmed;
+  else if (!pass1 && !pass2) v = DisplayControllerVerdict::PrimaryAssumed;
+  g_probeDiag.verdict = static_cast<uint8_t>(v);
+  return v;
 }
 
 }  // namespace
@@ -189,8 +246,13 @@ DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t v
 DisplayControllerVerdict detectXteinkDisplayController(uint8_t verBytes[5], uint8_t* flg) {
   const auto& d = BoardConfig::ACTIVE.display;
   const EpdProbePins p{d.sclk, d.mosi, d.cs, d.dc, d.rst, d.busy};
-  return probeDisplayController(p, verBytes, flg);
+  // X3-family boards (UC8253 default) escalate a failed screening pass to the
+  // 50 ms vendor-ID reset — see probeDisplayController.
+  const bool escalate = BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8253;
+  return probeDisplayController(p, verBytes, flg, escalate);
 }
+
+const XteinkDisplayProbeDiag& getXteinkDisplayProbeDiag() { return g_probeDiag; }
 
 namespace {
 
@@ -222,12 +284,21 @@ bool probeSaysUltraChip(uint8_t verOut[5]) {
   uint8_t flg = 0;
   const DisplayControllerVerdict v = detectXteinkDisplayController(ver, &flg);
   memcpy(verOut, ver, 5);
-  if (Serial)
+  if (Serial) {
     Serial.printf("[%lu] [XTDET] bus probe VER=%02X %02X %02X %02X %02X FLG=%02X -> %s\n", millis(), ver[0], ver[1],
                   ver[2], ver[3], ver[4], flg,
                   v == DisplayControllerVerdict::Uc81xxConfirmed  ? "UltraChip"
                   : v == DisplayControllerVerdict::PrimaryAssumed ? "default controller"
                                                                   : "inconclusive (default)");
+    // MTP header (RMTP 0xA2), read whenever the status line was driven: 0xA5 at
+    // byte 0 = a UC part with a programmed MTP (the fallback discriminator);
+    // uniform FF/00 = no RMTP support (UC8253 / SSD-family) or unreadable.
+    if (g_probeDiag.mtpValid) {
+      Serial.printf("[%lu] [XTDET] MTP[0x000..0x02F]:", millis());
+      for (size_t i = 0; i < sizeof(g_probeDiag.mtp); i++) Serial.printf(" %02X", g_probeDiag.mtp[i]);
+      Serial.printf("\n");
+    }
+  }
   return v == DisplayControllerVerdict::Uc81xxConfirmed;
 }
 
@@ -261,6 +332,7 @@ bool applyXteinkDisplayController() {
       // unrecognized — take the UC8179 driver, the variant every unit benched
       // so far has carried (observed VER=00 00 01 FF FF).
       const uint8_t lutVer = ver[2];
+      g_probeDiag.promoted = true;
       if (lutVer == 0x02 || lutVer == 0x68 || lutVer == 0x69) {
         BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
         BoardConfig::ACTIVE.displayControllerVariant = lutVer;
@@ -278,6 +350,7 @@ bool applyXteinkDisplayController() {
     }
     case BoardConfig::DisplayController::UC8253:
       BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
+      g_probeDiag.promoted = true;
       if (Serial) Serial.printf("[%lu] [XTDET] promoted UC8253 -> UC8279\n", millis());
       return true;
     default:
@@ -293,6 +366,11 @@ DisplayControllerVerdict detectXteinkDisplayController(uint8_t verBytes[5], uint
   return DisplayControllerVerdict::PrimaryAssumed;
 }
 bool applyXteinkDisplayController() { return false; }
+
+const XteinkDisplayProbeDiag& getXteinkDisplayProbeDiag() {
+  static const XteinkDisplayProbeDiag empty;
+  return empty;
+}
 
 #endif  // FREEINK_XTEINK_DISPLAY_PROBE
 

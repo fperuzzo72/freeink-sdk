@@ -1,39 +1,31 @@
 #include "Uc8279Driver.h"
 
+#include <Arduino.h>
+
 #include <BoardConfig.h>
+
+#include "../lut/Uc8279X3Luts.h"
 
 namespace freeink {
 namespace {
-// UC8279d command set (UC8279d_B 0.1 datasheet, command table pp. 8-11).
-constexpr uint8_t CMD_PANEL_SETTING = 0x00;      // PSR
-constexpr uint8_t CMD_POWER_OFF = 0x02;          // POF
-constexpr uint8_t CMD_POWER_ON = 0x04;           // PON
-constexpr uint8_t CMD_DEEP_SLEEP = 0x07;         // DSLP (check code 0xA5)
-constexpr uint8_t CMD_DTM1 = 0x10;               // OLD plane in KW mode
-constexpr uint8_t CMD_DATA_STOP = 0x11;          // DSP
-constexpr uint8_t CMD_DISPLAY_REFRESH = 0x12;    // DRF
-constexpr uint8_t CMD_DTM2 = 0x13;               // NEW plane in KW mode
-constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50; // CDI
-constexpr uint8_t CMD_TCON = 0x60;               // TCON
-constexpr uint8_t CMD_RESOLUTION = 0x61;         // TRES
-constexpr uint8_t CMD_GATE_SOURCE_START = 0x65;  // GSST
+// UC8279d command set (UC8279d_B 0.1 datasheet + stock-firmware RE).
+constexpr uint8_t CMD_PANEL_SETTING = 0x00;       // PSR
+constexpr uint8_t CMD_POWER_OFF = 0x02;           // POF
+constexpr uint8_t CMD_POWER_ON = 0x04;            // PON
+constexpr uint8_t CMD_DEEP_SLEEP = 0x07;          // DSLP (check code 0xA5)
+constexpr uint8_t CMD_DTM1 = 0x10;                // OLD plane in KW mode
+constexpr uint8_t CMD_DATA_STOP = 0x11;           // DSP
+constexpr uint8_t CMD_DISPLAY_REFRESH = 0x12;     // DRF
+constexpr uint8_t CMD_DTM2 = 0x13;                // NEW plane in KW mode
+constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50;  // CDI
+constexpr uint8_t CMD_PARTIAL_IN = 0x91;          // PTIN
+constexpr uint8_t CMD_PARTIAL_OUT = 0x92;         // PTOUT
+constexpr uint8_t CMD_CCSET = 0xE0;               // CCSET (DU: 0x02)
+constexpr uint8_t CMD_TSSET = 0xE5;               // TSSET (DU: 0x5A)
 }  // namespace
 
-const Uc8279Config& uc8279DefaultConfig() {
-  static const Uc8279Config cfg = {
-      0x1F,  // PSR0: RES=00, REG=0 (OTP LUTs), KW/R=1, UD=1, SHL=1, SHD_N=1, RST_N=1
-      0x0D,  // PSR1: TS_AUTO=1, TIEG=1, VC_LUTZ=1 (datasheet default)
-      0x97,  // CDI: border white (VBD=10), DDX=01, interval 10 hsync
-      0x22,  // TCON: datasheet default
-  };
-  return cfg;
-}
-
-// Resolution comes from the active BoardProfile (XTEINK_X3_UC8279), selected
-// by the boot-time controller probe before begin() constructs this singleton.
-Uc8279Driver::Uc8279Driver(const Uc8279Config& cfg)
-    : _cfg(cfg),
-      _w(BoardConfig::ACTIVE.displayWidth),
+Uc8279Driver::Uc8279Driver()
+    : _w(BoardConfig::ACTIVE.displayWidth),
       _h(BoardConfig::ACTIVE.displayHeight),
       _wb(BoardConfig::ACTIVE.displayWidth / 8),
       _bufferSize(static_cast<uint32_t>(BoardConfig::ACTIVE.displayWidth / 8) * BoardConfig::ACTIVE.displayHeight) {}
@@ -45,46 +37,38 @@ uint32_t Uc8279Driver::spiHz() const {
 
 PanelGeometry Uc8279Driver::geometry() const { return {_w, _h, _wb, _bufferSize}; }
 
+void Uc8279Driver::sendScript(EpdBus& bus, const uint8_t* script, uint16_t len) {
+  uint16_t i = 0;
+  while (i < len) {
+    const uint8_t cmd = script[i++];
+    const uint8_t n = script[i++];
+    bus.cmd(cmd);
+    for (uint8_t k = 0; k < n; k++) bus.data(script[i++]);
+  }
+}
+
+void Uc8279Driver::loadBank(EpdBus& bus, const uint8_t (*bank)[43]) {
+  // Command-prefixed banks (BW_GC / BW_DU): byte 0 is the LUT register
+  // (0x20-0x24), the remaining 42 bytes are its data.
+  for (int t = 0; t < 5; t++) {
+    bus.cmd(bank[t][0]);
+    bus.data(&bank[t][1], 42);
+  }
+}
+
+// The stock init (FUN_42014ad4): a blank-MTP module needs the full register
+// bring-up. PSR 0x3F sets REG=1 (external LUT); the PTL window defines the
+// active 792x528 area in place of TRES; PWR/VDCS supply the drive rails without
+// which nothing develops. No plane seed here — the first refresh writes both.
 void Uc8279Driver::initController(EpdBus& bus) {
-  bus.cmd(CMD_PANEL_SETTING);
-  bus.data(_cfg.psr0);
-  bus.data(_cfg.psr1);
-  // TRES 792x528. Byte layout per datasheet: HRES[9:8], HRES[7:3] (low 3 bits
-  // zero — horizontal resolution is 8-pixel granular), VRES[9:8], VRES[7:0].
-  // NOTE (hardware validation): the UC8253 X3 init programs VRES=600 (the OEM
-  // scans the full gate count with 528 rows bonded); if the UC8279 panel shows
-  // a vertical offset or compressed image, try 0x02/0x58 here instead.
-  bus.cmd(CMD_RESOLUTION);
-  bus.data(0x03);
-  bus.data(0x18);
-  bus.data(0x02);
-  bus.data(0x10);
-  bus.cmd(CMD_GATE_SOURCE_START);
-  bus.data(0x00);
-  bus.data(0x00);
-  bus.data(0x00);
-  bus.data(0x00);
-  bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_cfg.cdi);
-  bus.cmd(CMD_TCON);
-  bus.data(_cfg.tcon);
-  // PWR/PLL/VDCS deliberately untouched: with REG=0 the MTP temperature-range
-  // tables carry per-range frame rate and VGHL/VSH/VSL/VCOM_DC settings, and
-  // TS_AUTO senses temperature before every booster enable.
-
-  // Fill both planes white so the first differential diffs against white, not
-  // stale SRAM (same rationale as the UC8253 X3 driver).
-  bus.fillPlane(CMD_DTM1, 0xFF, _h, _wb);
-  bus.cmd(CMD_DATA_STOP);
-  bus.fillPlane(CMD_DTM2, 0xFF, _h, _wb);
-  bus.cmd(CMD_DATA_STOP);
-
+  sendScript(bus, kUc8279X3_Init, sizeof(kUc8279X3_Init));
   _isScreenOn = false;
+  _firstRefresh = true;
+  _oldPlaneValid = false;
 }
 
 void Uc8279Driver::begin(EpdBus& bus) {
   bus.reset(50);
-  _oldPlaneSynced = false;
   _forceFullSyncNext = false;
   initController(bus);
 }
@@ -95,27 +79,40 @@ void Uc8279Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 }
 
 bool Uc8279Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
-  (void)prev;
-  const bool doFullSync = (mode == RefreshMode::Full) || !_oldPlaneSynced || _forceFullSyncNext;
+  (void)prev;  // single-buffer: DTM1 holds the previous frame from displayFinish()'s sync
+  // Full (GC) on an explicit Full request or a forced/first refresh; otherwise a
+  // differential fast (DU) against the OLD plane synced last time.
+  const bool fast = (mode != RefreshMode::Full) && _oldPlaneValid && !_forceFullSyncNext;
 
-  if (doFullSync) {
-    // Absolute write from a white OLD baseline; the OTP waveform drives every
-    // pixel to target regardless of history.
+  bus.cmd(CMD_PARTIAL_IN);  // enter the full-panel PTL window set in init
+
+  // KW planes: OLD (0x10) + NEW (0x13). Full seeds OLD white (absolute drive);
+  // fast diffs against the previous frame already in OLD RAM.
+  if (!fast) {
     bus.fillPlane(CMD_DTM1, 0xFF, _h, _wb);
     bus.cmd(CMD_DATA_STOP);
   }
-  // Differential path: DTM1 already holds the displayed frame from the last
-  // displayFinish() sync, so only writing NEW is needed either way.
   bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
 
-  if (!_isScreenOn || doFullSync) {
+  // Refresh setup (RE order): CDI, then DU-only E0/E5, then the waveform bank.
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);
+  bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
+  if (fast) {
+    bus.cmd(CMD_CCSET);
+    bus.data(kUc8279X3_DuE0);
+    bus.cmd(CMD_TSSET);
+    bus.data(kUc8279X3_DuE5);
+  }
+  loadBank(bus, fast ? kUc8279X3_BwDu : kUc8279X3_BwGc);
+
+  if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
     bus.waitBusy(" 8279_PON");
     _isScreenOn = true;
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
-  // Confirm the waveform started (BUSY_N dropped LOW) before returning, so
+  // Confirm the waveform started (BUSY_N dropped LOW) before returning so
   // displayFinish() only rides out the completion edge.
   {
     const int8_t busyPin = bus.pins().busy;
@@ -132,25 +129,31 @@ void Uc8279Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   _pendingRefresh = false;
 
   bus.waitRefreshComplete(" 8279_DRF");
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);  // restore the later-refresh CDI (border hold)
+  bus.data(kUc8279X3_CdiLater);
+  bus.cmd(CMD_PARTIAL_OUT);
+
+  // Sync the OLD plane with the just-displayed frame so the next fast refresh
+  // diffs against it (KW clears erased pixels -> no ghosting).
+  bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+  _oldPlaneValid = true;
+  _firstRefresh = false;
+  _forceFullSyncNext = false;
+
   if (_pendingTurnOff) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" 8279_POF");
     _isScreenOn = false;
   }
-
-  // Sync the OLD plane with the just-displayed frame for the next differential.
-  bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
-  bus.cmd(CMD_DATA_STOP);
-  _oldPlaneSynced = true;
-  _forceFullSyncNext = false;
 }
 
 void Uc8279Driver::requestResync(uint8_t settlePasses) {
-  (void)settlePasses;  // no conditioning passes on the OTP waveform path
-  _forceFullSyncNext = true;
+  (void)settlePasses;
+  _forceFullSyncNext = true;  // next refresh is a full GC flash from white
 }
 
-void Uc8279Driver::skipInitialResync() { _oldPlaneSynced = true; }
+void Uc8279Driver::skipInitialResync() { _oldPlaneValid = true; }
 
 void Uc8279Driver::deepSleep(EpdBus& bus) {
   if (_isScreenOn) {
@@ -162,18 +165,8 @@ void Uc8279Driver::deepSleep(EpdBus& bus) {
   bus.data(0xA5);
 }
 
-// Per-board config injection, same idiom as the other drivers: define
-// `const Uc8279Config& yourConfig();` in namespace freeink and build with
-// -DFREEINK_UC8279_CONFIG=yourConfig.
-#ifdef FREEINK_UC8279_CONFIG
-const Uc8279Config& FREEINK_UC8279_CONFIG();
-static const Uc8279Config& uc8279ActiveConfig() { return FREEINK_UC8279_CONFIG(); }
-#else
-static const Uc8279Config& uc8279ActiveConfig() { return uc8279DefaultConfig(); }
-#endif
-
 PanelDriver& uc8279Driver() {
-  static Uc8279Driver instance(uc8279ActiveConfig());
+  static Uc8279Driver instance;
   return instance;
 }
 
