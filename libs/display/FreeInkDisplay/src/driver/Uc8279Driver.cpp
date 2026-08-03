@@ -78,9 +78,12 @@ void Uc8279Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 
 bool Uc8279Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;  // single-buffer: DTM1 holds the previous frame from displayFinish()'s sync
-  // Full (GC) on an explicit Full request or a forced/first refresh; otherwise a
-  // differential fast (DU) against the OLD plane synced last time.
-  const bool fast = (mode != RefreshMode::Full) && _oldPlaneValid && !_forceFullSyncNext;
+  // ONLY a Fast request is a differential DU against the OLD plane. Full AND
+  // Half both run the clearing GC waveform (Half is the reader's "clean"
+  // transition, e.g. boot->home): treating Half as a DU diffs the new frame
+  // against the previous one and leaves it ghosting through (the boot splash
+  // bleeding into home). Also GC on the forced/first refresh.
+  const bool fast = (mode == RefreshMode::Fast) && _oldPlaneValid && !_forceFullSyncNext;
 
   bus.cmd(CMD_PARTIAL_IN);  // enter the full-panel PTL window set in init
 
