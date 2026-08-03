@@ -109,14 +109,15 @@ struct KeyboardProps {
 // long-press) to the letter layers — for entry fields where digits must stay
 // one tap away (passwords, hosts, ports). The symbol layers already carry
 // digits, so they ignore the flag. Shift swaps the row to symbols-primary on
-// QwertyEn and picks the uppercase layer on CyrillicRu; FR/DE/ES keep their
-// single letter layer.
+// QwertyEn and picks the uppercase layer on the Cyrillic layouts; FR/DE/ES keep
+// their single letter layer, and HebrewIl has no case at all.
 //
 // `langKey` puts a KeyKind::Lang key in the bottom row, for apps that let the
 // user reach more than one script. It costs a slot in that row, so it is off by
-// default and single-script keyboards render exactly as before. CyrillicRu
-// ignores the flag and always carries the key: a Cyrillic-only keyboard cannot
-// type a Wi-Fi password or a URL, so there always has to be a way back.
+// default and single-script keyboards render exactly as before. The non-Latin
+// layouts ignore the flag and always carry the key: a keyboard with no Latin
+// letters cannot type a Wi-Fi password or a URL, so there always has to be a
+// way back.
 const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted = false, bool symbols = false,
                                             bool numberRow = false, bool langKey = false);
 
