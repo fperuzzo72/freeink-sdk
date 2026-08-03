@@ -279,6 +279,49 @@ static const KeyboardKey RU_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_K
                                             K("Ю", "Ю", 0x42E),
                                             KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
 
+
+// Uppercase layers for the Latin locale layouts. Their letter keys report ASCII
+// ids, so long-press already reached the opposite case through the implicit
+// flip; what was missing is the shift key doing anything, even though the
+// tables have always drawn one.
+//
+// The locale letters keep dedicated ids in the shifted layer (É/Ü/Ñ) because
+// keyboardOutputFor resolves ids within a layout and the lowercase ids are
+// taken. ß has no uppercase in this font (U+1E9E is absent) and German
+// capitalises it as SS anyway, so it stays as it is.
+static const KeyboardKey FR_SHIFT_ROW1[] = {K("A", "A", 'A'), K("Z", "Z", 'Z'), K("E", "E", 'E'), K("R", "R", 'R'),
+                                            K("T", "T", 'T'), K("Y", "Y", 'Y'), K("U", "U", 'U'), K("I", "I", 'I'),
+                                            K("O", "O", 'O'), K("P", "P", 'P')};
+static const KeyboardKey FR_SHIFT_ROW2[] = {K("Q", "Q", 'Q'), K("S", "S", 'S'), K("D", "D", 'D'), K("F", "F", 'F'),
+                                            K("G", "G", 'G'), K("H", "H", 'H'), K("J", "J", 'J'), K("K", "K", 'K'),
+                                            K("L", "L", 'L'), K("M", "M", 'M')};
+static const KeyboardKey FR_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("W", "W", 'W'),
+                                            K("X", "X", 'X'), K("C", "C", 'C'), K("V", "V", 'V'), K("B", "B", 'B'),
+                                            K("N", "N", 'N'), K("É", "É", 1051),
+                                            KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+
+static const KeyboardKey DE_SHIFT_ROW1[] = {K("Q", "Q", 'Q'), K("W", "W", 'W'), K("E", "E", 'E'), K("R", "R", 'R'),
+                                            K("T", "T", 'T'), K("Z", "Z", 'Z'), K("U", "U", 'U'), K("I", "I", 'I'),
+                                            K("O", "O", 'O'), K("P", "P", 'P')};
+static const KeyboardKey DE_SHIFT_ROW2[] = {K("A", "A", 'A'), K("S", "S", 'S'), K("D", "D", 'D'), K("F", "F", 'F'),
+                                            K("G", "G", 'G'), K("H", "H", 'H'), K("J", "J", 'J'), K("K", "K", 'K'),
+                                            K("L", "L", 'L'), K("Ü", "Ü", 1151)};
+static const KeyboardKey DE_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("Y", "Y", 'Y'),
+                                            K("X", "X", 'X'), K("C", "C", 'C'), K("V", "V", 'V'), K("B", "B", 'B'),
+                                            K("N", "N", 'N'), K("M", "M", 'M'), K("ß", "ß", 1102),
+                                            KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+
+static const KeyboardKey ES_SHIFT_ROW1[] = {K("Q", "Q", 'Q'), K("W", "W", 'W'), K("E", "E", 'E'), K("R", "R", 'R'),
+                                            K("T", "T", 'T'), K("Y", "Y", 'Y'), K("U", "U", 'U'), K("I", "I", 'I'),
+                                            K("O", "O", 'O'), K("P", "P", 'P')};
+static const KeyboardKey ES_SHIFT_ROW2[] = {K("A", "A", 'A'), K("S", "S", 'S'), K("D", "D", 'D'), K("F", "F", 'F'),
+                                            K("G", "G", 'G'), K("H", "H", 'H'), K("J", "J", 'J'), K("K", "K", 'K'),
+                                            K("L", "L", 'L'), K("Ñ", "Ñ", 1251)};
+static const KeyboardKey ES_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("Z", "Z", 'Z'),
+                                            K("X", "X", 'X'), K("C", "C", 'C'), K("V", "V", 'V'), K("B", "B", 'B'),
+                                            K("N", "N", 'N'), K("M", "M", 'M'),
+                                            KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+
 // Ukrainian ЙЦУКЕН. Differs from Russian in four slots: ї replaces ъ, і
 // replaces ы, є replaces э, and и is the Ukrainian и (U+0438) as in Russian
 // while й stays put. ґ has no key of its own — it long-presses off г, the
@@ -574,6 +617,19 @@ static const KeyboardRow DE_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {DE_ROW1, 10, 0
 static const KeyboardRow ES_LANG_ROWS[] = {{ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
 static const KeyboardRow ES_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
 
+static const KeyboardRow FR_SHIFT_ROWS[] = {{FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
+static const KeyboardRow FR_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
+static const KeyboardRow FR_SHIFT_LANG_ROWS[] = {{FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow FR_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow DE_SHIFT_ROWS[] = {{DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 10, 0}, {EN_ROW4, 3, 0}};
+static const KeyboardRow DE_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 10, 0}, {EN_ROW4, 3, 0}};
+static const KeyboardRow DE_SHIFT_LANG_ROWS[] = {{DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 10, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow DE_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 10, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow ES_SHIFT_ROWS[] = {{ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
+static const KeyboardRow ES_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
+static const KeyboardRow ES_SHIFT_LANG_ROWS[] = {{ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow ES_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+
 // Latin layers wearing the lang-key bottom row, so a multi-script keyboard can
 // switch back. Letter rows are the plain EN tables — same QWERTY, no copies.
 static const KeyboardRow EN_LANG_ROWS[] = {{EN_ROW1, 10, 0}, {EN_ROW2, 9, 1}, {EN_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
@@ -616,6 +672,18 @@ static const KeyboardLayout DE_LANG_LAYOUT{DE_LANG_ROWS, 4};
 static const KeyboardLayout DE_LANG_NUM_LAYOUT{DE_LANG_NUM_ROWS, 5};
 static const KeyboardLayout ES_LANG_LAYOUT{ES_LANG_ROWS, 4};
 static const KeyboardLayout ES_LANG_NUM_LAYOUT{ES_LANG_NUM_ROWS, 5};
+static const KeyboardLayout FR_SHIFT_LAYOUT{FR_SHIFT_ROWS, 4};
+static const KeyboardLayout FR_SHIFT_NUM_LAYOUT{FR_SHIFT_NUM_ROWS, 5};
+static const KeyboardLayout FR_SHIFT_LANG_LAYOUT{FR_SHIFT_LANG_ROWS, 4};
+static const KeyboardLayout FR_SHIFT_LANG_NUM_LAYOUT{FR_SHIFT_LANG_NUM_ROWS, 5};
+static const KeyboardLayout DE_SHIFT_LAYOUT{DE_SHIFT_ROWS, 4};
+static const KeyboardLayout DE_SHIFT_NUM_LAYOUT{DE_SHIFT_NUM_ROWS, 5};
+static const KeyboardLayout DE_SHIFT_LANG_LAYOUT{DE_SHIFT_LANG_ROWS, 4};
+static const KeyboardLayout DE_SHIFT_LANG_NUM_LAYOUT{DE_SHIFT_LANG_NUM_ROWS, 5};
+static const KeyboardLayout ES_SHIFT_LAYOUT{ES_SHIFT_ROWS, 4};
+static const KeyboardLayout ES_SHIFT_NUM_LAYOUT{ES_SHIFT_NUM_ROWS, 5};
+static const KeyboardLayout ES_SHIFT_LANG_LAYOUT{ES_SHIFT_LANG_ROWS, 4};
+static const KeyboardLayout ES_SHIFT_LANG_NUM_LAYOUT{ES_SHIFT_LANG_NUM_ROWS, 5};
 static const KeyboardLayout EN_LANG_LAYOUT{EN_LANG_ROWS, 4};
 static const KeyboardLayout EN_SHIFT_LANG_LAYOUT{EN_SHIFT_LANG_ROWS, 4};
 static const KeyboardLayout EN_LANG_NUM_LAYOUT{EN_LANG_NUM_ROWS, 5};
@@ -662,12 +730,18 @@ const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, b
   if (shifted && id == KeyboardLayoutId::QwertyEn) return numberRow ? EN_SHIFT_NUM_LAYOUT : EN_SHIFT_LAYOUT;
   switch (id) {
     case KeyboardLayoutId::AzertyFr:
+      if (shifted && langKey) return numberRow ? FR_SHIFT_LANG_NUM_LAYOUT : FR_SHIFT_LANG_LAYOUT;
+      if (shifted) return numberRow ? FR_SHIFT_NUM_LAYOUT : FR_SHIFT_LAYOUT;
       if (langKey) return numberRow ? FR_LANG_NUM_LAYOUT : FR_LANG_LAYOUT;
       return numberRow ? FR_NUM_LAYOUT : FR_LAYOUT;
     case KeyboardLayoutId::QwertzDe:
+      if (shifted && langKey) return numberRow ? DE_SHIFT_LANG_NUM_LAYOUT : DE_SHIFT_LANG_LAYOUT;
+      if (shifted) return numberRow ? DE_SHIFT_NUM_LAYOUT : DE_SHIFT_LAYOUT;
       if (langKey) return numberRow ? DE_LANG_NUM_LAYOUT : DE_LANG_LAYOUT;
       return numberRow ? DE_NUM_LAYOUT : DE_LAYOUT;
     case KeyboardLayoutId::SpanishEs:
+      if (shifted && langKey) return numberRow ? ES_SHIFT_LANG_NUM_LAYOUT : ES_SHIFT_LANG_LAYOUT;
+      if (shifted) return numberRow ? ES_SHIFT_NUM_LAYOUT : ES_SHIFT_LAYOUT;
       if (langKey) return numberRow ? ES_LANG_NUM_LAYOUT : ES_LANG_LAYOUT;
       return numberRow ? ES_NUM_LAYOUT : ES_LAYOUT;
     case KeyboardLayoutId::QwertyEn:
