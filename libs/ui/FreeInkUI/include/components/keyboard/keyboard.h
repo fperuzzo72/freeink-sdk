@@ -24,10 +24,20 @@ enum class KeyboardLayoutId : uint8_t {
   AzertyFr,
   QwertzDe,
   SpanishEs,
-  // ЙЦУКЕН. Ships as two explicit layers (shift picks between them) because
-  // Cyrillic has no single-key case toggle the way the Latin layouts do; the
-  // long-press case flip is handled by keyboardAltOutputFor.
+  // ЙЦУКЕН family. Each ships as two explicit layers (shift picks between them)
+  // because Cyrillic has no single-key case toggle the way the Latin layouts
+  // do; the long-press case flip is handled by keyboardAltOutputFor.
+  //
+  // The four differ only in which letters occupy a handful of slots. Ukrainian
+  // reaches ґ, and Kazakh its nine extra letters, by long-press rather than
+  // dedicated keys — a 480px panel has no room for a wider grid.
   CyrillicRu,
+  CyrillicUk,
+  CyrillicBe,
+  CyrillicKk,
+  // Hebrew: no letter case, so a single layer and no shift key. Right-to-left
+  // is the renderer's job -- the layout inserts code points in logical order.
+  HebrewIl,
 };
 
 struct KeyboardKey {
