@@ -20,8 +20,6 @@ constexpr uint8_t CMD_DTM2 = 0x13;                // NEW plane in KW mode
 constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50;  // CDI
 constexpr uint8_t CMD_PARTIAL_IN = 0x91;          // PTIN
 constexpr uint8_t CMD_PARTIAL_OUT = 0x92;         // PTOUT
-constexpr uint8_t CMD_CCSET = 0xE0;               // CCSET (DU: 0x02)
-constexpr uint8_t CMD_TSSET = 0xE5;               // TSSET (DU: 0x5A)
 }  // namespace
 
 Uc8279Driver::Uc8279Driver()
@@ -95,15 +93,11 @@ bool Uc8279Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
 
-  // Refresh setup (RE order): CDI, then DU-only E0/E5, then the waveform bank.
+  // Refresh setup (RE order, FUN_4201580a / FUN_42015cca): CDI, then the
+  // waveform bank. NEITHER B/W path writes E0/E5 — those (0x02/0x5A) belong only
+  // to the AA pre-conditioning pass (FUN_42015944), not plain GC/DU refreshes.
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
-  if (fast) {
-    bus.cmd(CMD_CCSET);
-    bus.data(kUc8279X3_DuE0);
-    bus.cmd(CMD_TSSET);
-    bus.data(kUc8279X3_DuE5);
-  }
   loadBank(bus, fast ? kUc8279X3_BwDu : kUc8279X3_BwGc);
 
   if (!_isScreenOn) {

@@ -33,16 +33,29 @@
 //   0x06 BTST : 25 25 3C
 //   0x30 PLL  : 0F
 //   0xE1      : 02                             // gate scan
-// Refresh flow (all windowed via PTIN/PTOUT, no TRES):
-//   GC full : PTIN -> PTL -> DTM1(0x10) fill 0xFF -> CDI -> load BW_GC (5 tables
-//             via 0x20-0x24) -> [power on] -> DRF(0x12) -> wait BUSY -> CDI 0xD7
-//             -> PTOUT(0x92)
-//   DU part : PTIN -> PTL -> PSR 3F 4A -> PFS 20 -> E1 02 -> CDI -> E0 02 ->
-//             E5 5A -> load XTF_PRE_BW_MID -> DTM -> DRF -> PTOUT
-//   AA gray : load XTF_AA / XTH4, CDI 0x97 first / 0xD7 later
-//   CDI byte: 0x97 on the first refresh after init, 0xD7 on later refreshes.
-// PON (0x04) + wait BUSY precede DRF; POF (0x02) + wait BUSY follow (base-class
-// UC81xx power methods — same PON/DRF/POF the existing Uc8279Driver already does).
+// Refresh flow (all windowed via PTIN/PTOUT, no TRES). Verified against the
+// stock methods named below; NEITHER B/W path writes E0/E5.
+//   GC full (FUN_42015cca): PTIN -> PTL -> DTM1(0x10) fill 0xFF -> DTM2(0x13)
+//             new frame -> CDI -> load BW_GC (5 tables 0x20-0x24) -> PON ->
+//             DRF(0x12) -> wait BUSY -> CDI 0xD7 -> PTOUT(0x92)
+//   DU fast (FUN_4201580a): same shape, differential (DTM1 = previous frame),
+//             load BW_DU, CDI only — no E0/E5.
+//   CDI byte: 0x97 on the first refresh after init, 0xD7 on later refreshes
+//             (FUN_42013c7e: 0x97, then |0x40 -> 0xD7 once the first-refresh
+//             flag clears).
+// PON (0x04) + wait BUSY precede DRF; POF (0x02) + wait BUSY follow.
+//
+// GRAYSCALE / ANTI-ALIASING (FUN_42015108 display + FUN_42013be0 LUT load):
+//   4-level via TWO full bitplanes — DTM1(0x10) = plane A, DTM2(0x13) = plane B,
+//   each 792*528/8 = 52272 bytes over the full-panel window. Sequence:
+//     PTIN -> PTL(0,0,792,528) -> DTM1 plane A -> DTM2 plane B -> PTOUT ->
+//     load XTF_AA (cmd 0x20..0x24 each followed by its 49-byte table) ->
+//     CDI (0x97/0xD7 via FUN_42013c7e) -> PON -> DRF -> wait ("gray wait").
+//   E0=02 / E5=5A appear ONLY in the optional AA pre-conditioning pass
+//   (FUN_42015944, "AA-pre-BW(mid)"), which runs XTF_PRE_BW_MID BEFORE the
+//   grayscale frame — not part of any plain B/W refresh. XTH4 is an alternate
+//   4-gray table set. AA is not yet wired into the driver; these banks + this
+//   sequence are the recovered recipe for it.
 
 #include <stdint.h>
 
@@ -117,7 +130,8 @@ inline const uint8_t kUc8279X3_Init[] = {
 
 constexpr uint8_t kUc8279X3_CdiFirst = 0x97;  // first refresh after init
 constexpr uint8_t kUc8279X3_CdiLater = 0xD7;  // subsequent refreshes
-constexpr uint8_t kUc8279X3_DuE0 = 0x02;      // DU (partial) E0
-constexpr uint8_t kUc8279X3_DuE5 = 0x5A;      // DU (partial) E5
+// AA pre-conditioning pass only (FUN_42015944) — NOT used by plain B/W GC/DU.
+constexpr uint8_t kUc8279X3_AaPreE0 = 0x02;
+constexpr uint8_t kUc8279X3_AaPreE5 = 0x5A;
 
 }  // namespace freeink
