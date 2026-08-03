@@ -33,13 +33,18 @@
 //   0x06 BTST : 25 25 3C
 //   0x30 PLL  : 0F
 //   0xE1      : 02                             // gate scan
-// Refresh flow (all windowed via PTIN/PTOUT, no TRES). Verified against the
-// stock methods named below; NEITHER B/W path writes E0/E5.
-//   GC full (FUN_42015cca): PTIN -> PTL -> DTM1(0x10) fill 0xFF -> DTM2(0x13)
-//             new frame -> CDI -> load BW_GC (5 tables 0x20-0x24) -> PON ->
-//             DRF(0x12) -> wait BUSY -> CDI 0xD7 -> PTOUT(0x92)
-//   DU fast (FUN_4201580a): same shape, differential (DTM1 = previous frame),
-//             load BW_DU, CDI only — no E0/E5.
+// Refresh flow. Verified against the LIVE stock methods below; NEITHER B/W path
+// writes E0/E5, and NEITHER seeds DTM1 white — both diff the new frame (DTM2)
+// against the REAL previous frame (DTM1). GC vs DU is only the waveform bank.
+//   GC full (FUN_42015786, reached via vt14(obj,0) -> FUN_4201588e): CDI ->
+//             load BW_GC (5 tables 0x20-0x24) -> PON -> DRF(0x12) -> wait.
+//             (FUN_42015cca, which filled DTM1 0xFF, is DEAD code — no callers.)
+//   DU fast (FUN_4201580a, via vt14(obj,1) -> FUN_42015bcc): CDI -> load BW_DU
+//             -> PON -> PTIN -> DRF -> PTOUT. CDI only, no E0/E5.
+//   The DTM planes are written by a separate display method; the host syncs
+//   DTM1 = last displayed frame after each refresh for the next diff. BW_GC has
+//   WW!=KW / WK!=KK, so it CLEARS via the true old->new transition — a white
+//   DTM1 baseline would leave high-contrast pixels undriven (ghosting).
 //   CDI byte: 0x97 on the first refresh after init, 0xD7 on later refreshes
 //             (FUN_42013c7e: 0x97, then |0x40 -> 0xD7 once the first-refresh
 //             flag clears).
@@ -54,8 +59,10 @@
 //   E0=02 / E5=5A appear ONLY in the optional AA pre-conditioning pass
 //   (FUN_42015944, "AA-pre-BW(mid)"), which runs XTF_PRE_BW_MID BEFORE the
 //   grayscale frame — not part of any plain B/W refresh. XTH4 is an alternate
-//   4-gray table set. AA is not yet wired into the driver; these banks + this
-//   sequence are the recovered recipe for it.
+//   4-gray table set. Wired into Uc8279Driver's grayscale path (mirrors the
+//   UC8253 X3 sibling): copyGrayscaleLsb/Msb + writeGrayscalePlaneStrip load
+//   the planes, displayGrayscaleBase/preconditionGrayscale run XTF_PRE_BW_MID,
+//   displayGray runs XTF_AA. PENDING HARDWARE VALIDATION.
 
 #include <stdint.h>
 
