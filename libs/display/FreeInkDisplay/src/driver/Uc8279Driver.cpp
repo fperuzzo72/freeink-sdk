@@ -167,13 +167,17 @@ void Uc8279Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   bus.waitRefreshComplete(" 8279_DRF");
   bus.cmd(CMD_VCOM_DATA_INTERVAL);  // restore the later-refresh CDI (border hold)
   bus.data(kUc8279X3_CdiLater);
-  bus.cmd(CMD_PARTIAL_OUT);
 
   // Sync the OLD plane with the just-displayed frame so the NEXT refresh (GC or
   // DU) diffs against the real on-screen content — the core of clean clears and
-  // ghost-free fast page turns.
+  // ghost-free fast page turns. This MUST happen while still inside the PTIN
+  // partial window (before PTOUT): the DTM2 write in displayStart is windowed
+  // (792x528 addressing), so DTM1 must use the same window or the two planes
+  // misalign and the DU diff drives garbage (the new frame never appears — a
+  // full-frame GC hides this because it flashes every pixel regardless).
   bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
+  bus.cmd(CMD_PARTIAL_OUT);
   _oldPlaneValid = true;
   _firstRefresh = false;
   _forceFullSyncNext = false;
