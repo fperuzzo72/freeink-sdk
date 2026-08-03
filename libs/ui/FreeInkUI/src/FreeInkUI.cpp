@@ -567,6 +567,13 @@ static const KeyboardRow HE_NUM_ROWS[] = {{NUM_ROW, 10, 0},
                                           {LANG_ROW4, 4, 0}};
 
 
+static const KeyboardRow FR_LANG_ROWS[] = {{FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow FR_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow DE_LANG_ROWS[] = {{DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 10, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow DE_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 10, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow ES_LANG_ROWS[] = {{ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow ES_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+
 // Latin layers wearing the lang-key bottom row, so a multi-script keyboard can
 // switch back. Letter rows are the plain EN tables — same QWERTY, no copies.
 static const KeyboardRow EN_LANG_ROWS[] = {{EN_ROW1, 10, 0}, {EN_ROW2, 9, 1}, {EN_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
@@ -603,6 +610,12 @@ static const KeyboardLayout KK_NUM_LAYOUT{KK_NUM_ROWS, 5};
 static const KeyboardLayout KK_SHIFT_NUM_LAYOUT{KK_SHIFT_NUM_ROWS, 5};
 static const KeyboardLayout HE_LAYOUT{HE_ROWS, 4};
 static const KeyboardLayout HE_NUM_LAYOUT{HE_NUM_ROWS, 5};
+static const KeyboardLayout FR_LANG_LAYOUT{FR_LANG_ROWS, 4};
+static const KeyboardLayout FR_LANG_NUM_LAYOUT{FR_LANG_NUM_ROWS, 5};
+static const KeyboardLayout DE_LANG_LAYOUT{DE_LANG_ROWS, 4};
+static const KeyboardLayout DE_LANG_NUM_LAYOUT{DE_LANG_NUM_ROWS, 5};
+static const KeyboardLayout ES_LANG_LAYOUT{ES_LANG_ROWS, 4};
+static const KeyboardLayout ES_LANG_NUM_LAYOUT{ES_LANG_NUM_ROWS, 5};
 static const KeyboardLayout EN_LANG_LAYOUT{EN_LANG_ROWS, 4};
 static const KeyboardLayout EN_SHIFT_LANG_LAYOUT{EN_SHIFT_LANG_ROWS, 4};
 static const KeyboardLayout EN_LANG_NUM_LAYOUT{EN_LANG_NUM_ROWS, 5};
@@ -649,10 +662,13 @@ const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, b
   if (shifted && id == KeyboardLayoutId::QwertyEn) return numberRow ? EN_SHIFT_NUM_LAYOUT : EN_SHIFT_LAYOUT;
   switch (id) {
     case KeyboardLayoutId::AzertyFr:
+      if (langKey) return numberRow ? FR_LANG_NUM_LAYOUT : FR_LANG_LAYOUT;
       return numberRow ? FR_NUM_LAYOUT : FR_LAYOUT;
     case KeyboardLayoutId::QwertzDe:
+      if (langKey) return numberRow ? DE_LANG_NUM_LAYOUT : DE_LANG_LAYOUT;
       return numberRow ? DE_NUM_LAYOUT : DE_LAYOUT;
     case KeyboardLayoutId::SpanishEs:
+      if (langKey) return numberRow ? ES_LANG_NUM_LAYOUT : ES_LANG_LAYOUT;
       return numberRow ? ES_NUM_LAYOUT : ES_LAYOUT;
     case KeyboardLayoutId::QwertyEn:
     default:

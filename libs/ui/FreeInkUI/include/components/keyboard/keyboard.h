@@ -80,9 +80,8 @@ struct KeyboardProps {
   const char* okLabel = nullptr;
   const char* shiftLabel = nullptr;
   const char* modeLabel = nullptr;
-  // KeyKind::Lang has no sensible table label: it names the layout the key
-  // leads to, and with more than two layouts enabled that is whatever comes
-  // next in the app's cycle. Always supplied per frame; a Lang key with no
+  // KeyKind::Lang has no sensible table label: which layout is in use is the
+  // app's state, not the table's. Always supplied per frame; a Lang key with no
   // label falls back to the table's, which the built-in tables leave as "EN".
   const char* langLabel = nullptr;
   uint16_t inputMask = InputDefault;
