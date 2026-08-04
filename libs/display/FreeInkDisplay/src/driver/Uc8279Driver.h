@@ -73,6 +73,12 @@ class Uc8279Driver : public PanelDriver {
   void loadXtfAa(EpdBus& bus);
   // Blocking PON -> DRF -> wait (-> POF) used by the grayscale paths.
   void triggerGrayRefresh(EpdBus& bus, bool turnOff);
+  // Enter the full 792x528 PTL partial window (PTIN + PTL). ALL RAM plane writes
+  // and refreshes must run in this window: normal mode addresses the controller's
+  // 800x600 frame (100-byte rows) and misaligns our 99-byte-row planes. The B/W
+  // path is implicitly windowed (init leaves this PTL set + displayStart's PTIN);
+  // the grayscale methods must re-assert it explicitly.
+  void grayWindowIn(EpdBus& bus);
 
   uint16_t _w;   // visible width  (792)
   uint16_t _h;   // visible height (528)

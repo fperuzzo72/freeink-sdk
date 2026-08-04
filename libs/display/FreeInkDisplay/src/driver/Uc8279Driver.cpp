@@ -67,6 +67,15 @@ void Uc8279Driver::loadXtfAa(EpdBus& bus) {
   }
 }
 
+void Uc8279Driver::grayWindowIn(EpdBus& bus) {
+  // PTIN + the full-panel PTL (same 792x528 window the init sets): X 0..791,
+  // Y 0..527 in gate space, PT_SCAN=1. Keeps plane writes/refresh at 99-byte
+  // rows so they align (normal mode would use the 800x600 frame).
+  static const uint8_t kFullWindow[9] = {0x00, 0x00, 0x03, 0x17, 0x00, 0x00, 0x02, 0x0F, 0x01};
+  bus.cmd(CMD_PARTIAL_IN);
+  bus.cmdData(CMD_PARTIAL_WINDOW, kFullWindow, 9);
+}
+
 void Uc8279Driver::triggerGrayRefresh(EpdBus& bus, bool turnOff) {
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
@@ -223,15 +232,19 @@ void Uc8279Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
     _lsbValid = false;
     return;
   }
+  grayWindowIn(bus);
   bus.sendPlaneFlipped(CMD_DTM1, lsb, _h, _wb);  // LSB plane -> "old" RAM
   bus.cmd(CMD_DATA_STOP);
+  bus.cmd(CMD_PARTIAL_OUT);
   _lsbValid = true;
 }
 
 void Uc8279Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   if (!msb || !_lsbValid) return;
+  grayWindowIn(bus);
   bus.sendPlaneFlipped(CMD_DTM2, msb, _h, _wb);  // MSB plane -> "new" RAM
   bus.cmd(CMD_DATA_STOP);
+  bus.cmd(CMD_PARTIAL_OUT);
 }
 
 void Uc8279Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
@@ -276,10 +289,14 @@ void Uc8279Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   _inGrayscaleMode = !factoryMode;
   // PSR REG=1 (external LUT) is already set from init and untouched by the B/W
   // path, so just load the AA bank + CDI and refresh (FUN_42015108/42013be0).
+  // The refresh MUST run in the partial window (like the plane writes); also
+  // resets PTL to full after any per-strip writeGrayscalePlaneStrip windows.
+  grayWindowIn(bus);
   loadXtfAa(bus);
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
   triggerGrayRefresh(bus, turnOff);
+  bus.cmd(CMD_PARTIAL_OUT);
 
   _firstRefresh = false;
   _oldPlaneValid = false;  // gray planes overwrote DTM1/DTM2 — next B/W needs a rebase/clear
@@ -296,6 +313,7 @@ void Uc8279Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
   const bool cleanBaseNeeded = !_oldPlaneValid || _lsbValid || _forceFullSyncNext || _initialFullsRemaining > 0;
   if (cleanBaseNeeded) {
     display(bus, fb, nullptr, fallback, /*turnOff=*/false);
+    grayWindowIn(bus);
     bus.cmd(CMD_VCOM_DATA_INTERVAL);
     bus.data(kUc8279X3_CdiLater);
     bus.cmd(CMD_CCSET);
@@ -304,8 +322,10 @@ void Uc8279Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
     bus.data(kUc8279X3_AaPreE5);
     loadBank(bus, kUc8279X3_XtfPreBwMid);
     triggerGrayRefresh(bus, turnOff);
+    bus.cmd(CMD_PARTIAL_OUT);
     return;
   }
+  grayWindowIn(bus);
   bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
@@ -320,6 +340,7 @@ void Uc8279Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
   // overwrite both planes anyway.
   bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
+  bus.cmd(CMD_PARTIAL_OUT);
   _oldPlaneValid = true;
 }
 
@@ -359,10 +380,12 @@ void Uc8279Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   if (!bw) return;
   // Rebase both planes from the restored BW buffer so the next B/W turn has a
   // valid differential baseline (the per-page cleanup the tiled AA reader runs).
+  grayWindowIn(bus);
   bus.sendPlaneFlipped(CMD_DTM2, bw, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   bus.sendPlaneFlipped(CMD_DTM1, bw, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
+  bus.cmd(CMD_PARTIAL_OUT);
   _lsbValid = false;
   _oldPlaneValid = true;
   _forceFullSyncNext = false;
@@ -374,6 +397,7 @@ void Uc8279Driver::grayscaleRevert(EpdBus& bus, const uint8_t* fb) {
   if (!_inGrayscaleMode) return;
   _inGrayscaleMode = false;
   // Scrub to clean white: both planes white + the strong BW_GC bank.
+  grayWindowIn(bus);
   bus.fillPlane(CMD_DTM1, 0xFF, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   bus.fillPlane(CMD_DTM2, 0xFF, _h, _wb);
@@ -382,6 +406,7 @@ void Uc8279Driver::grayscaleRevert(EpdBus& bus, const uint8_t* fb) {
   bus.data(kUc8279X3_CdiLater);
   loadBank(bus, kUc8279X3_BwGc);
   triggerGrayRefresh(bus, /*turnOff=*/false);
+  bus.cmd(CMD_PARTIAL_OUT);
   _oldPlaneValid = true;  // white baseline
   _lsbValid = false;
 }
