@@ -245,10 +245,23 @@ void FreeInkDisplay::blitImage(const uint8_t* imageData, uint16_t x, uint16_t y,
       for (uint16_t col = 0; col < imageWidthBytes; col++) {
         if ((xByte + col) >= displayWidthBytes) break;
         const uint8_t srcByte = fromProgmem ? pgm_read_byte(&imageData[srcOffset + col]) : imageData[srcOffset + col];
+        uint8_t& destByte = frameBuffer[destOffset + col];
+        const bool isPartialFinalByte = col + 1 == imageWidthBytes && (w & 7) != 0;
+        if (!isPartialFinalByte) {
+          if (transparent)
+            destByte &= srcByte;  // only black pixels are drawn
+          else
+            destByte = srcByte;
+          continue;
+        }
+
+        // Only the high `w % 8` bits belong to the image. Preserve the
+        // destination pixels represented by padding bits in its final byte.
+        const uint8_t validMask = static_cast<uint8_t>(0xFFU << (8U - (w & 7)));
         if (transparent)
-          frameBuffer[destOffset + col] &= srcByte;  // only black pixels are drawn
+          destByte &= static_cast<uint8_t>(srcByte | static_cast<uint8_t>(~validMask));
         else
-          frameBuffer[destOffset + col] = srcByte;
+          destByte = static_cast<uint8_t>((destByte & static_cast<uint8_t>(~validMask)) | (srcByte & validMask));
       }
     }
     return;
