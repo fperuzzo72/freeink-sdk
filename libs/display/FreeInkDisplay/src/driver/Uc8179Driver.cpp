@@ -29,33 +29,26 @@ constexpr uint8_t CMD_TSSET = 0xE5;               // TSSET (forced temperature; 
 
 constexpr uint8_t CDI_INTERVAL = 0x07;  // CDI byte1, constant
 
-// 4-level grayscale (AA) waveform LUTs. Command sent SEPARATELY (blob byte0 is
-// DATA). Format per LUT: byte0 = per-phase level select (2 bits/phase, phase0 in
-// the high bits: 00=GND, 01=VSH+ push WHITE, 10=VSL- push BLACK, 11=float); the
-// SHARED frame timeline for all 5 LUTs is the next bytes (f0,f1,f2,f3,rep =
-// 02,02,01,01,01), so only byte0 differs per pixel class.
-//
-// SELF-SUFFICIENT (no settle) drive, corrected for CrossPoint's rendering:
-// CrossPoint's B/W base renders EVERY grey pixel BLACK (GfxRenderer bmpVal<3 ->
-// drawPixel black), so greys start black and must be pushed toward WHITE (VSH+),
-// graded — NOT toward black like app1's stock nudge (which is paired with a
-// settle and whose base dithers greys differently). Black/white are (0,0)=KK and
-// stay held by the B/W base. Level select (old=0x10/LSB, new=0x13/MSB):
-//   (1,1)=WW = dark grey  -> small white lift (VSH+ in phase2 only)          = 0x04
-//   (0,1)=KW = light grey -> bigger white lift (VSH+ in phases 1+2)          = 0x14
-//   (0,0)=KK = black/white-> hold (no drive)                                 = 0x00
-//   (1,0)=WK -> unused by CrossPoint's planes                                = 0x00
+// 4-level grayscale (AA) waveform LUTs — stock's REAL grayscale set (the short
+// 2-frame LUTs FUN_4214ebd0 actually uploads @app1 DROM 0x3c5d8994..), uploaded
+// in custom-LUT mode (PSR REG=1). NOTE: unlike the (dead, grainy) gray_full set,
+// here the register command is sent SEPARATELY — blob byte0 is DATA, not the cmd.
+// Each LUT is 42 (0x2A) data bytes; only the first ~12 are non-zero. Level select
+// by (old=0x10/LSB, new=0x13/MSB): (0,0)=LUTKK black, (0,1)=LUTKW, (1,0)=LUTWK,
+// (1,1)=LUTWW white. This is the byte-exact stock set from the known-good 6662faf
+// build; the "white-push"/"reset-phase" experiments were chasing a symptom whose
+// real cause was the AA-CDI regression (see displayGray) — leave this as stock.
 constexpr uint8_t GRAY_LUT_LEN = 42;  // 0x2A data bytes, command sent separately
 struct GrayLut {
   uint8_t cmd;
   uint8_t data[GRAY_LUT_LEN];
 };
 const GrayLut kGrayLuts[5] = {
-    {0x20, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTC / VCOM (DC)
-    {0x21, {0x04, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // WW  dark grey  (white lift, phase2)
-    {0x22, {0x14, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // KW  light grey (white lift, phases 1+2)
-    {0x23, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // WK  unused -> hold
-    {0x24, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // KK  black/white -> hold
+    {0x20, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTC / VCOM
+    {0x21, {0x08, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTWW (white)
+    {0x22, {0x20, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTKW
+    {0x23, {0x20, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTWK
+    {0x24, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTKK (black)
 };
 }  // namespace
 
@@ -299,10 +292,14 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     bus.cmd(l.cmd);
     bus.data(l.data, GRAY_LUT_LEN);
   }
-  // Vendor reference: the FIRST AA refresh after init drives the border (0x29);
-  // later AA refreshes hold it (0xA9) so the border doesn't flash on every page.
+  // The AA refresh CDI is a CONSTANT 0x29 (app1 vtable[0x118] returns 0x29 every
+  // refresh; the known-good 6662faf build used 0x29 unconditionally). The
+  // "first 0x29 / later 0xA9" variant from the display-cleanups audit REGRESSED
+  // this: 0xA9 (bit7 set) changes the border/VCOM handling on every AA page after
+  // the first, which accumulates as ghosting under fast paging and smears when a
+  // partial (menu) refresh follows — do NOT reintroduce it.
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_grayRefreshedOnce ? _cfg.cdiIdle : _cfg.cdiActive);  // first 0x29, later 0xA9
+  bus.data(_cfg.cdiActive);  // 0x29, always
   bus.data(CDI_INTERVAL);
   _grayRefreshedOnce = true;
 
