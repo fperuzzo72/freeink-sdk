@@ -49,6 +49,10 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 
   pinMode(pins.cs, OUTPUT);
   pinMode(pins.dc, OUTPUT);
+  // Release any deep-sleep hold on RST (powerDownRailsForSleep() holds it HIGH so
+  // the UC8179 stays in DSLP); the hold survives the wake reset and would make the
+  // reset pulse below bounce off the latch.
+  gpio_hold_dis(static_cast<gpio_num_t>(pins.rst));
   pinMode(pins.rst, OUTPUT);
   pinMode(pins.busy, busy == BusyPolarity::ActiveLow ? INPUT_PULLUP : INPUT);
   if (_coCs >= 0) {
