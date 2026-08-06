@@ -75,6 +75,7 @@ class Ssd1683Driver final : public PanelDriver {
   void beginDisplayWork() override;
   void abortPostRefresh() override;
   bool postRefreshAborted() const override;
+  bool displayCommitted() const override { return _displayCommitted; }
   void controllerIdle(EpdBus& bus) override;
 
   void setGrayParams(const Ssd1683GrayParams& params);
@@ -122,6 +123,7 @@ class Ssd1683Driver final : public PanelDriver {
   bool _grayMsbReady = false;
   bool _pendingTri = false;
   bool _pendingCorrective = false;
+  bool _displayCommitted = false;
   bool _controllerPowered = false;
   enum class LutState : uint8_t { Unknown, OtpBw, Custom };
   LutState _lutState = LutState::Unknown;

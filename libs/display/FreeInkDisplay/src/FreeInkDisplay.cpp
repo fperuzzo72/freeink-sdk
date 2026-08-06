@@ -824,6 +824,10 @@ bool FreeInkDisplay::postRefreshAborted() const {
   return _driver && _driver->postRefreshAborted();
 }
 
+bool FreeInkDisplay::displayCommitted() const {
+  return !_driver || _driver->displayCommitted();
+}
+
 void FreeInkDisplay::runMaintenance() {
   if (!_driver) return;
   syncPendingAsync();

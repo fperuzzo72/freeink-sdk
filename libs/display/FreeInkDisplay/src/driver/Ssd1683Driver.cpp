@@ -85,6 +85,18 @@ constexpr std::array<uint8_t, 256> makeReverseBitsLut() {
 }
 constexpr auto REVERSE_BITS_LUT = makeReverseBitsLut();
 
+// Xtensa has no population-count instruction, so __builtin_popcount lowers to a
+// windowed callx8 into ROM's __popcountsi2 (verified in the linked ELF). The
+// plane-composition loops below run it once per framebuffer byte, which is tens
+// of thousands of function calls per page turn purely to feed a serial-log
+// statistic. This SWAR form inlines to a handful of register ops and needs no
+// table, so the counters stay exact and cost effectively nothing.
+constexpr uint8_t popcount8(uint8_t value) {
+  value = static_cast<uint8_t>(value - ((value >> 1) & 0x55u));
+  value = static_cast<uint8_t>((value & 0x33u) + ((value >> 2) & 0x33u));
+  return static_cast<uint8_t>((value + (value >> 4)) & 0x0Fu);
+}
+
 // The SSD1677 waveform block. Bytes 0..104 go out via cmd 0x32; the analog
 // tail 105..109 goes out as the VOLT_* register writes in loadCustomLut():
 //   [0..49]    five LUT entries x ten groups; each byte is four sub-phases at
@@ -448,12 +460,23 @@ bool Ssd1683Driver::runOtpUpdate(EpdBus& bus, const uint8_t* bwTarget, bool forc
     initController(bus);
   }
 
+  // Only "did anything change at all" gates the update; the exact bit count is
+  // a log statistic. __builtin_popcount does not inline on Xtensa — it compiles
+  // to a windowed callx8 into ROM's __popcountsi2 — so accumulating it per byte
+  // cost one function call per byte of the framebuffer on every refresh. OR the
+  // masks together instead, and pay for popcount only when a log will print it.
+  uint8_t changedBits = 0;
+#ifdef ENABLE_SERIAL_LOG
   uint32_t changed = 0;
+#endif
   for (uint32_t i = 0; i < BUFFER_SIZE; ++i) {
     const uint8_t bw = bwTarget[i];  // set bit = white
     if (forceAll) {
       _sel26[i] = static_cast<uint8_t>(~bw);
+      changedBits = 0xFF;
+#ifdef ENABLE_SERIAL_LOG
       changed += 8;
+#endif
       continue;
     }
 
@@ -463,7 +486,10 @@ bool Ssd1683Driver::runOtpUpdate(EpdBus& bus, const uint8_t* bwTarget, bool forc
     const uint8_t oldGray = static_cast<uint8_t>(oldNonWhite & ~oldBlack);
     const uint8_t changedMask =
         static_cast<uint8_t>((oldNonWhite ^ targetBlack) | (oldBlack ^ targetBlack));
-    changed += static_cast<uint32_t>(__builtin_popcount(static_cast<unsigned int>(changedMask)));
+    changedBits |= changedMask;
+#ifdef ENABLE_SERIAL_LOG
+    changed += popcount8(changedMask);
+#endif
 
     // SSD1677 OTP B/W: one means old white, zero means old black. For gray,
     // choose the opposite of the target so the controller cannot classify it
@@ -471,7 +497,7 @@ bool Ssd1683Driver::runOtpUpdate(EpdBus& bus, const uint8_t* bwTarget, bool forc
     const uint8_t oldWhite = static_cast<uint8_t>(~oldNonWhite);
     _sel26[i] = static_cast<uint8_t>(oldWhite | (static_cast<uint8_t>(~bw) & oldGray));
   }
-  if (changed == 0) return false;
+  if (changedBits == 0) return false;
 
   const unsigned long started = millis();
   bus.cmd(0x3C);
@@ -497,7 +523,11 @@ bool Ssd1683Driver::runOtpUpdate(EpdBus& bus, const uint8_t* bwTarget, bool forc
 }
 
 bool Ssd1683Driver::runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray, bool corrective) {
-  if (!useGray) return runOtpUpdate(bus, bwTarget, corrective);
+  if (!useGray) {
+    const bool otpRan = runOtpUpdate(bus, bwTarget, corrective);
+    if (otpRan) _displayCommitted = true;
+    return otpRan;
+  }
   if (!bwTarget || !allocateBuffers()) return false;
   if (!_initialized) {
     bus.reset();
@@ -510,8 +540,15 @@ bool Ssd1683Driver::runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray
   // changed pixels and all target gray/black pixels remain actively driven.
   // This removes the dominant full-background flash without letting stable
   // text fade. Stage 2 explicitly treats both entries 0 and 1 as white.
+  // See runOtpUpdate(): popcount is a ROM call on Xtensa, and both counters are
+  // log-only — `changed` is otherwise tested just for zero, `driven` is never
+  // read at all. Keeping them out of the release build removes two calls per
+  // framebuffer byte from the hottest loop in a gray page turn.
+  uint8_t changedBits = 0;
+#ifdef ENABLE_SERIAL_LOG
   uint32_t changed = 0;
   uint32_t driven = 0;
+#endif
   for (uint32_t i = 0; i < BUFFER_SIZE; ++i) {
     const uint8_t bw = bwTarget[i];  // set bit = white
     const uint8_t gray = useGray ? static_cast<uint8_t>(_grayLsb[i] | _grayMsb[i]) : 0u;
@@ -520,14 +557,17 @@ bool Ssd1683Driver::runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray
     const uint8_t old24 = _glassNonWhite[i];
     const uint8_t old26 = _glassBlack[i];
     const uint8_t changedMask = static_cast<uint8_t>((old24 ^ q24) | (old26 ^ q26));
-    changed += corrective ? 8u
-                          : static_cast<uint32_t>(__builtin_popcount(static_cast<unsigned int>(changedMask)));
     const uint8_t driveMask = corrective ? 0xFFu : static_cast<uint8_t>(changedMask | q24);
-    driven += static_cast<uint32_t>(__builtin_popcount(static_cast<unsigned int>(driveMask)));
+    changedBits |= corrective ? 0xFFu : changedMask;
+#ifdef ENABLE_SERIAL_LOG
+    changed += corrective ? 8u
+                          : popcount8(changedMask);
+    driven += popcount8(driveMask);
+#endif
     _sel24[i] = static_cast<uint8_t>(driveMask & ~(q24 ^ q26));
     _sel26[i] = static_cast<uint8_t>(driveMask & q24);
   }
-  if (changed == 0) return false;
+  if (changedBits == 0) return false;
 
   const unsigned long started = millis();
   uint8_t lut[111];
@@ -578,6 +618,7 @@ bool Ssd1683Driver::runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray
   (void)stages;
   (void)started;
 #endif
+  _displayCommitted = true;
   return true;
 }
 
@@ -669,6 +710,9 @@ void Ssd1683Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refresh
 
 void Ssd1683Driver::beginDisplayWork() {
   _displayWorkGeneration = _abortGeneration.load();
+  // Cleared per logical render so displayCommitted() answers "did this page
+  // reach the panel", which is what a caller's refresh cadence must key off.
+  _displayCommitted = false;
   if (++_renderGeneration == 0) ++_renderGeneration;
   // A logical render owns all three staged planes. Discard anything left by a
   // canceled/OOM render before allowing the next page to contribute strips.

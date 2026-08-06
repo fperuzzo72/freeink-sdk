@@ -228,6 +228,10 @@ class FreeInkDisplay {
   void beginDisplayWork();
   void abortPostRefresh();
   bool postRefreshAborted() const;
+  // True when the last display sequence actually reached the panel. Panels
+  // which paint synchronously always report true, so refresh-cadence callers
+  // behave exactly as before on them.
+  bool displayCommitted() const;
   void runMaintenance();
   bool hasPendingMaintenance() const;
   void controllerIdle();

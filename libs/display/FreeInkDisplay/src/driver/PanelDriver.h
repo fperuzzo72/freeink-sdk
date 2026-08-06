@@ -158,6 +158,15 @@ class PanelDriver {
   // waveforms: an already-triggered waveform must still run to completion.
   virtual void abortPostRefresh() {}
   virtual bool postRefreshAborted() const { return false; }
+  // True when a frame actually reached the panel since beginDisplayWork().
+  // Drivers that paint synchronously inside display() always commit, so the
+  // default is true and their callers are unaffected. Paper Mono batches a
+  // three-level target in host RAM across several calls and legitimately
+  // discards it when a page turn is superseded; a caller whose periodic
+  // ghost-cleanup cadence or explicit refresh request is consumed on submit
+  // rather than on commit would silently lose it. Query after the whole
+  // display sequence, not between its halves.
+  virtual bool displayCommitted() const { return true; }
   // Run deferred panel maintenance after the visible frame has been committed.
   // The default is deliberately empty; only panels with a non-flashing cleanup
   // waveform need it.
