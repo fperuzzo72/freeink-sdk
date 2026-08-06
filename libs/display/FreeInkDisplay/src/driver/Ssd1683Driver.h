@@ -6,17 +6,31 @@
 
 namespace freeink {
 
-// PaperToDo-compatible non-flashing four-gray controls. Defaults match the
-// calibrated Paper Mono preset: {clean=1, base2=0, dark=3, light=11}.
+// Paper Mono panel driver. The controller is an SSD1677 (the file name is
+// historical); every waveform it runs here is a host-authored 111-byte LUT.
+//
+// Binary UI and reader Fast paints use the panel's internal, temperature-
+// selected, non-flashing OTP waveform. Balanced book paints are one target-
+// coded W/G/B activation. Ordinary pages leave unchanged white background on
+// entry 0, which is not idle: it carries a short white-biased top-up (one +15 V
+// frame, then the white dose) that erases a little residue on every page turn
+// instead of letting ghosts accumulate until the corrective refresh. Changed
+// pixels and every target gray/black pixel run the full driven classes.
 struct Ssd1683GrayParams {
-  uint8_t cleanupPasses = 1;
-  uint8_t revertBoost = 0;  // retained for preset compatibility; base pass supersedes it
+  // Retired endpoint-polish count, kept only so stored presets keep loading.
+  // setGrayParams() ignores it: the driven classes are right-aligned and end
+  // target-directed, and a 1+1 polish dither was measured to clean nothing.
+  uint8_t cleanupPasses = 0;
+  // Legacy preset fields. Only lightFrames still has an effect: it selects the
+  // full-resync middle tone (see setGrayParams). The rest are retained so
+  // existing callers and stored presets keep compiling.
+  uint8_t revertBoost = 0;
   uint8_t baseDouble = 0;
-  uint8_t grayStrong = 0;  // scheme A only
-  uint8_t scheme = 1;      // 1 = B/W first (recommended), 0 = FreeInk legacy mapping
+  uint8_t grayStrong = 0;
+  uint8_t scheme = 1;
   uint8_t darkFrames = 3;
   uint8_t lightFrames = 11;
-  uint8_t pipeline = 0;  // 0 = validated differential pipeline; other values fall back to 0
+  uint8_t pipeline = 0;
   uint8_t slamFrames = 0;
   uint8_t frameRate = 0;
 };
@@ -30,7 +44,11 @@ class Ssd1683Driver final : public PanelDriver {
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
-  bool supportsAsyncDisplay() const override { return true; }
+  // The complete 3-gray target is intentionally batched in host RAM before a
+  // waveform starts. Generic displayStart/displayFinish therefore stays
+  // synchronous; advertising an in-flight refresh here would make BUSY polling
+  // lie while no controller activation exists yet.
+  bool supportsAsyncDisplay() const override { return false; }
   bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   void displayFinish(EpdBus& bus, const uint8_t* fb) override;
   void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) override;
@@ -39,9 +57,8 @@ class Ssd1683Driver final : public PanelDriver {
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
-  // Selector copies and transition encoding are host-RAM-only. Encoding writes
-  // a speculative bin buffer; the physical-history buffer is swapped only
-  // after the custom waveform commits, so cancellation cannot corrupt history.
+  // Selector staging is host-RAM only, so the renderer may hand over strips at
+  // any time without synchronising against the controller.
   bool supportsBusyGrayscaleStaging() const override { return true; }
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                 uint16_t numRows) override;
@@ -52,14 +69,12 @@ class Ssd1683Driver final : public PanelDriver {
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
   void requestResync(uint8_t settlePasses) override;
-  // Paper Mono cuts EPD power in deep sleep. Force the first paint through one
-  // all-pixel absolute OTP waveform before presenting its target frame.
+  // Paper Mono cuts EPD power in deep sleep, so the on-glass state is unknown
+  // at the first paint. Drive every pixel once instead of diffing.
   void skipInitialResync() override { _needsFull = true; }
   void beginDisplayWork() override;
   void abortPostRefresh() override;
   bool postRefreshAborted() const override;
-  void runMaintenance(EpdBus& bus) override;
-  bool hasPendingMaintenance() const override;
   void controllerIdle(EpdBus& bus) override;
 
   void setGrayParams(const Ssd1683GrayParams& params);
@@ -67,82 +82,74 @@ class Ssd1683Driver final : public PanelDriver {
   void resetGray();
 
  private:
-  bool allocateGrayBuffers();
+  // Timelines in 5 ms frames.
+  struct TriParams {
+    // One-shot W/G/B sweep. The three per-class white lengths are derived from
+    // these so that each class's net V*frames is exactly zero; see makeTriLut().
+    uint8_t preUp = 16;      // activation kick; also hosts the entry-0 top-up
+    uint8_t tGray = 24;      // weak-rail (+5 V) frames that develop the middle tone
+    uint8_t tBlack = 32;     // strong-rail (+15 V) frames that develop black
+    uint8_t postCleanCycles = 0;  // retired; nonzero only for lab experiments
+  };
+
+  bool allocateBuffers();
   void initController(EpdBus& bus);
   void resetRamCounter(EpdBus& bus);
   void writePlane(EpdBus& bus, uint8_t command, const uint8_t* data);
-  void writePhysicalPlane(EpdBus& bus, uint8_t command, const uint8_t* data);
-  void activateStart(EpdBus& bus, uint8_t control);
   void activate(EpdBus& bus, uint8_t control);
-  void activateOtpStart(EpdBus& bus);
   void activateOtp(EpdBus& bus);
   void powerOffController(EpdBus& bus);
-  void absolutePass(EpdBus& bus, const uint8_t* target);
   void loadCustomLut(EpdBus& bus, const uint8_t lut[111]);
-  void customPass(EpdBus& bus, const uint8_t* p24, const uint8_t* p26, const uint8_t lut[111],
-                  bool planesPhysical = false);
-  void prepareWhiteCleanup(const uint8_t* bw, const uint8_t* oldBw, bool oldFrameHadGray,
-                           bool preservePending = false);
-  void stageWhiteCleanup(bool mergeIntoGray);
-  uint32_t encodeGrayTarget(const uint8_t* bwOverride = nullptr);
-  void commitPreparedBins();
-  void discardPreparedBins();
-  void encodeCommittedGraySelectors();
-  void encodeCleanup();
-  void makeGrayLut(uint8_t out[111]) const;
-  void makeCleanupLut(uint8_t out[111]) const;
+  uint16_t makeTriLut(uint8_t out[111]) const;
+  uint16_t makePostCleanLut(uint8_t out[111]) const;
+  bool runOtpUpdate(EpdBus& bus, const uint8_t* bwTarget, bool forceAll);
+  // Encodes the source-to-target transition against the recorded glass state,
+  // runs its required activations plus optional endpoint post-clean, and waits
+  // them out. Returns true when a waveform actually ran.
+  bool runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray, bool corrective);
+  void stashTarget(const uint8_t* fb, RefreshMode mode);
+  bool commitPending(EpdBus& bus, bool useGray);
+  void clearGrayStaging();
+  bool markGrayRows(GrayPlane plane, uint16_t yStart, uint16_t numRows);
   bool displayWorkCancelled() const;
 
   bool _initialized = false;
   bool _needsFull = true;
   bool _lastBwValid = false;
   bool _preparingGray = false;
-  bool _grayArmed = false;
   bool _panelHasGray = false;
   bool _grayLsbReady = false;
   bool _grayMsbReady = false;
-  bool _abortedAtTwoLevelBase = false;
-  bool _asyncPending = false;
-  bool _asyncHadGray = false;
-  bool _asyncPreparingGray = false;
-  enum class LutState : uint8_t { Unknown, OtpBw, Custom };
+  bool _pendingTri = false;
+  bool _pendingCorrective = false;
   bool _controllerPowered = false;
+  enum class LutState : uint8_t { Unknown, OtpBw, Custom };
   LutState _lutState = LutState::Unknown;
-  RefreshMode _asyncMode = RefreshMode::Fast;
-  uint32_t _asyncChangedPixels = 0;
-  unsigned long _asyncStartedMs = 0;
+  uint32_t _pendingGeneration = 0;
+  uint32_t _grayLsbGeneration = 0;
+  uint32_t _grayMsbGeneration = 0;
+  uint32_t _renderGeneration = 0;
   std::atomic<uint32_t> _abortGeneration{0};
   uint32_t _displayWorkGeneration = 0;
-  std::atomic<bool> _maintenancePending{false};
-  std::atomic<bool> _grayMaintenancePending{false};
-  // Reader AA is staged during the foreground render and applied only after
-  // ActivityManager observes a quiet input window. A new page invalidates it
-  // before any waveform starts.
-  std::atomic<bool> _grayRefinePending{false};
-  uint32_t _grayRefineGeneration = 0;
-  uint32_t _grayRefinePixels = 0;
-  bool _grayRefineLeavesGray = false;
-  bool _grayTargetPrepared = false;
-  bool _graySelectorsPhysical = false;
-  bool _preparedBinsReady = false;
-  bool _preparedMergedWhiteCleanup = false;
-  uint32_t _preparedGrayGeneration = 0;
-  uint32_t _preparedGrayPixels = 0;
-  uint32_t _whiteCleanupGeneration = 0;
-  uint32_t _whiteCleanupPixels = 0;
-  bool _whiteCleanupForGray = false;
-  uint8_t _bwUpdatesSinceMaintenance = 0;
-  uint8_t _grayPagesSinceMaintenance = 0;
+  TriParams _tri{};
   Ssd1683GrayParams _grayParams{};
 
-  uint8_t* _lastBw = nullptr;
-  uint8_t* _grayLsb = nullptr;
-  uint8_t* _grayMsb = nullptr;
-  uint8_t* _base = nullptr;
-  uint8_t* _oldEffective = nullptr;
-  uint8_t* _whiteCleanupMask = nullptr;
-  uint8_t* _bins = nullptr;  // 2 bpp, four pixels per byte
-  uint8_t* _preparedBins = nullptr;  // speculative next state; swapped into _bins only after a waveform commits
+  // All logical raster order; writePlane() applies the 180-degree mount
+  // transform on the way out.
+  uint8_t* _lastBw = nullptr;    // last committed two-level target
+  uint8_t* _pendingBw = nullptr; // stashed target awaiting its activation
+  uint8_t* _grayLsb = nullptr;   // staged dark selector
+  uint8_t* _grayMsb = nullptr;   // staged light selector
+  uint8_t* _glassNonWhite = nullptr;  // on-glass q24: pixel is not white
+  uint8_t* _glassBlack = nullptr;     // on-glass q26: pixel is black
+  uint8_t* _sel24 = nullptr;     // LUT selector plane written to RAM 0x24
+  uint8_t* _sel26 = nullptr;     // LUT selector plane written to RAM 0x26
+  static constexpr uint16_t GRAY_ROWS = 480;
+  static constexpr uint16_t GRAY_COVERAGE_BYTES = GRAY_ROWS / 8;
+  uint8_t _grayLsbCoverage[GRAY_COVERAGE_BYTES]{};
+  uint8_t _grayMsbCoverage[GRAY_COVERAGE_BYTES]{};
+  uint16_t _grayLsbRowsCovered = 0;
+  uint16_t _grayMsbRowsCovered = 0;
 };
 
 Ssd1683Driver& ssd1683Driver();
