@@ -926,14 +926,48 @@ void InputManager::beginFt5x06() {
 
   // Match M5GFX Touch_FT5x06::_check_init(): enter working mode, read the
   // chip/firmware/vendor window, then select polling/level interrupt mode.
+  // Retried over ~600 ms: the FT6336 needs up to ~300 ms after a hardware
+  // reset before its I2C interface answers, and on boards where the rail/reset
+  // bring-up happens right here (Paper Mono: enableTouch() above) a one-shot
+  // probe races the controller's boot and leaves touch dead for the session.
+  // Gate on the transactions succeeding, NOT on the ID contents: Paper Mono
+  // units ACK and serve the whole 0xA3..0xA8 window as zeros, so a vendor-byte
+  // check reads as "absent" on a perfectly working controller.
   uint8_t id[6] = {};
-  touchDataEnabled = ft5x06WriteReg(0x00, 0x00) &&
-                     ft5x06ReadReg(0xA3, id, sizeof(id)) &&
-                     ft5x06WriteReg(0xA4, 0x00) && id[5] != 0;
+  bool wrMode = false, rdId = false, wrIrq = false;
+  for (int attempt = 0; attempt < 12 && !rdId; ++attempt) {
+    if (attempt) delay(50);
+    wrMode = ft5x06WriteReg(0x00, 0x00);
+    rdId = wrMode && ft5x06ReadReg(0xA3, id, sizeof(id));
+    wrIrq = rdId && ft5x06WriteReg(0xA4, 0x00);
+  }
+  touchDataEnabled = wrMode && rdId && wrIrq;
 #ifdef TOUCH_PROBE_DEBUG
-  touchDebugPrintf("[touch] FT5x06 probe: enabled=%d cipher=0x%02X fw=0x%02X "
-                   "vendor=0x%02X irq=%d\n",
-                   touchDataEnabled, id[0], id[3], id[5], t.irq);
+#if FREEINK_DEVICE_PAPERMONO
+  // Expander state alongside the probe result: OUT should show TP_EN (bit 12)
+  // and TP_RST (bit 5) high, MODE should show the configured output mask
+  // (0x39B4). All-zero probe ids + correct expander state = the FT6336 itself
+  // isn't answering; wrong expander state = the rail/reset never asserted.
+  uint16_t ioeMode = 0xFFFF, ioeOut = 0xFFFF;
+  freeink::m5ioe1::readReg16(freeink::m5ioe1::REG_GPIO_MODE_L, &ioeMode);
+  freeink::m5ioe1::readReg16(freeink::m5ioe1::REG_GPIO_OUT_L, &ioeOut);
+  touchDebugPrintf("[touch] IOE1 addr=0x%02X mode=0x%04X out=0x%04X\n",
+                   freeink::m5ioe1::g_addr, ioeMode, ioeOut);
+  // Full bus scan with the touch rail up: expected residents are 0x32 (RX8130
+  // RTC), 0x4F/0x6F (IOE1), 0x68 (BMI270), 0x6E (PM1), 0x50 (NFC on Pro) —
+  // whatever ELSE ACKs is the touch controller (FT6336 = 0x38; some unit
+  // revisions may carry a CST820 = 0x15 instead).
+  touchDebugPrintf("[touch] i2c scan:");
+  for (uint8_t a = 0x08; a <= 0x77; ++a) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) touchDebugPrintf(" 0x%02X", a);
+    delayMicroseconds(200);
+  }
+  touchDebugPrintf("\n");
+#endif
+  touchDebugPrintf("[touch] FT5x06 probe: enabled=%d wrMode=%d rdId=%d wrIrq=%d "
+                   "cipher=0x%02X fw=0x%02X vendor=0x%02X irq=%d\n",
+                   touchDataEnabled, wrMode, rdId, wrIrq, id[0], id[3], id[5], t.irq);
 #endif
 }
 
