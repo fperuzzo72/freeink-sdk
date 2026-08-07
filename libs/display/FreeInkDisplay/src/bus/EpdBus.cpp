@@ -4,8 +4,43 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#if FREEINK_DEVICE_PAPERMONO
+#include <PaperMonoBoard.h>
+#endif
+
+// Consumer escape hatch for boards whose EPD power/reset live behind glue the
+// SDK doesn't know. Weak REFERENCES only — an SDK-internal implementation
+// can't ride these (a weak ref doesn't force the archive member that defines
+// it to link), which is why the Paper Mono path below is a direct call into
+// its board-support header instead.
 extern "C" void freeink_board_epd_power(bool enabled) __attribute__((weak));
 extern "C" void freeink_board_epd_reset(bool high) __attribute__((weak));
+
+namespace {
+// EPD power/reset for boards without direct GPIOs: SDK board support first,
+// then the consumer hooks.
+void boardEpdPower(bool enabled) {
+#if FREEINK_DEVICE_PAPERMONO
+  freeink::papermono::setEpdPower(enabled);
+#else
+  if (freeink_board_epd_power) freeink_board_epd_power(enabled);
+#endif
+}
+bool boardEpdPowerAvailable() {
+#if FREEINK_DEVICE_PAPERMONO
+  return true;
+#else
+  return freeink_board_epd_power != nullptr;
+#endif
+}
+void boardEpdReset(bool high) {
+#if FREEINK_DEVICE_PAPERMONO
+  freeink::papermono::setEpdReset(high);
+#else
+  if (freeink_board_epd_reset) freeink_board_epd_reset(high);
+#endif
+}
+}  // namespace
 
 namespace freeink {
 
@@ -46,8 +81,8 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     pinMode(pins.powerEnable, OUTPUT);
     digitalWrite(pins.powerEnable, HIGH);
     delay(100);
-  } else if (freeink_board_epd_power) {
-    freeink_board_epd_power(true);
+  } else if (boardEpdPowerAvailable()) {
+    boardEpdPower(true);
     delay(100);
   }
 
@@ -77,8 +112,8 @@ void EpdBus::reset(uint16_t extraSettleMs) {
   const auto setReset = [this](bool high) {
     if (_pins.rst >= 0) {
       digitalWrite(_pins.rst, high ? HIGH : LOW);
-    } else if (freeink_board_epd_reset) {
-      freeink_board_epd_reset(high);
+    } else {
+      boardEpdReset(high);
     }
   };
   setReset(true);

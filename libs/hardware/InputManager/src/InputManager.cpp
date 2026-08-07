@@ -4,6 +4,9 @@
 #include <Wire.h>
 #include <driver/gpio.h>
 #endif
+#if FREEINK_DEVICE_PAPERMONO
+#include <PaperMonoBoard.h>
+#endif
 #if defined(TOUCH_PROBE_DEBUG)
 #include <esp_rom_sys.h>
 
@@ -385,6 +388,16 @@ void InputManager::updateConfirmPowerHold(const unsigned long currentTime) {
 }
 
 void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
+#if FREEINK_DEVICE_PAPERMONO
+  // The power button reaches only the PM1 PMIC (its single-click reset is
+  // disabled at boot so clicks surface here; the PMIC's hardware long-hold
+  // download escape stays). Emit each click as an ordinary BTN_POWER
+  // press+release so consumers see a button, not a PMIC register.
+  if (freeink::papermono::pollPowerButtonClicked(currentTime)) {
+    pressedEvents |= static_cast<uint8_t>(1u << BTN_POWER);
+    releasedEvents |= static_cast<uint8_t>(1u << BTN_POWER);
+  }
+#endif
   const bool up = isDigitalPressed(BoardConfig::ACTIVE.input.up);
   const bool down = isDigitalPressed(BoardConfig::ACTIVE.input.down);
   const uint8_t physical = static_cast<uint8_t>((up ? 1u : 0u) | (down ? 2u : 0u));
@@ -897,6 +910,12 @@ bool InputManager::ft5x06ReadReg(const uint8_t reg, uint8_t* buf,
 void InputManager::beginFt5x06() {
   const auto& t = BoardConfig::ACTIVE.touch;
   if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) return;
+
+#if FREEINK_DEVICE_PAPERMONO
+  // The FT6336's power rail and reset line live on the M5IOE1 expander, not
+  // ESP GPIOs — raise/release them before the probe below.
+  freeink::papermono::enableTouch();
+#endif
 
   // The bus is shared with M5PM1/M5IOE1/RX8130, whose standing profile is
   // 100 kHz. FT6336 accepts that rate even though M5GFX uses 400 kHz for its
