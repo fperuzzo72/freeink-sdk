@@ -1012,6 +1012,43 @@ void testInteractionOverflowFlag() {
   CHECK(!buffer.overflowed());
 }
 
+void testContentWidthTabBarLayout() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  TabItem tabs[2];
+  tabs[0].label = "One";
+  tabs[0].value = 10;
+  tabs[0].selected = true;
+  tabs[1].label = "Longer";
+  tabs[1].value = 20;
+  TabBarProps bar;
+  bar.tabs = tabs;
+  bar.count = 2;
+  bar.action = 60;
+  bar.layout = TabBarLayout::ContentWidth;
+  bar.leadingInset = 20;
+  bar.gap = 8;
+  bar.tabInset = Insets{2, 0, 4, 0};
+  bar.contentInset = Insets{2, 8, 2, 8};
+  tabBar(frame, Rect{0, 0, 480, 40}, bar);
+
+  CHECK_EQ(interactions.count(), 2u);
+  // Monospace labels are 18px and 36px wide. With 8px content padding,
+  // pills start at x=20 and x=62 instead of being centered in 240px slots.
+  CHECK_EQ(draw.ops[0].rect.x, 20);
+  CHECK_EQ(draw.ops[0].rect.width, 34);
+  CHECK_EQ(draw.ops[2].rect.x, 62);
+  CHECK_EQ(draw.ops[2].rect.width, 52);
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 70;
+  tap.touchY = 20;
+  CHECK_EQ(interactions.route(tap).value, 20);
+}
 
 void testRoundedRaffSurfaces() {
   // Mirrors the retired RoundedRaffTheme: pill settings tabs with a bottom
@@ -2563,6 +2600,7 @@ int main() {
   testCrossInkReaderMenuList();
   testCrossInkReadingStatsSurfaces();
   testInteractionOverflowFlag();
+  testContentWidthTabBarLayout();
   testRoundedRaffSurfaces();
   testThemePrimitiveParity();
   testRotationAndBitmapSampling();
