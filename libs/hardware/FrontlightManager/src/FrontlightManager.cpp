@@ -1,8 +1,31 @@
 #include "FrontlightManager.h"
 
 #if FREEINK_CAP_FRONTLIGHT
+#include <M5Pm1.h>
+
 namespace {
 constexpr uint32_t maxDuty(uint8_t bits) { return (1u << bits) - 1u; }
+
+// Paper Mono: the PWM lives in the M5PM1 PMIC, not the ESP. PM1 GPIO3 routed to
+// alt-function PWM0 drives the AW9967 frontlight driver. Duty register is
+// 12-bit; the high byte's bit 4 is the channel-enable bit. Perception-weighted
+// like M5Unified's bring-up: duty = brightness^2 scaled into 12 bits.
+constexpr uint8_t PM1_PWM_ENABLE = 0x10;
+
+void pm1FrontlightAttach(uint32_t freqHz) {
+  freeink::m5pm1::beginBus();
+  // GPIO3 to push-pull, alt-function PWM0.
+  freeink::m5pm1::updateReg(freeink::m5pm1::REG_GPIO_DRV, 1u << 3, 0);
+  freeink::m5pm1::updateReg(freeink::m5pm1::REG_GPIO_FUNC0, 0xC0, 0xC0);
+  freeink::m5pm1::writeReg16(freeink::m5pm1::REG_PWM_FREQ_L, static_cast<uint16_t>(freqHz));
+}
+
+void pm1FrontlightWrite(uint32_t pct) {
+  const uint32_t duty = (pct * pct * 4095u) / 10000u;  // 0-100% -> 12-bit, gamma ~2
+  const uint8_t data[2] = {static_cast<uint8_t>(duty & 0xFF),
+                           static_cast<uint8_t>(((duty >> 8) & 0x0F) | (duty ? PM1_PWM_ENABLE : 0))};
+  freeink::m5pm1::writeBytes(freeink::m5pm1::REG_PWM0_DUTY_L, data, sizeof(data));
+}
 
 // Fixed LEDC channels for the Arduino-ESP32 2.x path (3.x keys by GPIO and allocates
 // channels itself). Frontlight owns 0 (cool/primary) and 1 (warm); no other SDK LEDC
@@ -34,6 +57,12 @@ void writeChannel(int8_t /*gpio*/, uint8_t ch, uint32_t duty) { ledcWrite(ch, du
 void FrontlightManager::begin() {
 #if FREEINK_CAP_FRONTLIGHT
   const auto& fl = BoardConfig::ACTIVE.frontlight;
+  if (fl.viaPm1Pwm) {
+    pm1FrontlightAttach(fl.pwmFrequency);
+    _begun = true;
+    setBrightness(0);
+    return;
+  }
   if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
 
   attachChannel(fl.gpio, LEDC_CH_COOL, fl.pwmFrequency, fl.pwmResolutionBits);
@@ -48,7 +77,12 @@ void FrontlightManager::begin() {
 #if FREEINK_CAP_FRONTLIGHT
 void FrontlightManager::apply() {
   const auto& fl = BoardConfig::ACTIVE.frontlight;
-  if (!_begun || fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
+  if (!_begun) return;
+  if (fl.viaPm1Pwm) {
+    pm1FrontlightWrite(_brightness);
+    return;
+  }
+  if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
 
   const uint32_t full = maxDuty(fl.pwmResolutionBits);
   const bool dual = fl.gpioWarm != BoardConfig::PIN_UNASSIGNED;
