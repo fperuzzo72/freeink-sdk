@@ -439,17 +439,59 @@ bool BatteryMonitor::readM5Pm1Status(Status& status) const {
   return status.percentageKnown || status.millivoltsKnown || status.externalPowerKnown;
 }
 
-uint16_t BatteryMonitor::percentageFromMillivolts(uint16_t millivolts) {
-  double volts = millivolts / 1000.0;
-  // Polynomial derived from LiPo samples
-  double y = -144.9390 * volts * volts * volts +
-             1655.8629 * volts * volts -
-             6158.8520 * volts +
-             7501.3202;
+// Standard 1S Li-ion / LiPo (4.20 V) rest-voltage discharge curve, one entry per
+// 10% notch. The curve is deliberately not resampled any finer: between 20% and
+// 60% the whole span is ~130 mV, so a tenth of a volt-step is already below the
+// noise of any of the three backends. A caller that needs real resolution should
+// read millivolts and show those instead.
+//
+// The 0% anchor is 3.45 V rather than the cell's protection cut-off. Below that
+// the pack falls off a cliff and the remaining runtime is minutes, so reporting
+// it as empty is honest; it also leaves headroom for the sag under an e-ink
+// refresh, which is the heaviest load this device draws.
+constexpr uint16_t LIION_NOTCH_MV[11] = {
+    3450,  //   0%
+    3680,  //  10%
+    3740,  //  20%
+    3770,  //  30%
+    3790,  //  40%
+    3820,  //  50%
+    3870,  //  60%
+    3920,  //  70%
+    3980,  //  80%
+    4060,  //  90%
+    4200,  // 100%
+};
 
-  // Clamp to [0,100] and round
-  y = std::max(y, 0.0);
-  y = std::min(y, 100.0);
-  y = round(y);
-  return static_cast<uint16_t>(y);
+// A notch change has to clear the boundary by this much before it is accepted.
+// The 20-40% band is only 50 mV wide, so without a deadband a few millivolts of
+// sampler noise would swap the icon back and forth between page turns. Kept
+// well under the narrowest half-segment (10 mV) so no notch can become a trap.
+constexpr uint16_t NOTCH_HYSTERESIS_MV = 8;
+
+uint16_t BatteryMonitor::percentageFromMillivolts(uint16_t millivolts) {
+  // A failed read reports 0 mV, which lands on 0% here. That is deliberate: the
+  // cubic this table replaced evaluated to +7501 at 0 V and clamped to a
+  // confident 100%, so an I2C or ADC failure showed a full battery.
+  if (millivolts >= LIION_NOTCH_MV[10]) return 100;
+  // Round at the midpoint of each segment instead of flooring, so a cell resting
+  // just below 4.20 V straight off the charger still reads 100%.
+  for (uint8_t i = 10; i > 0; --i) {
+    const uint16_t boundary = static_cast<uint16_t>((LIION_NOTCH_MV[i - 1] + LIION_NOTCH_MV[i]) / 2);
+    if (millivolts >= boundary) return static_cast<uint16_t>(i * 10);
+  }
+  return 0;
+}
+
+uint16_t BatteryMonitor::percentageFromMillivolts(uint16_t millivolts, uint16_t previousPercent) {
+  const uint16_t notch = percentageFromMillivolts(millivolts);
+  if (previousPercent > 100) return notch;  // no usable history
+  const uint16_t previousNotch = static_cast<uint16_t>((previousPercent / 10) * 10);
+  if (notch == previousNotch) return notch;
+
+  // Re-run the lookup with the sample pushed back toward the notch we are
+  // leaving. If it still crosses, the move is real; if not, hold.
+  const int32_t bias = notch > previousNotch ? -NOTCH_HYSTERESIS_MV : NOTCH_HYSTERESIS_MV;
+  const int32_t biased = std::clamp<int32_t>(static_cast<int32_t>(millivolts) + bias, 0, UINT16_MAX);
+  return percentageFromMillivolts(static_cast<uint16_t>(biased)) == notch ? notch : previousNotch;
 }
