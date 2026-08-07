@@ -64,7 +64,9 @@ InputManager::InputManager()
       powerButtonPressStart(0), powerButtonPressFinish(0),
       confirmBackPressStart(0), confirmBackPhysicalPressed(false),
       confirmBackLongPressActive(false), confirmPowerPressStart(0),
-      confirmPowerPhysicalPressed(false), confirmPowerLongPressActive(false) {}
+      confirmPowerPhysicalPressed(false), confirmPowerLongPressActive(false),
+      twoButtonPhysicalState(0), twoButtonPressStart(0),
+      twoButtonLongPressActive(false) {}
 
 void InputManager::begin() {
   if (BoardConfig::ACTIVE.inputStyle ==
@@ -382,6 +384,47 @@ void InputManager::updateConfirmPowerHold(const unsigned long currentTime) {
   }
 }
 
+void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
+  const bool up = isDigitalPressed(BoardConfig::ACTIVE.input.up);
+  const bool down = isDigitalPressed(BoardConfig::ACTIVE.input.down);
+  const uint8_t physical = static_cast<uint8_t>((up ? 1u : 0u) | (down ? 2u : 0u));
+  uint8_t auxiliaryState = serviceTouch();
+  if (s_buttonHook) auxiliaryState |= s_buttonHook();
+
+  if (physical != twoButtonPhysicalState) {
+    const uint8_t releasedPhysical = twoButtonPhysicalState;
+    const bool emitShort = physical == 0 && !twoButtonLongPressActive;
+
+    applyStateChange(auxiliaryState, currentTime);
+    if (emitShort && (releasedPhysical == 1 || releasedPhysical == 2)) {
+      const uint8_t logical = releasedPhysical == 1 ? BTN_UP : BTN_DOWN;
+      pressedEvents |= static_cast<uint8_t>(1u << logical);
+      releasedEvents |= static_cast<uint8_t>(1u << logical);
+      buttonPressStart = twoButtonPressStart;
+      buttonPressFinish = currentTime;
+    }
+
+    twoButtonPhysicalState = physical;
+    twoButtonPressStart = currentTime;
+    twoButtonLongPressActive = false;
+    return;
+  }
+
+  if (physical == 0) {
+    applyStateChange(auxiliaryState, currentTime);
+    return;
+  }
+
+  uint8_t nextState = auxiliaryState;
+  if (currentTime - twoButtonPressStart >= TWO_BUTTON_HOLD_MS) {
+    twoButtonLongPressActive = true;
+    const uint8_t logical = physical == 1 ? BTN_BACK : physical == 2 ? BTN_CONFIRM : BTN_POWER;
+    nextState |= static_cast<uint8_t>(1u << logical);
+  }
+  applyStateChange(nextState, currentTime);
+  if (pressedEvents & (1u << BTN_POWER)) powerButtonPressStart = twoButtonPressStart;
+}
+
 void InputManager::update() {
   const unsigned long currentTime = millis();
 
@@ -402,6 +445,10 @@ void InputManager::update() {
   if (BoardConfig::ACTIVE.inputStyle ==
       BoardConfig::InputStyle::DigitalConfirmPowerHold) {
     updateConfirmPowerHold(currentTime);
+    return;
+  }
+  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalTwoButton) {
+    updateDigitalTwoButton(currentTime);
     return;
   }
 
@@ -472,6 +519,7 @@ bool InputManager::isPowerButtonPressed() const { return isPressed(BTN_POWER); }
 // BoardConfig::ACTIVE.touch.controller:
 //   * CHSC6x (Murphy M3) — IRQ-driven, hand-rolled 16-byte frame decode.
 //   * GT911  (LilyGo)    — polled status/point registers over I2C.
+//   * FT5x06 (Paper Mono FT6336) — active-low IRQ + 0x02 point frame.
 // Coordinates are delivered raw-panel-oriented; the app owns rotation.
 // ============================================================================
 
@@ -673,6 +721,10 @@ void InputManager::beginTouch() {
     beginGt911();
     return;
   }
+  if (t.controller == BoardConfig::TouchController::Ft5x06) {
+    beginFt5x06();
+    return;
+  }
   // CHSC6x: I2C bus only. The IRQ is left unconfigured — it's a brief pulse on
   // this controller, so detection polls I2C and gates on the frame's touch bit
   // instead (see decodeChsc6xFrame / updateTouchFromIrq).
@@ -694,6 +746,8 @@ uint8_t InputManager::serviceTouch() {
 
   if (t.controller == BoardConfig::TouchController::Gt911) {
     pollGt911(now);
+  } else if (t.controller == BoardConfig::TouchController::Ft5x06) {
+    pollFt5x06(now);
   } else {
     updateTouchFromIrq(now, 0); // detection polls I2C; the IRQ is unused now
     // Synthesized confirm tracks an actually-detected press, not the IRQ line.
@@ -813,6 +867,132 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin,
   if (raw >= rawMax)
     return outMax;
   return static_cast<uint32_t>(raw - rawMin) * outMax / (rawMax - rawMin);
+}
+
+// --- FT5x06 / FT6336 (M5Stack Paper Mono) ----------------------------------
+
+bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
+  const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  Wire.write(value);
+  return Wire.endTransmission() == 0;
+}
+
+bool InputManager::ft5x06ReadReg(const uint8_t reg, uint8_t* buf,
+                                 const uint8_t len) {
+  const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  const uint8_t got = Wire.requestFrom(addr, len, static_cast<uint8_t>(true));
+  if (got != len) {
+    while (Wire.available()) Wire.read();
+    return false;
+  }
+  for (uint8_t i = 0; i < len; ++i) buf[i] = Wire.read();
+  return true;
+}
+
+void InputManager::beginFt5x06() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) return;
+
+  // The bus is shared with M5PM1/M5IOE1/RX8130, whose standing profile is
+  // 100 kHz. FT6336 accepts that rate even though M5GFX uses 400 kHz for its
+  // controller-specific transactions.
+  Wire.begin(t.sda, t.scl, 100000);
+  Wire.setTimeOut(10);
+  if (t.irq >= 0) pinMode(t.irq, INPUT_PULLUP);
+
+  // Match M5GFX Touch_FT5x06::_check_init(): enter working mode, read the
+  // chip/firmware/vendor window, then select polling/level interrupt mode.
+  uint8_t id[6] = {};
+  touchDataEnabled = ft5x06WriteReg(0x00, 0x00) &&
+                     ft5x06ReadReg(0xA3, id, sizeof(id)) &&
+                     ft5x06WriteReg(0xA4, 0x00) && id[5] != 0;
+#ifdef TOUCH_PROBE_DEBUG
+  touchDebugPrintf("[touch] FT5x06 probe: enabled=%d cipher=0x%02X fw=0x%02X "
+                   "vendor=0x%02X irq=%d\n",
+                   touchDataEnabled, id[0], id[3], id[5], t.irq);
+#endif
+}
+
+void InputManager::pollFt5x06(const unsigned long now) {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (now < touchReadAt) return;
+  touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
+
+  const bool irqDown = t.irq < 0 || digitalRead(t.irq) == LOW;
+  if (!irqDown) {
+    if (touchPressed) {
+      touchPressed = false;
+      touchPoint.valid = false;
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+    }
+    return;
+  }
+
+  // Register 0x02 is TD_STATUS followed by the first point's XH/XL/YH/YL.
+  // One contact is enough for the app's tap/swipe/drag gesture model.
+  uint8_t data[5] = {};
+  if (!ft5x06ReadReg(0x02, data, sizeof(data))) {
+    return;
+  }
+  if ((data[0] & 0x0F) == 0) {
+    // FT6336 may keep INT low until TD_STATUS has been drained. Treat the
+    // controller's zero-contact frame as authoritative; waiting only for the
+    // GPIO to rise leaves touchPressed latched and drops every later tap.
+    if (touchPressed) {
+      touchPressed = false;
+      touchPoint.valid = false;
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+#ifdef TOUCH_PROBE_DEBUG
+      touchDebugPrintf("[touch] FT release via TD_STATUS=0 held=%lums\n", lastTouchHeldDurationMs);
+#endif
+    }
+    return;
+  }
+  const uint16_t rawX = static_cast<uint16_t>((data[1] & 0x0F) << 8) | data[2];
+  const uint16_t rawY = static_cast<uint16_t>((data[3] & 0x0F) << 8) | data[4];
+  const uint16_t sx = t.swapXY ? rawY : rawX;
+  const uint16_t sy = t.swapXY ? rawX : rawY;
+
+  touchPoint.valid = true;
+  touchPoint.x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX,
+                              t.rawMaxX - t.rawMinX);
+  touchPoint.y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY,
+                              t.rawMaxY - t.rawMinY);
+  if (t.flipX) {
+    touchPoint.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - touchPoint.x);
+  }
+  if (t.flipY) {
+    touchPoint.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - touchPoint.y);
+  }
+  touchPoint.timestamp = now;
+
+  if (!touchPressed) {
+    touchPressed = true;
+    touchPressedEvent = true;
+    touchDownPoint = touchPoint;
+    touchUpPoint = touchPoint;
+    touchMovedBeyondTapSlop = false;
+#ifdef TOUCH_PROBE_DEBUG
+    touchDebugPrintf("[touch] FT press raw=(%u,%u) panel=(%u,%u)\n", rawX,
+                     rawY, touchPoint.x, touchPoint.y);
+#endif
+  } else {
+    touchUpPoint = touchPoint;
+    const int dx = static_cast<int>(touchUpPoint.x) -
+                   static_cast<int>(touchDownPoint.x);
+    const int dy = static_cast<int>(touchUpPoint.y) -
+                   static_cast<int>(touchDownPoint.y);
+    if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
+      touchMovedBeyondTapSlop = true;
+    }
+  }
 }
 
 // --- GT911 (LilyGo) ---------------------------------------------------------

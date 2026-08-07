@@ -119,20 +119,63 @@ class PanelDriver {
   }
   virtual void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) { (void)bus; (void)lsb; }
   virtual void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) { (void)bus; (void)msb; }
+  // Host-retained selector planes can be copied and encoded while the previous
+  // B/W waveform is BUSY. Drivers returning true must not touch SPI in either
+  // writeGrayscalePlaneStrip() or prepareGrayscaleTarget().
+  virtual bool supportsBusyGrayscaleStaging() const { return false; }
   virtual void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                         uint16_t numRows) {
     (void)bus; (void)plane; (void)rows; (void)yStart; (void)numRows;
   }
+  virtual void prepareGrayscaleTarget(const uint8_t* bw) { (void)bw; }
   virtual void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) {
     (void)lut;
     (void)factoryMode;
     display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
+  }
+  // Diagnostic four-gray comparison. The full frame is first rendered with
+  // the controller's flashing OTP waveform; `custom*` is then rebuilt with the
+  // driver's non-flashing grayscale path. Default drivers keep the OTP frame.
+  virtual void displayGrayCalibration(EpdBus& bus, const uint8_t* fb, uint16_t customX, uint16_t customY,
+                                      uint16_t customW, uint16_t customH) {
+    (void)customX;
+    (void)customY;
+    (void)customW;
+    (void)customH;
+    displayGray(bus, fb, false, nullptr, true);
   }
   virtual void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) { (void)bus; (void)bw; }
 
   // --- optional, controller-specific hooks (no-op by default) ---
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
   virtual void skipInitialResync() {}
+  // Capture the cancellation generation at the start of a logical UI render.
+  // This must happen before CPU-side composition: input arriving while an old
+  // frame is being composed must still cancel its optional post-refresh work.
+  virtual void beginDisplayWork() {}
+  // Cancel optional work which follows the primary B/W refresh (grayscale
+  // refinement or ghost cleanup). Drivers should only stop between panel
+  // waveforms: an already-triggered waveform must still run to completion.
+  virtual void abortPostRefresh() {}
+  virtual bool postRefreshAborted() const { return false; }
+  // True when a frame actually reached the panel since beginDisplayWork().
+  // Drivers that paint synchronously inside display() always commit, so the
+  // default is true and their callers are unaffected. Paper Mono batches a
+  // three-level target in host RAM across several calls and legitimately
+  // discards it when a page turn is superseded; a caller whose periodic
+  // ghost-cleanup cadence or explicit refresh request is consumed on submit
+  // rather than on commit would silently lose it. Query after the whole
+  // display sequence, not between its halves.
+  virtual bool displayCommitted() const { return true; }
+  // Run deferred panel maintenance after the visible frame has been committed.
+  // The default is deliberately empty; only panels with a non-flashing cleanup
+  // waveform need it.
+  virtual void runMaintenance(EpdBus& bus) { (void)bus; }
+  virtual bool hasPendingMaintenance() const { return false; }
+  // Called by the single controller-work consumer only after both foreground
+  // and maintenance queues are empty. Panels which keep their analog/clock
+  // domains alive across adjacent waveforms can shut them down here.
+  virtual void controllerIdle(EpdBus& bus) { (void)bus; }
   virtual void requestCompleteWaveformNextRefresh() {}
   // Interrupted-refresh cutoff tuning (ED2208: where the gate scan freezes).
   virtual void setFastRefreshCutoffMs(uint16_t ms) { (void)ms; }

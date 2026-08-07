@@ -4,6 +4,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+extern "C" void freeink_board_epd_power(bool enabled) __attribute__((weak));
+extern "C" void freeink_board_epd_reset(bool high) __attribute__((weak));
+
 namespace freeink {
 
 // ── ISR-driven waveform-completion notification ──────────────────────────────
@@ -43,6 +46,9 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     pinMode(pins.powerEnable, OUTPUT);
     digitalWrite(pins.powerEnable, HIGH);
     delay(100);
+  } else if (freeink_board_epd_power) {
+    freeink_board_epd_power(true);
+    delay(100);
   }
 
   SPI.begin(pins.sclk, spiMiso, pins.mosi, pins.cs);
@@ -51,9 +57,13 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
   pinMode(pins.dc, OUTPUT);
   // Release any deep-sleep hold on RST (powerDownRailsForSleep() holds it HIGH so
   // the UC8179 stays in DSLP); the hold survives the wake reset and would make the
-  // reset pulse below bounce off the latch.
-  gpio_hold_dis(static_cast<gpio_num_t>(pins.rst));
-  pinMode(pins.rst, OUTPUT);
+  // reset pulse below bounce off the latch. Boards routing RST through an IO
+  // expander leave the pin unassigned and reset via the freeink_board_epd_reset
+  // hook instead.
+  if (pins.rst >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(pins.rst));
+    pinMode(pins.rst, OUTPUT);
+  }
   pinMode(pins.busy, busy == BusyPolarity::ActiveLow ? INPUT_PULLUP : INPUT);
   if (_coCs >= 0) {
     pinMode(_coCs, OUTPUT);
@@ -64,12 +74,19 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 }
 
 void EpdBus::reset(uint16_t extraSettleMs) {
-  digitalWrite(_pins.rst, HIGH);
-  delay(20);
-  digitalWrite(_pins.rst, LOW);
-  delay(2);
-  digitalWrite(_pins.rst, HIGH);
-  delay(20);
+  const auto setReset = [this](bool high) {
+    if (_pins.rst >= 0) {
+      digitalWrite(_pins.rst, high ? HIGH : LOW);
+    } else if (freeink_board_epd_reset) {
+      freeink_board_epd_reset(high);
+    }
+  };
+  setReset(true);
+  delay(10);
+  setReset(false);
+  delay(10);
+  setReset(true);
+  delay(10);
   if (extraSettleMs) {
     delay(extraSettleMs);
   }
@@ -246,43 +263,38 @@ void EpdBus::waitRefreshComplete(const char* tag) {
     waitBusy(tag);
     return;
   }
-  // Levels/edge by polarity. X4 (ActiveHigh): working HIGH, done on the HIGH->LOW
-  // (FALLING) edge. X3 (X3TwoPhase) / ActiveLow: working LOW, done on the LOW->HIGH
-  // (RISING) edge.
+  // Levels by polarity. CHANGE is armed so both the delayed BUSY assertion and
+  // its completion are event-driven; the task never polls during either phase.
   const bool activeHigh = (_busy == BusyPolarity::ActiveHigh);
-  const int doneEdge = activeHigh ? FALLING : RISING;
   const int doneLevel = activeHigh ? LOW : HIGH;
   const int workingLevel = activeHigh ? HIGH : LOW;
   const unsigned long start = millis();
 
-  // Confirm the waveform is actually running (BUSY at the working level) before
-  // arming, so the already-done fast path below can't mistake the pre-start idle
-  // level for completion. Bounded poll: if BUSY never shows the working level the
-  // refresh was a no-op or already finished, and the fast path handles it. This
-  // is a no-op for X3 (displayStart already drove BUSY to LOW) and ~instant for
-  // X4 (SSD1677 asserts BUSY within microseconds of MASTER_ACTIVATION).
-  {
-    const unsigned long c0 = millis();
-    while (digitalRead(_pins.busy) != workingLevel && millis() - c0 < 20) delay(1);
-  }
-
   xSemaphoreTake(s_epdRefreshDone, 0);  // drain any stale token
-  attachInterrupt(digitalPinToInterrupt(_pins.busy), epdBusyIsr, doneEdge);
+  attachInterrupt(digitalPinToInterrupt(_pins.busy), epdBusyIsr, CHANGE);
 
-  // Fast path: the waveform already finished (edge passed before we armed, or a
-  // no-op refresh) — BUSY sits at the done level. Nothing to wait for. Safe
-  // against the arm/edge race: the binary semaphore latches a give from the ISR,
-  // so a take below returns immediately if the edge fired just after arming.
-  if (digitalRead(_pins.busy) == doneLevel) {
-    detachInterrupt(digitalPinToInterrupt(_pins.busy));
-    xSemaphoreTake(s_epdRefreshDone, 0);
-    return;
+  bool sawWorking = digitalRead(_pins.busy) == workingLevel;
+  if (!sawWorking) {
+    // BUSY assertion can trail MASTER_ACTIVATION by a few microseconds. Sleep
+    // until an edge instead of delay(1) polling. No edge in 20 ms means the
+    // command was a no-op or its entire pulse completed before we armed.
+    if (xSemaphoreTake(s_epdRefreshDone, pdMS_TO_TICKS(20)) != pdTRUE) {
+      detachInterrupt(digitalPinToInterrupt(_pins.busy));
+      return;
+    }
+    sawWorking = digitalRead(_pins.busy) == workingLevel;
+    if (!sawWorking && digitalRead(_pins.busy) == doneLevel) {
+      detachInterrupt(digitalPinToInterrupt(_pins.busy));
+      return;
+    }
   }
 
   // Long sleep — fire the power hooks (if any) around it, matching the poll path.
   const bool hook = (_busyWaitBeginHook != nullptr);
   if (hook) _busyWaitBeginHook();
-  xSemaphoreTake(s_epdRefreshDone, pdMS_TO_TICKS(30000));
+  while (digitalRead(_pins.busy) != doneLevel) {
+    if (xSemaphoreTake(s_epdRefreshDone, pdMS_TO_TICKS(30000)) != pdTRUE) break;
+  }
   if (hook && _busyWaitEndHook != nullptr) _busyWaitEndHook();
 
   detachInterrupt(digitalPinToInterrupt(_pins.busy));

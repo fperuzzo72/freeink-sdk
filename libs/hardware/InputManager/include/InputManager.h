@@ -209,15 +209,20 @@ private:
   uint8_t getDigitalState() const;
   void updateConfirmBackHold(unsigned long currentTime);
   void updateConfirmPowerHold(unsigned long currentTime);
+  void updateDigitalTwoButton(unsigned long currentTime);
   void applyStateChange(uint8_t state, unsigned long currentTime);
 
   // Touch backend. Compiled only when FREEINK_CAP_TOUCH is set; dispatches on
-  // BoardConfig::ACTIVE.touch.controller (CHSC6x IRQ-driven, GT911 polled).
+  // BoardConfig::ACTIVE.touch.controller (CHSC6x, GT911, or FT5x06/FT6336).
   void beginTouch();
   uint8_t serviceTouch(); // runs the machine; returns synthesized button mask
   void updateTouchFromIrq(unsigned long now,
                           int irqRaw); // CHSC6x I2C poll + touch-bit gate
   void pollGt911(unsigned long now);   // GT911 polled read
+  void beginFt5x06();
+  void pollFt5x06(unsigned long now);
+  bool ft5x06WriteReg(uint8_t reg, uint8_t value);
+  bool ft5x06ReadReg(uint8_t reg, uint8_t* buf, uint8_t len);
   bool readChsc6xPoint(TouchPoint &point);
   bool decodeChsc6xFrame(const uint8_t *data, size_t len,
                          TouchPoint &point) const;
@@ -242,6 +247,9 @@ private:
   unsigned long confirmPowerPressStart;
   bool confirmPowerPhysicalPressed;
   bool confirmPowerLongPressActive;
+  uint8_t twoButtonPhysicalState;
+  unsigned long twoButtonPressStart;
+  bool twoButtonLongPressActive;
 
   bool touchDataEnabled = false; // I2C up, controller present
   uint8_t gt911Addr = 0;         // resolved GT911 address (0 until probed)
@@ -281,6 +289,7 @@ private:
   static constexpr unsigned long DEBOUNCE_DELAY = 5;
   static constexpr unsigned long CONFIRM_BACK_HOLD_MS = 650;
   static constexpr unsigned long CONFIRM_POWER_HOLD_MS = 400;
+  static constexpr unsigned long TWO_BUTTON_HOLD_MS = 650;
 
   // Touch timing / protocol constants (ported from the Murphy M3 CHSC6x
   // driver).
