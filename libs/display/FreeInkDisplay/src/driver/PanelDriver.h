@@ -101,6 +101,12 @@ class PanelDriver {
 
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual bool supportsStripGrayscale() const { return false; }
+  // True when displayGrayscaleBase() DEFERS the base activation so the gray
+  // planes join it in a single waveform (SSD1683). Hosts should then route the
+  // grayscale base through displayGrayscaleBase() instead of display(): a
+  // separate B/W refresh first makes the gray pass re-drive the whole text
+  // body through the custom LUT's kick phases (a visible flash).
+  virtual bool combinesGrayscaleBase() const { return false; }
   // Display `fb` as the base frame for a grayscale overlay that follows.
   // X3 runs the OEM pipeline (the "AA-pre-BW(mid)" bank as a differential
   // base update with calibrated drives); panels without a dedicated base
@@ -149,6 +155,13 @@ class PanelDriver {
   // --- optional, controller-specific hooks (no-op by default) ---
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
   virtual void skipInitialResync() {}
+  // Content-polarity hint: true while the facade is rendering inverted (dark
+  // background) frames. Differential drivers idle unchanged pixels, so on a
+  // dark background the residue of every white->black transition parks in the
+  // background and accumulates — worst on panels whose corrective pass is
+  // non-flashing. Drivers may use this to widen their drive set (re-blacken
+  // the unchanged background each update) or bias their deghost direction.
+  virtual void setBackgroundHint(bool darkBackground) { (void)darkBackground; }
   // Capture the cancellation generation at the start of a logical UI render.
   // This must happen before CPU-side composition: input arriving while an old
   // frame is being composed must still cancel its optional post-refresh work.

@@ -22,12 +22,10 @@ namespace m5pm1 {
 
 constexpr uint8_t ADDR = 0x6E;
 
-// Internal I2C bus (PMIC + co-resident peripherals). PaperColor's internal bus
-// is SDA3/SCL2. Paper Mono's system bus is SDA47/SCL48 (G47_SYS_SDA /
-// G48_SYS_SCL on the schematic, shared with the IOE1, RX8130 RTC and FT6336
-// touch) — and its GPIO2/3 are KEY1/KEY2, so the PaperColor default there
-// puts Wire on button pins and every transaction on the bus fails with
-// ESP_ERR_INVALID_STATE.
+// Internal I2C bus (PMIC + co-resident peripherals). PaperColor: SDA3/SCL2.
+// Paper Mono: SDA47/SCL48 (G47_SYS_SDA/G48_SYS_SCL, shared with the IOE1,
+// RX8130 RTC and FT6336 touch); its GPIO2/3 are KEY1/KEY2, so the PaperColor
+// default there would put Wire on button pins and kill the whole bus.
 #ifndef FREEINK_M5PM1_SDA
 #if FREEINK_DEVICE_PAPERMONO
 #define FREEINK_M5PM1_SDA 47
@@ -70,6 +68,7 @@ constexpr uint8_t CHG_EN = 1 << 0;    // battery charge enable
 constexpr uint8_t DCDC_EN = 1 << 1;   // 5V DCDC
 constexpr uint8_t LDO_EN = 1 << 2;    // 3.3V LDO = WS2812 RGB rail (+ green indicator LED)
 constexpr uint8_t BOOST_EN = 1 << 3;  // 5VINOUT / Grove boost
+constexpr uint8_t LED_R_EN = 1 << 4;  // Paper Mono: red leg of the discrete RGB LED
 
 constexpr uint8_t WAKE_PWR_BUTTON = 1 << 2;
 constexpr uint8_t BTN_EVENT = 1 << 7;

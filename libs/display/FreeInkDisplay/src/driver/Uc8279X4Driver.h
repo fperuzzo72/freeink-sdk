@@ -72,6 +72,10 @@ class Uc8279X4Driver : public PanelDriver {
 
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
+  // Inverted (dark-background) content: fast refreshes rewrite the OLD plane
+  // as the complement of the target so every pixel is re-driven toward its
+  // target each update. See displayStart().
+  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
   // --- 4-level grayscale (anti-aliasing) ---
   // External-LUT path per the vendor reference: both planes bitwise-INVERTED
@@ -103,6 +107,7 @@ class Uc8279X4Driver : public PanelDriver {
   uint32_t _bufferSize;
 
   bool _isScreenOn = false;
+  bool _darkBackground = false;
   bool _needFullClear = true;
   bool _oldPlaneValid = false;
   // AA CDI select: first grayscale refresh after init sends cdiAaFirst, later

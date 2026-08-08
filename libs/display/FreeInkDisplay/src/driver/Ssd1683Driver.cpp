@@ -67,6 +67,10 @@ constexpr uint16_t SAT_MIN_FRAMES = 12;
 // at 5 ms a single 1-frame excursion is below the pigment's optical response.
 constexpr uint8_t BG_TOPUP_BLACK = 1;
 constexpr uint8_t BG_TOPUP_WHITE = 5;
+// Extra same-direction drive passes each boot paint runs on top of its normal
+// activation (see runBootCleanPass()). Repetition demonstrably fades residue
+// on this glass; two extras triple the dose per boot paint at ~300 ms each.
+constexpr uint8_t BOOT_CLEAN_EXTRA_PASSES = 2;
 // Paper Mono's 180-degree mount requires a reversed staging buffer. Keep one
 // controller-worker-owned block in internal RAM: larger bursts cut the Arduino
 // SPI transaction setup count from 94 to 3 per plane without consuming the
@@ -179,6 +183,12 @@ void Ssd1683Driver::begin(EpdBus& bus) {
   bus.reset();
   initController(bus);
   _needsFull = true;
+  // The first paints after boot (splash, then whatever replaces it — the one
+  // that must erase the dwelled logo) each get extra drive passes so pre-boot
+  // and splash residue doesn't ghost through (see runBootCleanPass()). Three
+  // paints so an intermediate progress paint can't exhaust the budget before
+  // the home screen lands.
+  _bootCleanPaints = 3;
   _lastBwValid = false;
   _abortGeneration.store(0);
   _displayWorkGeneration = 0;
@@ -278,6 +288,27 @@ void Ssd1683Driver::activateOtp(EpdBus& bus) {
   activate(bus, warm ? CTRL_DISPLAY_HOLD_WARM : CTRL_OTP_BW_HOLD);
   _controllerPowered = true;
   _lutState = LutState::OtpBw;
+}
+
+void Ssd1683Driver::runBootCleanPass(EpdBus& bus, const uint8_t* newPlane, const uint8_t* oldPlane) {
+  // First paints after a cold boot: the previous firmware image (boot logo,
+  // whatever was on the glass) dwelled for seconds, and one non-flashing pass
+  // under-erases that residue. Run the same drive a second time so every
+  // driven pixel gets a double dose toward its target. No flash: each pass
+  // pushes directly toward the target, never through the opposite endpoint.
+  // Costs one extra activation (~300 ms) on the boot paints only.
+  //
+  // The planes MUST be rewritten before each re-trigger: the controller does
+  // not preserve plane roles across an activation (re-activating on the
+  // "resident" planes came out inverted on glass), which is also why every
+  // ordinary update writes both planes fresh.
+  if (_bootCleanPaints == 0) return;
+  --_bootCleanPaints;
+  for (uint8_t pass = 0; pass < BOOT_CLEAN_EXTRA_PASSES; ++pass) {
+    writePlane(bus, CMD_WRITE_NEW, newPlane);
+    writePlane(bus, CMD_WRITE_OLD, oldPlane);
+    activate(bus, CTRL_DISPLAY_HOLD_WARM);
+  }
 }
 
 void Ssd1683Driver::powerOffController(EpdBus& bus) {
@@ -466,6 +497,17 @@ bool Ssd1683Driver::runOtpUpdate(EpdBus& bus, const uint8_t* bwTarget, bool forc
   // cost one function call per byte of the framebuffer on every refresh. OR the
   // masks together instead, and pay for popcount only when a log will print it.
   uint8_t changedBits = 0;
+  // Inverted content: the unchanged black background is where every
+  // white->black transition's light residue parks, and with no flashing
+  // corrective on this panel it accumulates without bound. Present those
+  // pixels as old-white so the OTP waveform runs its full white->black drive
+  // and re-blackens the background on every update — the drive is optically
+  // invisible on an already-black pixel. This mirrors what the tri path
+  // already does (it drives every non-white pixel per page). The repeated
+  // black-going impulse on static background is a deliberate DC imbalance in
+  // the safe direction for a dark background (residue there is always light);
+  // the user's corrective cadence rebalances, as with the entry-0 top-up.
+  const uint8_t darkDrive = _darkBackground ? 0xFFu : 0x00u;
 #ifdef ENABLE_SERIAL_LOG
   uint32_t changed = 0;
 #endif
@@ -495,7 +537,7 @@ bool Ssd1683Driver::runOtpUpdate(EpdBus& bus, const uint8_t* bwTarget, bool forc
     // choose the opposite of the target so the controller cannot classify it
     // as an unchanged endpoint.
     const uint8_t oldWhite = static_cast<uint8_t>(~oldNonWhite);
-    _sel26[i] = static_cast<uint8_t>(oldWhite | (static_cast<uint8_t>(~bw) & oldGray));
+    _sel26[i] = static_cast<uint8_t>(oldWhite | (targetBlack & oldGray) | (targetBlack & darkDrive));
   }
   if (changedBits == 0) return false;
 
@@ -505,6 +547,7 @@ bool Ssd1683Driver::runOtpUpdate(EpdBus& bus, const uint8_t* bwTarget, bool forc
   writePlane(bus, CMD_WRITE_NEW, bwTarget);
   writePlane(bus, CMD_WRITE_OLD, _sel26);
   activateOtp(bus);
+  runBootCleanPass(bus, bwTarget, _sel26);
 
   for (uint32_t i = 0; i < BUFFER_SIZE; ++i) {
     const uint8_t black = static_cast<uint8_t>(~bwTarget[i]);
@@ -581,6 +624,7 @@ bool Ssd1683Driver::runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray
   loadCustomLut(bus, lut);
   activate(bus, _controllerPowered ? CTRL_DISPLAY_HOLD_WARM : CTRL_CUSTOM_HOLD_COLD);
   _controllerPowered = true;
+  runBootCleanPass(bus, _sel24, _sel26);
 
   // Retired in production (postCleanCycles is forced to 0): background deghost
   // now rides inside the tri activation's kick group, and the right-aligned

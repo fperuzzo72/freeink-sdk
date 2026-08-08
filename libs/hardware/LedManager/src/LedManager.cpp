@@ -50,12 +50,11 @@ inline void IRAM_ATTR gpioLow(uint8_t pin) {
 // green/blue = M5IOE1 IO8/IO9. On/off per channel, no per-channel intensity —
 // a scaled channel value of 128+ counts as lit, so global brightness below 50%
 // dims by dropping channels rather than fading.
-constexpr uint8_t PM1_LED_RED = 1u << 4;
 constexpr uint8_t DISCRETE_ON_THRESHOLD = 128;
 
 void writeDiscreteRgb(LedColor color) {
-  m5pm1::updateReg(m5pm1::REG_PWR_CFG, color.r >= DISCRETE_ON_THRESHOLD ? 0 : PM1_LED_RED,
-                   color.r >= DISCRETE_ON_THRESHOLD ? PM1_LED_RED : 0);
+  m5pm1::updateReg(m5pm1::REG_PWR_CFG, color.r >= DISCRETE_ON_THRESHOLD ? 0 : m5pm1::LED_R_EN,
+                   color.r >= DISCRETE_ON_THRESHOLD ? m5pm1::LED_R_EN : 0);
   m5ioe1::write(m5ioe1::PIN_LED_GREEN, color.g >= DISCRETE_ON_THRESHOLD);
   m5ioe1::write(m5ioe1::PIN_LED_BLUE, color.b >= DISCRETE_ON_THRESHOLD);
 }
@@ -98,7 +97,7 @@ bool LedManager::begin() {
     // consumer's board bring-up.
     m5pm1::beginBus();
     m5pm1::updateReg(m5pm1::REG_GPIO_DRV, 1u << 5, 0);
-    m5pm1::updateReg(m5pm1::REG_PWR_CFG, PM1_LED_RED, 0);
+    m5pm1::updateReg(m5pm1::REG_PWR_CFG, m5pm1::LED_R_EN, 0);
     m5ioe1::write(m5ioe1::PIN_LED_GREEN, false);
     m5ioe1::write(m5ioe1::PIN_LED_BLUE, false);
     m5ioe1::updateReg16(m5ioe1::REG_GPIO_MODE_L, 0, m5ioe1::PIN_LED_GREEN | m5ioe1::PIN_LED_BLUE);

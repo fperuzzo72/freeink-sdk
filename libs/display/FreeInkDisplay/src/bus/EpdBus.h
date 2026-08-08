@@ -99,6 +99,11 @@ class EpdBus {
   // mid-stream. (cmd uses its own CS pulse, matching the OEM sequence.)
   void sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes);
 
+  // sendPlaneFlipped() with every byte complemented on the way out (chunked, no
+  // host-side inverted copy). Presents an "old" plane as the target's opposite
+  // so a differential waveform re-drives every pixel toward its target.
+  void sendPlaneFlippedInverted(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes);
+
   // Send `ramCmd` then fill an entire RAM plane with `fillByte` (height rows of
   // widthBytes), as one CS-low burst. No framebuffer touched.
   void fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16_t widthBytes);

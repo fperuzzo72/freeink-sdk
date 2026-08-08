@@ -172,6 +172,14 @@
   (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_X4PRO || \
    FREEINK_DEVICE_PAPERMONO)
 #endif
+// Warm/cool color-temperature frontlight: a second warm PWM channel on top of
+// the brightness one (FrontlightConfig::gpioWarm). Sub-capability of
+// FREEINK_CAP_FRONTLIGHT — gates the warmth UI/settings out of single-channel
+// builds (Paper Mono, de-link, Murphy, LilyGo). Within a multi-device build
+// the profile's gpioWarm stays the runtime truth (hasColorTemperature()).
+#ifndef FREEINK_CAP_WARMLIGHT
+#define FREEINK_CAP_WARMLIGHT (FREEINK_DEVICE_X4PRO)
+#endif
 // USB Mass Storage ("USB Transfer" mode): exposes the SD card to a host over
 // USB-MSC. OPT-IN (default off), NOT board-derived: it forces the build into
 // USB-OTG mode (ARDUINO_USB_MODE=0 + CONFIG_TINYUSB_MSC_ENABLED), which changes

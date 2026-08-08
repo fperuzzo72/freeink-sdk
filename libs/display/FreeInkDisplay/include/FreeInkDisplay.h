@@ -100,6 +100,9 @@ class FreeInkDisplay {
   bool supportsBusyGrayscaleStaging() const;
   void prepareGrayscaleTarget();
   bool supportsStripGrayscale() const;
+  // True when displayGrayscaleBase() defers the base activation so the gray
+  // planes join it in one waveform (SSD1683) - see PanelDriver.
+  bool combinesGrayscaleBase() const;
   // Restore controller RAM and frameBuffer to the given BW baseline after
   // grayscale. Available in both buffer modes (CrossPoint's dual-buffer HAL
   // wraps it directly).

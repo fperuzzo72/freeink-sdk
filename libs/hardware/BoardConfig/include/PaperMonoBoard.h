@@ -41,6 +41,10 @@ inline bool ensureBooted() {
   m5pm1::beginBus();
   m5pm1::clearWakeSource();
   m5pm1::configureAppPowerButton();
+  // The red RGB leg lives in the PM1's PWR_CFG, which the PMIC retains across
+  // reflashes — stock firmware leaves it lit. Drive it to the same known-off
+  // state configureOutputs() gives the IOE1 green/blue legs.
+  m5pm1::updateReg(m5pm1::REG_PWR_CFG, m5pm1::LED_R_EN, 0);
   ok = m5ioe1::configureOutputs();
   return ok;
 }

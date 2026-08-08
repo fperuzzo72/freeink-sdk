@@ -96,11 +96,18 @@ class Ssd1677Driver : public PanelDriver {
   // waveform. Grayscale exits via cleanupGrayscaleBuffers (RED resync) or a
   // promoted single-pass HALF clean in displayImpl/displayWindow.
   void setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) override;
+  // Inverted (dark-background) content: fast refreshes write the RED "old"
+  // plane as the complement of the target so every pixel — background included —
+  // is re-driven toward its target each update. See displayImpl().
+  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
  private:
   void initController(EpdBus& bus);
   void setRamArea(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
   void writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, uint32_t size);
+  // Streams `size` bytes of ~data[i] after `ramCmd` without a host-side copy of
+  // the inverted frame (the C3 boards have no RAM to spare for one).
+  void writeRamInverted(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, uint32_t size);
   // async: fire MASTER_ACTIVATION and return without waiting on BUSY.
   void refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool async = false);
   // Blocking CLOCK_ON|ANALOG_ON activation; no-op when already powered.
@@ -122,6 +129,7 @@ class Ssd1677Driver : public PanelDriver {
   bool _isScreenOn = false;
   bool _inGrayscaleMode = false;
   bool _customLutActive = false;
+  bool _darkBackground = false;
   // First paint after begin() (boot or deep-sleep wake) must be a full refresh to
   // clear whatever is physically on the panel (e.g. the black boot screen) and set
   // a clean differential baseline. Only armed for boards whose self-powering fast

@@ -187,6 +187,14 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
     memset(whiteRow, 0xFF, wb);
     bus.cmd(CMD_DTM1);
     for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
+  } else if (_darkBackground) {
+    // Inverted content: the KW differential idles unchanged pixels, so the
+    // light residue of every white->black transition parks in the black
+    // background and accumulates between full flashes. Rewrite the OLD plane
+    // as the complement of the target: every pixel classifies as changed and
+    // is re-driven toward its target — optically invisible on pixels already
+    // at their endpoint. displayFinish()'s DTM1 sync restores the baseline.
+    streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
   }
 
   // Built-in refresh setup per the reference (GC / DU tables; no CDI write —

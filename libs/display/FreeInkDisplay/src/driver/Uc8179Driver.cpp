@@ -141,8 +141,14 @@ void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 // reversal (the same sendPlaneFlipped the UC8279 sibling uses — mirror-Y).
 // Mirror-X is handled in hardware by the PSR SHL bit, so no per-byte work here.
 // White padding then fills the off-screen gates (_h.._tresH); 0xFF = white.
-void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb) {
-  bus.sendPlaneFlipped(ramCmd, fb, _h, _wb);  // cmd + rows bottom-to-top, one CS burst
+void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, bool invert) {
+  // cmd + rows bottom-to-top, one CS burst. The off-screen gate padding below
+  // stays white in both polarities (matching the full-flash seed).
+  if (invert) {
+    bus.sendPlaneFlippedInverted(ramCmd, fb, _h, _wb);
+  } else {
+    bus.sendPlaneFlipped(ramCmd, fb, _h, _wb);
+  }
   uint8_t whiteRow[128];
   const uint16_t wb = _wb <= sizeof(whiteRow) ? _wb : sizeof(whiteRow);
   memset(whiteRow, 0xFF, wb);
@@ -172,6 +178,14 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     memset(whiteRow, 0xFF, wb);
     bus.cmd(CMD_DTM1);
     for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
+  } else if (_darkBackground) {
+    // Inverted content: the KW differential idles unchanged pixels, so the
+    // light residue of every white->black transition parks in the black
+    // background and accumulates between full flashes. Rewrite the OLD plane
+    // as the complement of the target: every pixel classifies as changed and
+    // is re-driven toward its target — optically invisible on pixels already
+    // at their endpoint. displayFinish()'s DTM1 sync restores the baseline.
+    streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
   }
   // (Fast: OLD plane already holds the previous frame from the last displayFinish.)
 

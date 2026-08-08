@@ -388,21 +388,21 @@ void InputManager::updateConfirmPowerHold(const unsigned long currentTime) {
 }
 
 void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
-#if FREEINK_DEVICE_PAPERMONO
-  // The power button reaches only the PM1 PMIC (its single-click reset is
-  // disabled at boot so clicks surface here; the PMIC's hardware long-hold
-  // download escape stays). Emit each click as an ordinary BTN_POWER
-  // press+release so consumers see a button, not a PMIC register.
-  if (freeink::papermono::pollPowerButtonClicked(currentTime)) {
-    pressedEvents |= static_cast<uint8_t>(1u << BTN_POWER);
-    releasedEvents |= static_cast<uint8_t>(1u << BTN_POWER);
-  }
-#endif
   const bool up = isDigitalPressed(BoardConfig::ACTIVE.input.up);
   const bool down = isDigitalPressed(BoardConfig::ACTIVE.input.down);
   const uint8_t physical = static_cast<uint8_t>((up ? 1u : 0u) | (down ? 2u : 0u));
   uint8_t auxiliaryState = serviceTouch();
   if (s_buttonHook) auxiliaryState |= s_buttonHook();
+#if FREEINK_DEVICE_PAPERMONO
+  // The power button reaches only the PM1 PMIC; clicks surface here as a
+  // one-tick BTN_POWER pulse in the STATE, so applyStateChange() emits the
+  // press this update and the release on the next. Never write the event
+  // masks directly — applyStateChange() assigns them from the state diff,
+  // clobbering direct writes the same tick.
+  if (freeink::papermono::pollPowerButtonClicked(currentTime)) {
+    auxiliaryState |= static_cast<uint8_t>(1u << BTN_POWER);
+  }
+#endif
 
   if (physical != twoButtonPhysicalState) {
     const uint8_t releasedPhysical = twoButtonPhysicalState;
@@ -976,14 +976,14 @@ void InputManager::pollFt5x06(const unsigned long now) {
   if (now < touchReadAt) return;
   touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
 
+  // The controller runs in interrupt-polling mode (G_MODE=0, set in begin),
+  // where INT emits low PULSES at the report rate while a contact is held —
+  // the line reads HIGH between pulses even with the finger down, so its
+  // level must not be treated as a release (that splits one swipe into a
+  // phantom tap plus a swipe). Idle fast-path gate only; while a contact is
+  // live, the TD_STATUS zero-contact frame below is the release authority.
   const bool irqDown = t.irq < 0 || digitalRead(t.irq) == LOW;
-  if (!irqDown) {
-    if (touchPressed) {
-      touchPressed = false;
-      touchPoint.valid = false;
-      touchReleasedEvent = true;
-      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
-    }
+  if (!irqDown && !touchPressed) {
     return;
   }
 
@@ -991,6 +991,16 @@ void InputManager::pollFt5x06(const unsigned long now) {
   // One contact is enough for the app's tap/swipe/drag gesture model.
   uint8_t data[5] = {};
   if (!ft5x06ReadReg(0x02, data, sizeof(data))) {
+    // Transient read failures happen on the shared PY32 bus; survive them.
+    // But a controller that has stopped answering (rail glitch) must not
+    // leave the contact latched — release once samples go stale.
+    constexpr unsigned long STALE_RELEASE_MS = 100;
+    if (touchPressed && now - touchPoint.timestamp > STALE_RELEASE_MS) {
+      touchPressed = false;
+      touchPoint.valid = false;
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+    }
     return;
   }
   if ((data[0] & 0x0F) == 0) {

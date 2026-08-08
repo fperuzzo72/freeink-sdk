@@ -54,6 +54,7 @@ class Ssd1683Driver final : public PanelDriver {
   void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) override;
 
   bool supportsStripGrayscale() const override { return true; }
+  bool combinesGrayscaleBase() const override { return true; }
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
@@ -77,6 +78,9 @@ class Ssd1683Driver final : public PanelDriver {
   bool postRefreshAborted() const override;
   bool displayCommitted() const override { return _displayCommitted; }
   void controllerIdle(EpdBus& bus) override;
+  // Inverted (dark-background) content: runOtpUpdate() widens its drive set to
+  // re-blacken the unchanged background every update. See the comment there.
+  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
   void setGrayParams(const Ssd1683GrayParams& params);
   void abortGray() { abortPostRefresh(); }
@@ -95,6 +99,9 @@ class Ssd1683Driver final : public PanelDriver {
 
   bool allocateBuffers();
   void initController(EpdBus& bus);
+  // Re-runs the just-finished drive (planes rewritten, then re-trigger) while
+  // the boot-clean budget lasts; see the definition for why.
+  void runBootCleanPass(EpdBus& bus, const uint8_t* newPlane, const uint8_t* oldPlane);
   void resetRamCounter(EpdBus& bus);
   void writePlane(EpdBus& bus, uint8_t command, const uint8_t* data);
   void activate(EpdBus& bus, uint8_t control);
@@ -116,6 +123,9 @@ class Ssd1683Driver final : public PanelDriver {
 
   bool _initialized = false;
   bool _needsFull = true;
+  bool _darkBackground = false;
+  // Paints remaining that double-drive to erase dwelled pre-boot residue.
+  uint8_t _bootCleanPaints = 0;
   bool _lastBwValid = false;
   bool _preparingGray = false;
   bool _panelHasGray = false;

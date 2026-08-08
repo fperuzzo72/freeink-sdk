@@ -177,6 +177,9 @@ void FreeInkDisplay::selectDriver() {
 #endif
       break;
   }
+  // A driver chosen after setInverted() (begin(), setDisplayX3()) must still
+  // learn the standing content polarity.
+  if (_driver) _driver->setBackgroundHint(_inverted);
 }
 
 void FreeInkDisplay::begin() {
@@ -317,6 +320,7 @@ void FreeInkDisplay::setInverted(const bool inverted) {
   _inversionDirty = true;
   _shadowValid = false;
   _redRamSynced = false;
+  if (_driver) _driver->setBackgroundHint(inverted);
 }
 
 bool FreeInkDisplay::toggleInverted() {
@@ -854,6 +858,8 @@ void FreeInkDisplay::prepareGrayscaleTarget() {
 bool FreeInkDisplay::supportsStripGrayscale() const {
   return !_inverted && _driver && _driver->supportsStripGrayscale();
 }
+
+bool FreeInkDisplay::combinesGrayscaleBase() const { return _driver && _driver->combinesGrayscaleBase(); }
 
 void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   syncPendingAsync();
