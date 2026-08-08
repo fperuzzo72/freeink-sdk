@@ -38,6 +38,10 @@ constexpr uint8_t REG_GPIO_PU_L = 0x09;    // pull-up enable
 constexpr uint8_t REG_GPIO_PD_L = 0x0B;    // pull-down enable
 constexpr uint8_t REG_GPIO_DRV_L = 0x13;   // 0 = push-pull, 1 = open-drain
 constexpr uint8_t REG_I2C_CFG = 0x23;      // [4]SPD(1=400k) [3:0]idle-sleep timeout; 0 = stay awake
+// PWM duty pairs (L then H; H byte: [7]EN [6]POL [3:0]duty high). PWM1 drives
+// IO9 (blue LED leg), PWM2 drives IO8 (green) — the pins' alt function.
+constexpr uint8_t REG_PWM1_DUTY_L = 0x1B;
+constexpr uint8_t REG_PWM2_DUTY_L = 0x1D;
 
 // --- Paper Mono pin assignments (schematic U17; bit index = IO number - 1) ---
 constexpr uint16_t PIN_TF_DETECT = 1u << 0;    // IO1  PYB_TF_DET (input, pulled up)
@@ -125,7 +129,15 @@ inline bool updateReg16(uint8_t regL, uint16_t clearMask, uint16_t setMask) {
 // bring-up then raises the rails it needs.
 inline bool configureOutputs() {
   if (!begin()) return false;
-  bool ok = updateReg16(REG_GPIO_OUT_L, OUTPUT_MASK, 0);
+  // IO8/IO9 (green/blue LED legs) double as the PY32's PWM2/PWM1 outputs, and
+  // the stock firmware drives blue through PWM1 as its status light. Like the
+  // PM1's PWR_CFG, the PWM engine state is retained across reflashes — while
+  // a channel is enabled it owns the pin and the GPIO writes below never
+  // reach it. Disable both channels (duty 0, EN bit clear).
+  static constexpr uint8_t pwmOff[2] = {0x00, 0x00};
+  bool ok = writeBytesAt(g_addr, REG_PWM1_DUTY_L, pwmOff, sizeof(pwmOff));
+  ok &= writeBytesAt(g_addr, REG_PWM2_DUTY_L, pwmOff, sizeof(pwmOff));
+  ok &= updateReg16(REG_GPIO_OUT_L, OUTPUT_MASK, 0);
   ok &= updateReg16(REG_GPIO_PU_L, OUTPUT_MASK, PIN_TF_DETECT);
   ok &= updateReg16(REG_GPIO_PD_L, OUTPUT_MASK | PIN_TF_DETECT, 0);
   ok &= updateReg16(REG_GPIO_DRV_L, OUTPUT_MASK, 0);
