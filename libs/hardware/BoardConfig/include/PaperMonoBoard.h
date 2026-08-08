@@ -55,6 +55,16 @@ inline void setEpdPower(bool enabled) {
 
 inline void setEpdReset(bool high) { m5ioe1::write(m5ioe1::PIN_EPD_RESET, high); }
 
+// TF-card rail (IOE1 IO14 PYB_TF_EN -> TF_3V3_L3B LDO). configureOutputs()
+// boots it LOW, so the card is unpowered until SDCardManager raises it before
+// the SDMMC mount. 10 ms settle on power-up so the rail is stable before the
+// first CMD0 (same as the touch rail's bring-up).
+inline void setSdPower(bool enabled) {
+  ensureBooted();
+  m5ioe1::write(m5ioe1::PIN_SD_POWER, enabled);
+  if (enabled) delay(10);
+}
+
 // Touch rail up + reset released so the FT6336 answers its I2C probe. Same
 // 8 ms low / 10 ms settle as the reference bring-up.
 inline void enableTouch() {

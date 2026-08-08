@@ -22,12 +22,25 @@ namespace m5pm1 {
 
 constexpr uint8_t ADDR = 0x6E;
 
-// Internal I2C bus (PMIC + co-resident peripherals).
+// Internal I2C bus (PMIC + co-resident peripherals). PaperColor's internal bus
+// is SDA3/SCL2. Paper Mono's system bus is SDA47/SCL48 (G47_SYS_SDA /
+// G48_SYS_SCL on the schematic, shared with the IOE1, RX8130 RTC and FT6336
+// touch) — and its GPIO2/3 are KEY1/KEY2, so the PaperColor default there
+// puts Wire on button pins and every transaction on the bus fails with
+// ESP_ERR_INVALID_STATE.
 #ifndef FREEINK_M5PM1_SDA
+#if FREEINK_DEVICE_PAPERMONO
+#define FREEINK_M5PM1_SDA 47
+#else
 #define FREEINK_M5PM1_SDA 3
 #endif
+#endif
 #ifndef FREEINK_M5PM1_SCL
+#if FREEINK_DEVICE_PAPERMONO
+#define FREEINK_M5PM1_SCL 48
+#else
 #define FREEINK_M5PM1_SCL 2
+#endif
 #endif
 constexpr int SDA = FREEINK_M5PM1_SDA;
 constexpr int SCL = FREEINK_M5PM1_SCL;
