@@ -558,7 +558,11 @@ bool InputManager::wasTouchTap(float &nx, float &ny) const {
 #if FREEINK_CAP_TOUCH
   if (!touchReleasedEvent || touchSuppressed)
     return false;
-  if (touchMovedBeyondTapSlop)
+  // Hold/long-press detection uses the tighter 28 px stationary slop, but a
+  // released tap remains valid until motion reaches the 60 px swipe threshold.
+  // Using the stationary threshold here created a 29..59 px dead band where a
+  // normal finger roll was neither a tap nor a swipe.
+  if (touchMovedBeyondTapReleaseSlop)
     return false;
   // Tap position = the FIRST contact sample (touch-down), not the last: the
   // reported centroid drifts 10-20px as a finger rolls off during lift, which
@@ -852,6 +856,7 @@ void InputManager::updateTouchFromIrq(const unsigned long now,
         touchDownPoint = point; // first contact sample, used for tap routing
         touchUpPoint = point;
         touchMovedBeyondTapSlop = false;
+        touchMovedBeyondTapReleaseSlop = false;
       } else {
         touchUpPoint = point;
         const int dx = static_cast<int>(touchUpPoint.x) -
@@ -860,6 +865,10 @@ void InputManager::updateTouchFromIrq(const unsigned long now,
                        static_cast<int>(touchDownPoint.y);
         if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
           touchMovedBeyondTapSlop = true;
+        }
+        if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX ||
+            absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX) {
+          touchMovedBeyondTapReleaseSlop = true;
         }
       }
       touchReleaseAt = now + TOUCH_IRQ_PULSE_MS;
@@ -1096,6 +1105,7 @@ void InputManager::pollFt5x06(const unsigned long now) {
     touchDownPoint = touchPoint;
     touchUpPoint = touchPoint;
     touchMovedBeyondTapSlop = false;
+    touchMovedBeyondTapReleaseSlop = false;
 #ifdef TOUCH_PROBE_DEBUG
     touchDebugPrintf("[touch] FT press raw=(%u,%u) panel=(%u,%u)\n", rawX,
                      rawY, touchPoint.x, touchPoint.y);
@@ -1108,6 +1118,10 @@ void InputManager::pollFt5x06(const unsigned long now) {
                    static_cast<int>(touchDownPoint.y);
     if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
       touchMovedBeyondTapSlop = true;
+    }
+    if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX ||
+        absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX) {
+      touchMovedBeyondTapReleaseSlop = true;
     }
   }
 }
@@ -1289,6 +1303,7 @@ void InputManager::pollGt911(const unsigned long now) {
         touchDownPoint = touchPoint; // first contact sample, used for tap
                                      // routing (wasTouchTap)
         touchMovedBeyondTapSlop = false;
+        touchMovedBeyondTapReleaseSlop = false;
       }
       touchUpPoint = touchPoint;
       const int dx =
@@ -1297,6 +1312,10 @@ void InputManager::pollGt911(const unsigned long now) {
           static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
       if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
         touchMovedBeyondTapSlop = true;
+      }
+      if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX ||
+          absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX) {
+        touchMovedBeyondTapReleaseSlop = true;
       }
 #ifdef TOUCH_PROBE_DEBUG
       if (!touchPressed)

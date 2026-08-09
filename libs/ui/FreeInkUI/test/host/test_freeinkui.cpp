@@ -2066,6 +2066,68 @@ void testKeyboardAltCaseFlip() {
   CHECK(keyboardAltOutputFor(en, QWERTY_KEY_BACKSPACE) == nullptr);
 }
 
+void testTouchTapQueue() {
+  TouchTapQueue<2> taps;
+  CHECK(taps.empty());
+  CHECK(taps.push(10, 20));
+  CHECK(taps.push(30, 40));
+  CHECK_EQ(taps.size(), 2u);
+
+  // Full queues retain current input and report that the oldest tap dropped.
+  CHECK(!taps.push(50, 60));
+  CHECK(taps.overflowed());
+  int16_t x = 0;
+  int16_t y = 0;
+  CHECK(taps.pop(x, y));
+  CHECK_EQ(x, 30);
+  CHECK_EQ(y, 40);
+  CHECK(taps.pop(x, y));
+  CHECK_EQ(x, 50);
+  CHECK_EQ(y, 60);
+  CHECK(!taps.pop(x, y));
+
+  taps.clear();
+  CHECK(taps.empty());
+  CHECK(!taps.overflowed());
+}
+
+void testKeyboardNavigatorAndActivation() {
+  const KeyboardLayout& layout = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, false, true);
+  KeyboardNavigator nav;
+  CHECK_EQ(nav.logicalIndex(layout), 0);
+  CHECK_EQ(nav.selected(layout)->value, '1');
+
+  nav.moveCol(layout, -1);
+  CHECK_EQ(nav.col(), 9);  // wraps within the ten-key digit row
+  nav.moveRow(layout, 1);
+  CHECK_EQ(nav.row(), 1);
+  CHECK_EQ(nav.col(), 9);  // same-width row preserves the column
+  nav.moveRow(layout, 1);
+  CHECK_EQ(nav.row(), 2);
+  CHECK_EQ(nav.col(), 8);  // proportional mapping: ten columns -> nine
+  CHECK(nav.syncToValue(layout, QWERTY_KEY_SPACE));
+  CHECK_EQ(nav.selected(layout)->kind, KeyKind::Space);
+  CHECK(nav.logicalIndex(layout) >= 0);
+
+  KeyboardActivation activation = keyboardActivationFor(layout, 'q');
+  CHECK_EQ(activation.kind, KeyboardActivationKind::Text);
+  CHECK(std::strcmp(activation.text, "q") == 0);
+  activation = keyboardActivationFor(layout, 'q', /*longPress=*/true);
+  CHECK_EQ(activation.kind, KeyboardActivationKind::Text);
+  CHECK(std::strcmp(activation.text, "Q") == 0);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_SHIFT).kind, KeyboardActivationKind::Shift);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_MODE).kind, KeyboardActivationKind::Mode);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_BACKSPACE).kind, KeyboardActivationKind::Delete);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_ENTER).kind, KeyboardActivationKind::Submit);
+  CHECK_EQ(keyboardActivationFor(layout, 32000).kind, KeyboardActivationKind::None);
+
+  const char utf8[] = "a\xc3\xb1z";
+  CHECK_EQ(utf8NextBoundary(utf8, 4, 0), 1u);
+  CHECK_EQ(utf8NextBoundary(utf8, 4, 1), 3u);
+  CHECK_EQ(utf8PreviousBoundary(utf8, 4, 3), 1u);
+  CHECK_EQ(utf8PreviousBoundary(utf8, 4, 4), 3u);
+}
+
 void testTouchHoldRouter() {
   InteractionBuffer<8> interactions;
   const auto rebuild = [&] {
@@ -2623,6 +2685,8 @@ int main() {
   testNumberRowLayouts();
   testKeyboardEntryLongPressAlt();
   testKeyboardAltCaseFlip();
+  testTouchTapQueue();
+  testKeyboardNavigatorAndActivation();
   testTouchHoldRouter();
   testKeyboardBottomHitOverflow();
   testHeaderLeadingButton();

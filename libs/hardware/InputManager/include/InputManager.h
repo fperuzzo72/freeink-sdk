@@ -289,7 +289,9 @@ private:
   unsigned long lastTouchHeldDurationMs =
       0; // contact duration, latched at release
   bool touchMovedBeyondTapSlop =
-      false; // suppresses tap activation after a drag/scroll
+      false; // cancels stationary hold/long-press classification
+  bool touchMovedBeyondTapReleaseSlop =
+      false; // cancels tap-on-release once motion reaches swipe distance
   bool touchLongPressEvent = false; // one-shot, mirrors touchHomeKeyLongEvent
   bool touchLongPressFired =
       false; // latched for the current contact so long-press fires once
@@ -316,6 +318,8 @@ private:
   static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8; // I2C poll cadence
   static constexpr int TOUCH_TAP_SLOP_PX = 28;
   static constexpr int TOUCH_SWIPE_MIN_PX = 60;
+  static constexpr int TOUCH_TAP_RELEASE_SLOP_PX =
+      TOUCH_SWIPE_MIN_PX - 1;
   static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;
   static constexpr unsigned long TOUCH_LONG_PRESS_MS =
       500; // shorter than HOME_KEY_LONG_PRESS_MS: a screen hold has no button

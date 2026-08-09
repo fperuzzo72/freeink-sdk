@@ -30,6 +30,58 @@ struct Point {
   int16_t y = 0;
 };
 
+// Fixed-capacity queue for completed logical touch taps. UI loops can capture
+// one-shot release events every input update even while a renderer temporarily
+// owns or rebuilds the interaction table, then route the taps once that table
+// is safe again. On overflow the oldest tap is discarded in favor of current
+// input; push() returns false so diagnostics can surface that condition.
+template <size_t Capacity>
+class TouchTapQueue {
+ public:
+  static_assert(Capacity > 0, "TouchTapQueue capacity must be positive");
+
+  bool push(const int16_t x, const int16_t y) {
+    bool retainedAll = true;
+    if (count_ == Capacity) {
+      head_ = (head_ + 1) % Capacity;
+      --count_;
+      overflowed_ = true;
+      retainedAll = false;
+    }
+    const size_t tail = (head_ + count_) % Capacity;
+    taps_[tail] = Point{x, y};
+    ++count_;
+    return retainedAll;
+  }
+
+  bool pop(int16_t& x, int16_t& y) {
+    if (count_ == 0) return false;
+    const Point tap = taps_[head_];
+    head_ = (head_ + 1) % Capacity;
+    --count_;
+    x = tap.x;
+    y = tap.y;
+    return true;
+  }
+
+  void clear() {
+    head_ = 0;
+    count_ = 0;
+    overflowed_ = false;
+  }
+
+  size_t size() const { return count_; }
+  bool empty() const { return count_ == 0; }
+  bool overflowed() const { return overflowed_; }
+  void clearOverflow() { overflowed_ = false; }
+
+ private:
+  Point taps_[Capacity]{};
+  size_t head_ = 0;
+  size_t count_ = 0;
+  bool overflowed_ = false;
+};
+
 struct Insets {
   int16_t top = 0;
   int16_t right = 0;
