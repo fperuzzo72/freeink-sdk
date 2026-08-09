@@ -10,6 +10,9 @@
 
 #include <FreeInkUI.h>
 
+#include <memory>
+#include <new>
+
 namespace freeink {
 namespace ui {
 
@@ -560,16 +563,38 @@ public:
       : target_(target), device_(device), assets_(assets) {
     // Size the default metric tokens to the target's actual body font: the
     // static 44px defaults fit ~18px UI fonts but clip label+subtitle rows
-    // with larger fonts (the bundled Noto Sans is 34px/line). setTheme()
-    // still replaces everything.
-    theme_ = themeTokensForLineHeight(target.lineHeight(theme_.bodyText.font));
+    // with larger fonts (the bundled Noto Sans is 34px/line). setTheme() /
+    // setThemeRef() still replace everything.
+    ownedTheme_.reset(new (std::nothrow) ThemeTokens(
+        themeTokensForLineHeight(target.lineHeight(TextStyle{}.font))));
   }
 
   void setDevice(DeviceContext device) { device_ = device; }
   const DeviceContext &device() const { return device_; }
 
-  void setTheme(const ThemeTokens &theme) { theme_ = theme; }
-  const ThemeTokens &theme() const { return theme_; }
+  // Copy mode: the app keeps its own (heap-owned) tokens.
+  void setTheme(const ThemeTokens &theme) {
+    sharedTheme_ = nullptr;
+    if (ownedTheme_) {
+      *ownedTheme_ = theme;
+    } else {
+      ownedTheme_.reset(new (std::nothrow) ThemeTokens(theme));
+    }
+  }
+  // Shared mode: dereference caller-owned tokens (they must outlive the app).
+  // Tokens are usually identical for every screen of an app, so sharing one
+  // instance saves the ~1.5KB per-app copy setTheme() keeps — on small heaps
+  // that copy per live screen is the cost that matters. Passing nullptr
+  // reverts to the owned/default tokens.
+  void setThemeRef(const ThemeTokens *theme) {
+    sharedTheme_ = theme;
+    if (theme) ownedTheme_.reset();
+  }
+  const ThemeTokens &theme() const {
+    if (sharedTheme_) return *sharedTheme_;
+    if (ownedTheme_) return *ownedTheme_;
+    return FALLBACK_THEME_TOKENS;  // owned-copy allocation failed
+  }
 
   void setAssets(AssetResolver *assets) { assets_ = assets; }
   AssetResolver *assets() const { return assets_; }
@@ -652,7 +677,7 @@ public:
 
     Frame<MaxInteractions> frame(target_, device_, input, interactions_,
                                  assets_);
-    ScreenType screen(frame, theme_);
+    ScreenType screen(frame, theme());
     if (screen_)
       screen_(screen, screenUser_);
     lastEvent_ = frame.finish();
@@ -727,7 +752,12 @@ private:
 
   DrawTarget &target_;
   DeviceContext device_{};
-  ThemeTokens theme_ = defaultThemeTokens();
+  // Theme storage: caller-owned shared tokens (setThemeRef) or an app-owned
+  // heap copy (setTheme / the constructor's font-derived default). A pointer
+  // pair instead of an inline ThemeTokens member keeps sizeof(FreeInkApp)
+  // small — the tokens are ~1.5KB and most apps share one instance.
+  const ThemeTokens *sharedTheme_ = nullptr;
+  std::unique_ptr<ThemeTokens> ownedTheme_;
   AssetResolver *assets_ = nullptr;
   InteractionBuffer<MaxInteractions> interactions_{};
   ScreenFn screen_ = nullptr;

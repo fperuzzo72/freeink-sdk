@@ -498,20 +498,22 @@ struct Paint {
   Color color = Color::Transparent;
   BitmapFill bitmap{};
 
-  static Paint none() { return Paint{}; }
-  static Paint solid(Color c) {
+  // constexpr so all-default style aggregates (BoxStyle, StyleSet,
+  // ThemeTokens) can be constant-initialized into flash.
+  static constexpr Paint none() { return Paint{}; }
+  static constexpr Paint solid(Color c) {
     Paint p;
     p.kind = PaintKind::Solid;
     p.color = c;
     return p;
   }
-  static Paint dither(Color c) {
+  static constexpr Paint dither(Color c) {
     Paint p;
     p.kind = PaintKind::Dither;
     p.color = c;
     return p;
   }
-  static Paint bitmapFill(BitmapFill fill) {
+  static constexpr Paint bitmapFill(BitmapFill fill) {
     Paint p;
     p.kind = PaintKind::Bitmap;
     p.bitmap = fill;
@@ -663,6 +665,10 @@ struct ThemeTokens {
   StyleSet popup{};
   StyleSet textField{};
 };
+
+// All-default tokens, constant-initialized into flash (costs rodata, no RAM):
+// FreeInkApp's last-resort theme when its owned copy could not be allocated.
+inline constexpr ThemeTokens FALLBACK_THEME_TOKENS{};
 
 struct ThemeDocument {
   uint8_t schema = 0;
