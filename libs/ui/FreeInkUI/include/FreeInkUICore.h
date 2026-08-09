@@ -204,6 +204,66 @@ inline Point touchToLogical(const DeviceContext &device, float nx, float ny,
   return Point{static_cast<int16_t>(x), static_cast<int16_t>(y)};
 }
 
+// --- Swipe gesture classification -------------------------------------------
+// Pure geometry over swipe endpoints in LOGICAL screen coordinates (map the
+// InputManager's normalized endpoints through touchToLogical, or an
+// app-owned equivalent, first). Classification lives here; what a gesture
+// MEANS (back, menu, home) stays with the app.
+
+enum class SwipeDir : uint8_t { None, Left, Right, Up, Down };
+
+// Dominant-axis direction of a swipe. Ties go to the horizontal axis.
+inline SwipeDir swipeDirection(const int sx, const int sy, const int ex,
+                               const int ey) {
+  const int dx = ex - sx;
+  const int dy = ey - sy;
+  const int adx = dx < 0 ? -dx : dx;
+  const int ady = dy < 0 ? -dy : dy;
+  if (adx >= ady)
+    return dx < 0 ? SwipeDir::Left : SwipeDir::Right;
+  return dy < 0 ? SwipeDir::Up : SwipeDir::Down;
+}
+
+enum class ScreenEdge : uint8_t { Left, Right, Top, Bottom };
+
+// Default anchor bands, as fractions of the screen dimension: how close to an
+// edge a swipe must START to count as an edge gesture. Side edges are wider
+// (a thumb reaching in from the bezel lands further from the edge than a
+// deliberate top/bottom pull).
+inline constexpr float EDGE_SWIPE_SIDE_FRAC = 0.25f;
+inline constexpr float EDGE_SWIPE_TOP_BOTTOM_FRAC = 0.14f;
+
+// True when a swipe starts inside `edgeFrac` of `edge` and travels away from
+// that edge with its own axis dominant (a strictly-diagonal pull does not
+// count). Endpoints are logical screen coordinates; screenW/screenH are the
+// logical screen size. Anchoring keeps mid-screen swipes free for the app's
+// own SwipeDir consumers.
+inline bool edgeSwipe(const ScreenEdge edge, const int sx, const int sy,
+                      const int ex, const int ey, const int screenW,
+                      const int screenH, float edgeFrac = -1.0f) {
+  if (edgeFrac < 0.0f)
+    edgeFrac = (edge == ScreenEdge::Left || edge == ScreenEdge::Right)
+                   ? EDGE_SWIPE_SIDE_FRAC
+                   : EDGE_SWIPE_TOP_BOTTOM_FRAC;
+  const int dx = ex - sx;
+  const int dy = ey - sy;
+  const int adx = dx < 0 ? -dx : dx;
+  const int ady = dy < 0 ? -dy : dy;
+  switch (edge) {
+  case ScreenEdge::Left:
+    return sx <= static_cast<int>(screenW * edgeFrac) && dx > 0 && adx > ady;
+  case ScreenEdge::Right:
+    return sx >= screenW - static_cast<int>(screenW * edgeFrac) && dx < 0 &&
+           adx > ady;
+  case ScreenEdge::Top:
+    return sy <= static_cast<int>(screenH * edgeFrac) && dy > 0 && ady > adx;
+  case ScreenEdge::Bottom:
+    return sy >= screenH - static_cast<int>(screenH * edgeFrac) && dy < 0 &&
+           ady > adx;
+  }
+  return false;
+}
+
 enum State : uint8_t {
   StateNormal = 0,
   StateSelected = 1 << 0,
