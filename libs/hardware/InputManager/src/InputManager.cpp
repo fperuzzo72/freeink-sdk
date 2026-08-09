@@ -446,6 +446,7 @@ void InputManager::update() {
   touchPressedEvent =
       false; // one-shot touch coord events, cleared each update()
   touchReleasedEvent = false;
+  touchLongPressEvent = false;
   touchHomeKeyEvent = false;
   touchHomeKeyTapEvent = false;
   touchHomeKeyLongEvent = false;
@@ -549,11 +550,13 @@ InputManager::TouchPoint InputManager::getTouchPoint() const {
 }
 bool InputManager::isTouchPressed() const { return touchPressed; }
 bool InputManager::wasTouchPressed() const { return touchPressedEvent; }
-bool InputManager::wasTouchReleased() const { return touchReleasedEvent; }
+bool InputManager::wasTouchReleased() const {
+  return touchReleasedEvent && !touchSuppressed;
+}
 
 bool InputManager::wasTouchTap(float &nx, float &ny) const {
 #if FREEINK_CAP_TOUCH
-  if (!touchReleasedEvent)
+  if (!touchReleasedEvent || touchSuppressed)
     return false;
   if (touchMovedBeyondTapSlop)
     return false;
@@ -610,7 +613,7 @@ bool InputManager::wasTouchPressedAt(float &nx, float &ny) const {
 bool InputManager::isTouchTapCandidate(float &nx, float &ny,
                                        unsigned long &heldMs) const {
 #if FREEINK_CAP_TOUCH
-  if (!touchPressed || touchMovedBeyondTapSlop)
+  if (!touchPressed || touchMovedBeyondTapSlop || touchSuppressed)
     return false;
   const auto &t = BoardConfig::ACTIVE.touch;
   const uint16_t w = (t.rawMaxX > t.rawMinX)
@@ -637,7 +640,7 @@ bool InputManager::isTouchHeldAt(float &nx, float &ny) const {
 #if FREEINK_CAP_TOUCH
   // Live drag tracking: the latest contact sample (touchUpPoint is refreshed on
   // every sample while pressed), with no tap-slop gate.
-  if (!touchPressed)
+  if (!touchPressed || touchSuppressed)
     return false;
   const auto &t = BoardConfig::ACTIVE.touch;
   const uint16_t w = (t.rawMaxX > t.rawMinX)
@@ -677,7 +680,7 @@ bool InputManager::wasTouchActivity() const {
 bool InputManager::wasSwipe(float &nxStart, float &nyStart, float &nxEnd,
                             float &nyEnd) const {
 #if FREEINK_CAP_TOUCH
-  if (!touchReleasedEvent)
+  if (!touchReleasedEvent || touchSuppressed)
     return false;
   // A flick: travelled past a distance threshold within a time window. Distance
   // is measured in native px; the dominant axis is left to the app (after
@@ -713,6 +716,39 @@ bool InputManager::wasSwipe(float &nxStart, float &nyStart, float &nxEnd,
   (void)nxEnd;
   (void)nyEnd;
   return false;
+#endif
+}
+
+bool InputManager::wasTouchLongPress(float &nx, float &ny) const {
+#if FREEINK_CAP_TOUCH
+  if (!touchLongPressEvent)
+    return false;
+  // Long-press routes to the touch-down point, same rationale as wasTouchTap.
+  const auto &t = BoardConfig::ACTIVE.touch;
+  const uint16_t w = (t.rawMaxX > t.rawMinX)
+                         ? static_cast<uint16_t>(t.rawMaxX - t.rawMinX)
+                         : 1;
+  const uint16_t h = (t.rawMaxY > t.rawMinY)
+                         ? static_cast<uint16_t>(t.rawMaxY - t.rawMinY)
+                         : 1;
+  float x = static_cast<float>(touchDownPoint.x) / w;
+  float y = static_cast<float>(touchDownPoint.y) / h;
+  nx = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+  ny = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
+  return true;
+#else
+  (void)nx;
+  (void)ny;
+  return false;
+#endif
+}
+
+void InputManager::suppressTouchContact() {
+#if FREEINK_CAP_TOUCH
+  // Only meaningful mid-contact (or on its release-edge frame); the latch
+  // self-clears in serviceTouch() once the contact is fully over.
+  if (touchPressed || touchReleasedEvent)
+    touchSuppressed = true;
 #endif
 }
 
@@ -757,6 +793,15 @@ uint8_t InputManager::serviceTouch() {
   const unsigned long now = millis();
   const auto &t = BoardConfig::ACTIVE.touch;
 
+  // Contact bookkeeping shared by all backends. Runs BEFORE the poll so the
+  // suppression latch releases on the first fully-idle frame (contact over,
+  // release edge consumed) and a new contact beginning in this same call is
+  // delivered normally.
+  if (!touchPressed && !touchReleasedEvent) {
+    touchSuppressed = false;
+    touchLongPressFired = false;
+  }
+
   if (t.controller == BoardConfig::TouchController::Gt911) {
     pollGt911(now);
   } else if (t.controller == BoardConfig::TouchController::Ft5x06) {
@@ -766,6 +811,15 @@ uint8_t InputManager::serviceTouch() {
     // Synthesized confirm tracks an actually-detected press, not the IRQ line.
     if (touchPressedEvent)
       touchIrqPulseUntil = now + TOUCH_IRQ_PULSE_MS;
+  }
+
+  // Long-press classification, beside the tap/swipe machinery it shares state
+  // with. Fires once per contact, while the finger is still down.
+  if (touchPressed && !touchMovedBeyondTapSlop && !touchLongPressFired &&
+      !touchSuppressed &&
+      now - touchDownPoint.timestamp >= TOUCH_LONG_PRESS_MS) {
+    touchLongPressFired = true;
+    touchLongPressEvent = true;
   }
 
   return (t.synthesizeConfirm && now < touchIrqPulseUntil) ? (1 << BTN_CONFIRM)
