@@ -237,11 +237,11 @@ class KeyboardNavigator {
 
   bool syncToValue(const KeyboardLayout& layout, const int16_t value) {
     if (!layout.rows) return false;
-    for (uint8_t row = 0; row < layout.rowCount; ++row) {
-      for (uint8_t col = 0; col < layout.rows[row].count; ++col) {
-        if (layout.rows[row].keys[col].value == value) {
-          row_ = row;
-          col_ = col;
+    for (uint8_t rowIndex = 0; rowIndex < layout.rowCount; ++rowIndex) {
+      for (uint8_t colIndex = 0; colIndex < layout.rows[rowIndex].count; ++colIndex) {
+        if (layout.rows[rowIndex].keys[colIndex].value == value) {
+          row_ = rowIndex;
+          col_ = colIndex;
           return true;
         }
       }
@@ -251,15 +251,17 @@ class KeyboardNavigator {
 
   const KeyboardKey* selected(const KeyboardLayout& layout) const {
     if (!layout.rows || row_ < 0 || row_ >= layout.rowCount) return nullptr;
-    const KeyboardRow& row = layout.rows[row_];
-    if (!row.keys || col_ < 0 || col_ >= row.count) return nullptr;
-    return &row.keys[col_];
+    const KeyboardRow& selectedRow = layout.rows[row_];
+    if (!selectedRow.keys || col_ < 0 || col_ >= selectedRow.count) return nullptr;
+    return &selectedRow.keys[col_];
   }
 
   int16_t logicalIndex(const KeyboardLayout& layout) const {
     if (!selected(layout)) return -1;
     int16_t index = 0;
-    for (int16_t row = 0; row < row_; ++row) index = static_cast<int16_t>(index + layout.rows[row].count);
+    for (int16_t rowIndex = 0; rowIndex < row_; ++rowIndex) {
+      index = static_cast<int16_t>(index + layout.rows[rowIndex].count);
+    }
     return static_cast<int16_t>(index + col_);
   }
 
