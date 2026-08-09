@@ -592,6 +592,17 @@ struct PowerConfig {
   int8_t latch1 = PIN_UNASSIGNED;
 };
 
+// Panel rows/columns the device's bezel physically overlaps, in the panel's
+// native portrait frame; firmware keeps content out of them. The default is
+// the value CrossPoint historically hardcoded for every board (tuned on the
+// X4 bezel) — override per profile as boards are measured.
+struct ViewableInsets {
+  uint8_t top = 9;
+  uint8_t right = 3;
+  uint8_t bottom = 3;
+  uint8_t left = 3;
+};
+
 struct BoardProfile {
   Board board;
   const char* name;
@@ -633,6 +644,9 @@ struct BoardProfile {
   // matters (UC8279 800x480: VER byte2 LUT_VER, 0x02 vs 0x68 — selects which AA
   // waveform table the driver uploads). 0 = not probed / not applicable.
   uint8_t displayControllerVariant = 0;
+  // Bezel-covered edge insets. Defaulted so existing profiles need no change;
+  // a measured board overrides it.
+  ViewableInsets viewableInsets = {};
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
