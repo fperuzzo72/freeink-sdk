@@ -115,6 +115,71 @@ struct ListProps {
   bool headerUnderline = true;
 };
 
+// Stateful companion to the immediate-mode list helpers in FreeInkUICore.h:
+// the selection-vs-viewport protocol most list screens want on e-paper.
+// Drag/swipe scrolling moves the viewport (top) WITHOUT moving the selection —
+// the selection may scroll off-screen; key/button navigation moves the
+// selection and the caller re-follows (follow()) so the viewport is pulled the
+// minimal amount to keep it visible. The first syncToProps() after reset()
+// snaps the viewport to the selection (a list can open on an entry past the
+// first page). How the selection index itself moves (wrap, paging) stays with
+// the caller.
+struct ListNav {
+  int selected = 0;
+  int top = 0;
+  int visibleRows = 1; // measured by syncToProps(); 1 until the first build
+  bool followOnBuild = true;
+
+  void reset(const int selectedIndex = 0) {
+    selected = selectedIndex;
+    top = 0;
+    visibleRows = 1;
+    followOnBuild = true;
+  }
+
+  // Scroll the viewport by deltaRows, clamped to the valid range; the
+  // selection stays put. Returns true when the viewport actually moved.
+  bool scrollBy(const int deltaRows, const int count) {
+    int maxTop = count - visibleRows;
+    if (maxTop < 0)
+      maxTop = 0;
+    int next = top + deltaRows;
+    if (next > maxTop)
+      next = maxTop;
+    if (next < 0)
+      next = 0;
+    if (next == top)
+      return false;
+    top = next;
+    return true;
+  }
+
+  // Pull the viewport the minimal amount so the selection is visible.
+  void follow(const int count) {
+    const uint16_t rows =
+        visibleRows > 0 ? static_cast<uint16_t>(visibleRows) : 1;
+    top = listTopIndexFor(static_cast<int16_t>(selected),
+                          static_cast<uint16_t>(top < 0 ? 0 : top), rows,
+                          static_cast<uint16_t>(count < 0 ? 0 : count));
+  }
+
+  // Screen-build sync: measure the rows that fit the band, apply the one-shot
+  // follow-on-build, clamp the viewport, and write selection/viewport into the
+  // props. Call from the screen builder right before list().
+  void syncToProps(const Rect body, const int16_t rowHeight,
+                   const int16_t rowGap, const int count, ListProps &props) {
+    const uint16_t rows = listVisibleRows(body, rowHeight, rowGap);
+    visibleRows = rows > 0 ? rows : 1;
+    if (followOnBuild) {
+      followOnBuild = false;
+      follow(count);
+    }
+    scrollBy(0, count); // clamp to range
+    props.selectedIndex = static_cast<int16_t>(selected);
+    props.topIndex = static_cast<uint16_t>(top);
+  }
+};
+
 inline void drawListScrollIndicator(DrawTarget &target, const Rect rect,
                                     const uint32_t count,
                                     const uint32_t visible,
