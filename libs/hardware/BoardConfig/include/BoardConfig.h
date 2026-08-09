@@ -922,7 +922,14 @@ constexpr BoardProfile PAPER_MONO = {
     {13, 12, 11, 10, 9, 8, 4},
     NO_GAUGE,
     PAPER_MONO_MIC,
-    {47, 48, 100000, 0x32, 0, 0, 0, RtcType::Rx8130, ImuType::None}};
+    {47, 48, 100000, 0x32, 0, 0, 0, RtcType::Rx8130, ImuType::None},
+    1.0f,  // uiScale: unchanged (was the struct default)
+    {},    // power: none
+    0,     // displayControllerVariant
+    // Bezel overlap: the recessed panel swallows an edge-hugging scroll
+    // indicator on the sides. 7px sides as a starting value (mirroring the
+    // X4 Pro's tuned inset) — adjust after on-device measurement.
+    {9, 7, 3, 7}};
 
 // --- Murphy M3 (CrowPanel 3.7") — UC8253, CHSC6x touch, PWM frontlight --------
 constexpr BoardProfile MURPHY_M3 = {
@@ -1268,7 +1275,13 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // symptom: EPD BUSY never asserts, SD returns 0xFF). GPIO2 is a second board-init output
     // driven LOW (role unknown); not modeled here. NOTE: GPIO1/GPIO2 are therefore NOT the ADC
     // button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
-    {1}};
+    {1},
+    0,  // displayControllerVariant: filled by the boot probe
+    // Bezel overlap: the panel sits recessed, and 7px is the empirically-tuned
+    // side inset that keeps an edge-hugging scroll indicator visible (was the
+    // firmware's hardcoded X4 Pro scrollbar inset); top/bottom keep the X4
+    // historical values pending measurement.
+    {9, 7, 3, 7}};
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to
