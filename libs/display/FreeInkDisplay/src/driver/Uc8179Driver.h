@@ -111,6 +111,12 @@ class Uc8179Driver : public PanelDriver {
   // differential partial has a real baseline to diff against (no ghosting).
   // Cleared after grayscale (which overwrites the planes) so the next B/W is full.
   bool _oldPlaneValid = false;
+  // Set after every grayscale (AA) refresh. The AA overlay leaves gray edge charge
+  // the plain B/W fast diff can't scrub (the B/W baseline records those pixels as
+  // white), so it accumulates under rapid page turns → garble (slow turns settle).
+  // Consumed by the next B/W displayStart to re-drive every pixel to its target
+  // (DTM1 = ~newframe) with a cheap DU — no GC flash — scrubbing the residue.
+  bool _redriveAfterGray = false;
   // AA CDI select: the first grayscale refresh after init sends the border-driving
   // CDI (0x29); later ones the border-holding CDI (0xA9), per the vendor reference.
   bool _grayRefreshedOnce = false;

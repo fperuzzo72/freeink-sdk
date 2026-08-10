@@ -110,6 +110,13 @@ class Uc8279X4Driver : public PanelDriver {
   bool _darkBackground = false;
   bool _needFullClear = true;
   bool _oldPlaneValid = false;
+  // Set after every grayscale (AA) refresh. The AA overlay leaves gray edge
+  // charge the plain B/W fast diff can't scrub (the B/W baseline records those
+  // pixels as white), so it accumulates under rapid page turns → garble. Consumed
+  // by the next B/W displayStart to RE-DRIVE every pixel to its target (DTM1 =
+  // ~newframe), scrubbing the residue with a cheap DU (no GC flash) — the same
+  // trick as _darkBackground, applied once after AA.
+  bool _redriveAfterGray = false;
   // AA CDI select: first grayscale refresh after init sends cdiAaFirst, later
   // ones cdiAaLater (border hold), per the vendor reference.
   bool _grayRefreshedOnce = false;
