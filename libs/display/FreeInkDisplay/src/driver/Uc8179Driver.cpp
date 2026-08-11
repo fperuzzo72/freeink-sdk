@@ -50,6 +50,18 @@ const GrayLut kGrayLuts[5] = {
     {0x23, {0x20, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTWK
     {0x24, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTKK (black)
 };
+
+// OEM XTF_PRE_BW_MID conditioning waveform. Each row is command-prefixed:
+// byte 0 selects LUT register 0x20..0x24 and the remaining 42 bytes are data.
+// It runs over equal B/W planes immediately before the short AA waveform so
+// gray and white particle states do not relax after the page stops updating.
+const uint8_t kGrayPreBwMid[5][43] = {
+    {0x20, 0x00, 0x06, 0x01, 0x06, 0x06, 0x01, 0x00, 0x02, 0x04, 0x00, 0x00, 0x01},
+    {0x21, 0x20, 0x06, 0x01, 0x06, 0x06, 0x01, 0x00, 0x02, 0x04, 0x00, 0x00, 0x01},
+    {0x22, 0xAA, 0x06, 0x01, 0x06, 0x06, 0x01, 0xA0, 0x02, 0x04, 0x00, 0x00, 0x01},
+    {0x23, 0x55, 0x06, 0x01, 0x06, 0x06, 0x01, 0x50, 0x02, 0x04, 0x00, 0x00, 0x01},
+    {0x24, 0x00, 0x06, 0x01, 0x06, 0x06, 0x01, 0x10, 0x02, 0x04, 0x00, 0x00, 0x01},
+};
 }  // namespace
 
 const Uc8179Config& uc8179DefaultConfig() {
@@ -125,6 +137,8 @@ void Uc8179Driver::initController(EpdBus& bus) {
 
   _isScreenOn = false;
   _grayRefreshedOnce = false;
+  _bwPlanesSynced = false;
+  _grayPreconditioned = false;
 }
 
 void Uc8179Driver::begin(EpdBus& bus) {
@@ -154,6 +168,8 @@ void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, b
 
 bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;
+  _bwPlanesSynced = false;
+  _grayPreconditioned = false;
   // Full OTP flash on an explicit Full request or the forced first-clear;
   // otherwise a DIFFERENTIAL partial refresh (PTIN/PTOUT). Fast additionally uses
   // the frame-rate lever (E5=0x5A + 0x03/0xE1) that shortens the waveform.
@@ -245,6 +261,7 @@ void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   // that makes fast page turns clean.
   streamPlane(bus, CMD_DTM1, fb);
   _oldPlaneValid = true;
+  _bwPlanesSynced = true;
   _needFullClear = false;
 
   if (_pendingTurnOff) {
@@ -277,10 +294,54 @@ void Uc8179Driver::deepSleep(EpdBus& bus) {
 // ("old"), MSB -> 0x13 ("new"); the (old,new) pair selects the WW/KW/WK/KK LUT
 // per pixel for the 4 levels. If the two mid greys come out swapped on hardware,
 // swap the LSB/MSB plane assignment here.
+void Uc8179Driver::runGrayscalePrecondition(EpdBus& bus) {
+  if (!_bwPlanesSynced) return;
+
+  bus.waitBusy(" 8179_gray_pre_ready");
+  bus.cmd(CMD_PANEL_SETTING);
+  bus.data(_cfg.psr0);  // REG=1: run the external XTF_PRE_BW_MID tables
+  bus.data(_cfg.psr1);
+  bus.cmd(CMD_PARTIAL_IN);
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);
+  bus.data(_cfg.cdiIdle);
+  bus.data(CDI_INTERVAL);
+  bus.cmd(CMD_CCSET);
+  bus.data(_cfg.ccset);
+  bus.cmd(CMD_TSSET);
+  bus.data(_cfg.tssetFast);
+  for (const auto& l : kGrayPreBwMid) {
+    bus.cmd(l[0]);
+    bus.data(&l[1], GRAY_LUT_LEN);
+  }
+
+  if (!_isScreenOn) {
+    bus.cmd(CMD_POWER_ON);
+    bus.waitBusy(" 8179_gray_pre_PON");
+    _isScreenOn = true;
+  }
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  bus.waitBusy(" 8179_gray_pre_DRF");
+  bus.cmd(CMD_PARTIAL_OUT);
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);
+  bus.data(_cfg.cdiIdle);
+  bus.data(CDI_INTERVAL);
+  _grayPreconditioned = true;
+}
+
+void Uc8179Driver::preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+  // UC8179's recovered path has no PTL rectangle; any non-empty request runs
+  // the documented full-panel conditioning pass.
+  if (w == 0 || h == 0 || x >= _w || y >= _h || _grayPreconditioned) return;
+  runGrayscalePrecondition(bus);
+}
+
 void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (!lsb) return;
+  if (!_grayPreconditioned) runGrayscalePrecondition(bus);
   bus.waitBusy(" 8179_gray_lsb");  // prior base refresh must finish before RAM writes
   streamPlane(bus, CMD_DTM1, lsb);  // 0x10 = LSB / "old" plane
+  _bwPlanesSynced = false;
+  _grayPreconditioned = false;
 }
 
 void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
@@ -299,6 +360,8 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   // The base refresh must be fully complete before we upload LUTs / stream — the
   // controller drops LUT/DTM/DRF writes while BUSY.
   bus.waitBusy(" 8179_gray_ready");
+  _bwPlanesSynced = false;
+  _grayPreconditioned = false;
 
   // Custom-LUT 4-level grayscale — the EXACT stock gray_aa stream (FUN_4214ec2c),
   // byte-for-byte apart from FreeInk's SHL orientation bit: PSR 0x3F (REG bit5=1
@@ -343,6 +406,8 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
 
 void Uc8179Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   bus.waitBusy(" 8179_gray_cleanup");
+  _bwPlanesSynced = false;
+  _grayPreconditioned = false;
   if (!bw) {
     // No baseline provided — fall back to a full flash on the next B/W refresh.
     _needFullClear = true;

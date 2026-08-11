@@ -81,6 +81,7 @@ class Uc8179Driver : public PanelDriver {
   // white}. Full-buffer path only (supportsStripGrayscale stays false — the
   // UC8179 has no RAM-window addressing and our row-reversal orientation can't
   // span strips; the X4 Pro's PSRAM absorbs the two full planes).
+  void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
@@ -92,6 +93,9 @@ class Uc8179Driver : public PanelDriver {
   // SHL for horizontal panel direction, then pad to the addressed gate count.
   // Used for both NEW plane (0x13) and OLD-plane sync (0x10).
   void streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, bool invert = false);
+  // Run the vendor XTF_PRE_BW_MID settle while both RAM planes contain the
+  // displayed B/W frame. It leaves analog power on for the AA pass that follows.
+  void runGrayscalePrecondition(EpdBus& bus);
 
   const Uc8179Config& _cfg;
 
@@ -110,6 +114,12 @@ class Uc8179Driver : public PanelDriver {
   // differential partial has a real baseline to diff against (no ghosting).
   // Cleared after grayscale (which overwrites the planes) so the next B/W is full.
   bool _oldPlaneValid = false;
+  // True only after displayFinish() has synchronized DTM1 to DTM2. The AA
+  // precondition is safe only in this equal-plane state.
+  bool _bwPlanesSynced = false;
+  // Prevent an explicit preconditionGrayscale() call from being repeated by
+  // copyGrayscaleLsb(), which otherwise applies the settle automatically.
+  bool _grayPreconditioned = false;
   // Set after every grayscale (AA) refresh. The AA overlay leaves gray edge charge
   // the plain B/W fast diff can't scrub (the B/W baseline records those pixels as
   // white), so it accumulates under rapid page turns → garble (slow turns settle).
