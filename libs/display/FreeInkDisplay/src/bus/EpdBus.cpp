@@ -248,6 +248,23 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
         if (millis() - start > 30000) break;
       } while (digitalRead(_pins.busy) == LOW);
     }
+  } else if (p == BusyPolarity::UcIdleHigh) {
+    // X4 Pro UC8179/UC8279 production behavior: allow one RTOS tick for the
+    // command to take effect, then wait only for the documented idle level.
+    // There is deliberately no fixed millisecond timeout on this controller
+    // path; issuing the next command while BUSY_N is still LOW can make the UC
+    // controller discard plane or LUT writes.
+    delay(1);
+    while (digitalRead(_pins.busy) == LOW) {
+      busyIdle(longWait, LOW, 1);
+      if (!longWait && millis() - start > BUSY_WAIT_HOOK_THRESHOLD_MS) {
+        longWait = true;
+        if (_busyWaitBeginHook != nullptr) {
+          hookFired = true;
+          _busyWaitBeginHook();
+        }
+      }
+    }
   } else {  // X3TwoPhase: wait for the LOW edge, then wait back to HIGH
     while (digitalRead(_pins.busy) == HIGH) {
       delay(1);
@@ -278,6 +295,13 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
 }
 
 void EpdBus::waitRefreshComplete(const char* tag) {
+  // The X4 Pro UC production wait is level-based, not edge-qualified. Keep the
+  // same one-tick/idle-HIGH rule for refresh completion so a missed assertion
+  // edge can never make the caller write RAM while the waveform is still busy.
+  if (_busy == BusyPolarity::UcIdleHigh) {
+    waitBusy(_busy, tag);
+    return;
+  }
   // A host that installed a busy-wait slice hook (e.g. CrossPoint light-sleeping
   // through the refresh) must keep the polling path: waitBusy() invokes the slice
   // hook on each idle step, while this ISR path sleeps the task on a semaphore and

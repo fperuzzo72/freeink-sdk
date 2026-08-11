@@ -54,7 +54,7 @@ const GrayLut kGrayLuts[5] = {
 
 const Uc8179Config& uc8179DefaultConfig() {
   static const Uc8179Config cfg = {
-      0x3F,                      // psr0 (init): 0x3B + SHL bit2 set (mirror-X in hardware);
+      0x3F,                      // psr0: 0x3B + SHL for FreeInk's framebuffer orientation;
                                  // refresh re-asserts psr0 & 0xDF = 0x1F (OTP + SHL)
       0x0A,                      // psr1
       0x20,                      // pfs (0x03 power-off sequence)
@@ -138,12 +138,9 @@ void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 }
 
 // Stream a framebuffer into RAM plane `ramCmd`, mirrored vertically via row
-// reversal (the same sendPlaneFlipped the UC8279 sibling uses — mirror-Y).
-// Mirror-X is handled in hardware by the PSR SHL bit, so no per-byte work here.
-// White padding then fills the off-screen gates (_h.._tresH); 0xFF = white.
+// reversal. SHL in PSR handles the horizontal panel direction for FreeInk's
+// framebuffer convention. White padding fills the non-visible gates.
 void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, bool invert) {
-  // cmd + rows bottom-to-top, one CS burst. The off-screen gate padding below
-  // stays white in both polarities (matching the full-flash seed).
   if (invert) {
     bus.sendPlaneFlippedInverted(ramCmd, fb, _h, _wb);
   } else {
@@ -200,7 +197,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   bus.cmd(CMD_TSSET);
   bus.data(fast ? _cfg.tssetFast : _cfg.tsset);  // fast 0x5A (frame lever) / full 0x1E
   bus.cmd(CMD_PANEL_SETTING);
-  bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // REG bit cleared -> OTP
+  bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // 0x1F: REG cleared -> OTP + SHL
   bus.data(_cfg.psr1);
   if (fast) {
     // Fast-only: PFS/gate-scan re-assert. Full omits these; without them the OTP
@@ -281,11 +278,15 @@ void Uc8179Driver::deepSleep(EpdBus& bus) {
 // per pixel for the 4 levels. If the two mid greys come out swapped on hardware,
 // swap the LSB/MSB plane assignment here.
 void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
-  if (lsb) streamPlane(bus, CMD_DTM1, lsb);  // 0x10 = LSB / "old" plane
+  if (!lsb) return;
+  bus.waitBusy(" 8179_gray_lsb");  // prior base refresh must finish before RAM writes
+  streamPlane(bus, CMD_DTM1, lsb);  // 0x10 = LSB / "old" plane
 }
 
 void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
-  if (msb) streamPlane(bus, CMD_DTM2, msb);  // 0x13 = MSB / "new" plane
+  if (!msb) return;
+  bus.waitBusy(" 8179_gray_msb");
+  streamPlane(bus, CMD_DTM2, msb);  // 0x13 = MSB / "new" plane
 }
 
 void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
@@ -295,27 +296,25 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   (void)factoryMode;  // 4-level is absolute (defined by the planes)
   (void)turnOff;      // gray_aa always powers off at the end (stock cleanup)
 
+  // The base refresh must be fully complete before we upload LUTs / stream — the
+  // controller drops LUT/DTM/DRF writes while BUSY.
+  bus.waitBusy(" 8179_gray_ready");
+
   // Custom-LUT 4-level grayscale — the EXACT stock gray_aa stream (FUN_4214ec2c),
-  // byte-for-byte: PSR unmasked (0x3F => REG bit5=1 custom LUT, + SHL mirror-X;
-  // the B/W path masks to 0x1F/OTP) -> upload the 5 short LUTs (command sent
+  // byte-for-byte apart from FreeInk's SHL orientation bit: PSR 0x3F (REG bit5=1
+  // custom LUT; the B/W path masks to 0x1F/OTP) -> upload the 5 short LUTs
   // separately, 42 data bytes each) -> CDI 0x29/07 -> PON -> DRF -> POF. Stock
   // sends NO E0/E5/booster here (those belong to the grainy prebw/gray_full
   // paths); adding them scattered the background.
   bus.cmd(CMD_PANEL_SETTING);
-  bus.data(_cfg.psr0);  // 0x3F: REG=1 (custom LUT) + KW + SHL mirror-X
+  bus.data(_cfg.psr0);  // 0x3F: REG=1 (custom LUT) + KW + SHL
   bus.data(_cfg.psr1);
   for (const auto& l : kGrayLuts) {
     bus.cmd(l.cmd);
     bus.data(l.data, GRAY_LUT_LEN);
   }
-  // The AA refresh CDI is a CONSTANT 0x29 (app1 vtable[0x118] returns 0x29 every
-  // refresh; the known-good 6662faf build used 0x29 unconditionally). The
-  // "first 0x29 / later 0xA9" variant from the display-cleanups audit REGRESSED
-  // this: 0xA9 (bit7 set) changes the border/VCOM handling on every AA page after
-  // the first, which accumulates as ghosting under fast paging and smears when a
-  // partial (menu) refresh follows — do NOT reintroduce it.
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_cfg.cdiActive);  // 0x29, always
+  bus.data(_grayRefreshedOnce ? _cfg.cdiIdle : _cfg.cdiActive);  // first 0x29, later 0xA9
   bus.data(CDI_INTERVAL);
   _grayRefreshedOnce = true;
 
@@ -325,7 +324,7 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     _isScreenOn = true;
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
-  bus.waitBusy(" 8179_gray");
+  bus.waitBusy(" 8179_gray_DRF");
   bus.cmd(CMD_POWER_OFF);  // stock gray_aa cleanup
   bus.waitBusy(" 8179_gray_POF");
   _isScreenOn = false;
@@ -343,6 +342,7 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
 }
 
 void Uc8179Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
+  bus.waitBusy(" 8179_gray_cleanup");
   if (!bw) {
     // No baseline provided — fall back to a full flash on the next B/W refresh.
     _needFullClear = true;

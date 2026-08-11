@@ -13,8 +13,8 @@
 // LUT upload is needed; only the power rails are programmed here. PENDING
 // HARDWARE VALIDATION on a UC8179 (screenType=1 / hw_calib=2) X4 / X4 Pro unit.
 //
-// BUSY_N: low while busy (PON/DRF/POF all flag), same two-phase shape as the
-// UC8279d / UC8253 X3 — reuses BusyPolarity::X3TwoPhase and the async split.
+// BUSY_N: low while busy (PON/DRF/POF all flag). Production waits one RTOS tick
+// and then polls until BUSY_N is HIGH; it does not require observing a LOW edge.
 
 #include "PanelDriver.h"
 
@@ -57,7 +57,7 @@ class Uc8179Driver : public PanelDriver {
   explicit Uc8179Driver(const Uc8179Config& cfg = uc8179DefaultConfig());
 
   uint32_t spiHz() const override;
-  BusyPolarity busyPolarity() const override { return BusyPolarity::X3TwoPhase; }
+  BusyPolarity busyPolarity() const override { return BusyPolarity::UcIdleHigh; }
   PanelGeometry geometry() const override;
 
   void begin(EpdBus& bus) override;
@@ -88,10 +88,9 @@ class Uc8179Driver : public PanelDriver {
 
  private:
   void initController(EpdBus& bus);
-  // Stream a framebuffer into a RAM plane (ramCmd): mirror-Y via row reversal
-  // (sendPlaneFlipped, as the UC8279 sibling does), padded with white to the
-  // addressed gate count. Mirror-X is done in hardware via the PSR SHL bit. Used
-  // for both the NEW plane (0x13) and the OLD-plane sync (0x10).
+  // Stream a framebuffer into a RAM plane (ramCmd): reverse row order, use PSR
+  // SHL for horizontal panel direction, then pad to the addressed gate count.
+  // Used for both NEW plane (0x13) and OLD-plane sync (0x10).
   void streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, bool invert = false);
 
   const Uc8179Config& _cfg;

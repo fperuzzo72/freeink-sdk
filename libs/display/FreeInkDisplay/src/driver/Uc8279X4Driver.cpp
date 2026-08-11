@@ -298,13 +298,8 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     bus.data(luts[i].data, GRAY_LUT_LEN);
   }
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  // Constant CDI on every AA nudge — stock RE (Factory.bin FUN_4214d4ac; vtable
-  // getters 0x138/0x13c both return 0x97, verified at the movi-a2,0x97 byte level)
-  // shows one value on every gray refresh, NOT a first/later split. 0xD7 belongs
-  // only to the separate PTIN/PTOUT settle pass this driver doesn't run. The split
-  // accumulates border/VBD ghosting on later AA pages (same class of bug as the
-  // UC8179 CDI-split regression).
-  bus.data(_cfg.cdiAaFirst);  // single byte (0x97)
+  bus.data(_grayRefreshedOnce ? _cfg.cdiAaLater : _cfg.cdiAaFirst);  // first 0x97, later 0xD7
+  _grayRefreshedOnce = true;
 
   powerOnIfNeeded(bus, " 8279x4_gray_PON");
 

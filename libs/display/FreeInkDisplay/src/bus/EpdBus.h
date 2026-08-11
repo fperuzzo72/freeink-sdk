@@ -17,6 +17,7 @@ enum class BusyPolarity : uint8_t {
   ActiveHigh,  // SSD1677 (X4 / de-link): busy while HIGH
   ActiveLow,   // ED2208 (M5 PaperColor): busy while LOW
   X3TwoPhase,  // UC8253 (X3): wait for the LOW edge, then wait back to HIGH
+  UcIdleHigh,  // UC8179/UC8279 X4 Pro: delay one tick, then wait until BUSY_N is HIGH
 };
 
 struct EpdPins {
@@ -67,9 +68,8 @@ class EpdBus {
   // poll) before arming, so it is safe to call right after firing the refresh.
   void waitRefreshComplete(const char* tag = nullptr);
 
-  // Instantaneous BUSY-pin read for non-blocking refresh polling. X3's
-  // two-phase wait can't be captured in a single read; its terminal state is
-  // HIGH, so LOW reports busy (X3 drivers don't use the async path today).
+  // Instantaneous BUSY-pin read for non-blocking refresh polling. The UC/X3
+  // active-low conventions both terminate HIGH, so LOW reports busy.
   bool isBusy() const {
     const int level = digitalRead(_pins.busy);
     return _busy == BusyPolarity::ActiveHigh ? level == HIGH : level == LOW;

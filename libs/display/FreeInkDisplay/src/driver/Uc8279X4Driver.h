@@ -16,8 +16,8 @@
 //
 // Same KW differential paradigm as the UC8179 sibling: DTM1 (0x10) = OLD plane,
 // DTM2 (0x13) = NEW plane, OTP waveforms for B/W (PSR REG=0 at refresh),
-// external 5x49 LUTs for AA grayscale (REG=1). BUSY_N: low while busy
-// (BusyPolarity::X3TwoPhase), same async split as the UC8179.
+// external 5x49 LUTs for AA grayscale (REG=1). BUSY_N is low while busy;
+// production waits one tick and then polls until it returns HIGH.
 
 #include "PanelDriver.h"
 
@@ -59,7 +59,7 @@ class Uc8279X4Driver : public PanelDriver {
   explicit Uc8279X4Driver(const Uc8279X4Config& cfg = uc8279X4DefaultConfig());
 
   uint32_t spiHz() const override;
-  BusyPolarity busyPolarity() const override { return BusyPolarity::X3TwoPhase; }
+  BusyPolarity busyPolarity() const override { return BusyPolarity::UcIdleHigh; }
   PanelGeometry geometry() const override;
 
   void begin(EpdBus& bus) override;
