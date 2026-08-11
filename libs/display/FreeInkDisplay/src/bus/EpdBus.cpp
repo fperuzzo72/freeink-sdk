@@ -90,11 +90,11 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 
   pinMode(pins.cs, OUTPUT);
   pinMode(pins.dc, OUTPUT);
-  // Release any deep-sleep hold on RST (powerDownRailsForSleep() holds it HIGH so
-  // the UC8179 stays in DSLP); the hold survives the wake reset and would make the
-  // reset pulse below bounce off the latch. Boards routing RST through an IO
-  // expander leave the pin unassigned and reset via the freeink_board_epd_reset
-  // hook instead.
+  // Release any deep-sleep hold on RST. powerDownRailsForSleep() holds it HIGH
+  // while the panel rail remains powered, or LOW alongside a gated-off rail;
+  // either hold survives the wake reset and would make the reset pulse below
+  // bounce off the latch. Boards routing RST through an IO expander leave the
+  // pin unassigned and reset via the freeink_board_epd_reset hook instead.
   if (pins.rst >= 0) {
     gpio_hold_dis(static_cast<gpio_num_t>(pins.rst));
     pinMode(pins.rst, OUTPUT);
