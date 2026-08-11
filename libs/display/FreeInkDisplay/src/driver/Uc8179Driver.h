@@ -100,6 +100,10 @@ class Uc8179Driver : public PanelDriver {
   // DTM1 and the new base in DTM2. It replaces the ordinary B/W activation and
   // leaves analog power on for the AA pass that follows.
   void runGrayscalePrecondition(EpdBus& bus);
+  // Blocking, non-flashing B/W transition used by a Fast page immediately
+  // after AA. The generic reader path does not call displayGrayscaleBase(), so
+  // display() routes its post-AA Fast base here as well.
+  void transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff);
 
   const Uc8179Config& _cfg;
 
@@ -130,11 +134,9 @@ class Uc8179Driver : public PanelDriver {
   // True when both controller planes have been restored to the displayed B/W
   // base. False while an ordinary refresh or AA selector upload is in flight.
   bool _bwPlanesSynced = false;
-  // Set after every grayscale (AA) refresh. The AA overlay leaves gray edge charge
-  // the plain B/W fast diff can't scrub (the B/W baseline records those pixels as
-  // white), so it accumulates under rapid page turns → garble (slow turns settle).
-  // Consumed by the next B/W displayStart to re-drive every pixel to its target
-  // (DTM1 = ~newframe) with a cheap DU — no GC flash — scrubbing the residue.
+  // Set after every grayscale refresh. The next ordinary Fast B/W paint uses
+  // stock's non-flashing XTF_PRE_BW_MID transition instead of DU. Explicit Half
+  // remains the complement-driven GC scrub for periodic and sleep cleanup.
   bool _redriveAfterGray = false;
   // Tracks whether the first AA page has completed; Factory.bin skips the
   // XTF_PRE_BW_MID pre-pass only for that first page. AA activation itself uses

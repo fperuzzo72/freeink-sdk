@@ -157,8 +157,48 @@ void Uc8179Driver::begin(EpdBus& bus) {
 }
 
 void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  // CrossPoint's whole-plane text-AA path calls ordinary displayBuffer(FAST)
+  // for its B/W base. After an AA page, route that base through stock's
+  // non-flashing previous->current transition; promoting it to GC fixed the
+  // charge but caused a full flash on every page.
+  if (mode == RefreshMode::Fast && _redriveAfterGray && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear) {
+    transitionGrayscaleBase(bus, fb, turnOff);
+    return;
+  }
   displayStart(bus, fb, prev, mode, turnOff);
   displayFinish(bus, fb);
+}
+
+void Uc8179Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff) {
+  if (!fb) return;
+  _grayBaseValid = false;
+  _absoluteGrayPlanes = false;
+  if (_grayBase != nullptr) {
+    memcpy(_grayBase, fb, _bufferSize);
+    _grayBaseValid = true;
+  }
+
+  bus.waitBusy(" 8179_gray_base_ready");
+  // DTM1 retains the preceding page's clean B/W base; DTM2 receives the new
+  // base. XTF_PRE_BW_MID drives that real transition without the OTP GC flash.
+  streamPlane(bus, CMD_DTM2, fb);
+  _bwPlanesSynced = false;
+  runGrayscalePrecondition(bus);
+
+  // Keep the generic B/W baseline coherent in case no AA pass follows (Home or
+  // a menu). An AA upload may immediately overwrite these planes; its cached
+  // B/W snapshot above remains intact.
+  streamPlane(bus, CMD_DTM1, fb);
+  _oldPlaneValid = true;
+  _bwPlanesSynced = true;
+  _redriveAfterGray = false;
+  _needFullClear = false;
+
+  if (turnOff && _isScreenOn) {
+    bus.cmd(CMD_POWER_OFF);
+    bus.waitBusy(" 8179_gray_base_POF");
+    _isScreenOn = false;
+  }
 }
 
 void Uc8179Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
@@ -170,28 +210,14 @@ void Uc8179Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
   // XTF_PRE_BW_MID as the page transition itself. Our former extra equal-plane
   // pass caused the visible gray muddling seen in hardware testing and did not
   // discharge the AA residue left by the preceding page.
-  if (!_grayRefreshedOnce || !_oldPlaneValid || _needFullClear) {
+  // Half is the explicit charge-scrub request. Keep it as a real B/W activation
+  // instead of replacing it with the differential stock AA transition.
+  if (fallback == RefreshMode::Half || !_grayRefreshedOnce || !_oldPlaneValid || _needFullClear) {
     display(bus, fb, nullptr, fallback, turnOff);
     return;
   }
 
-  _grayBaseValid = false;
-  _absoluteGrayPlanes = false;
-  if (_grayBase != nullptr) {
-    memcpy(_grayBase, fb, _bufferSize);
-    _grayBaseValid = true;
-  }
-
-  bus.waitBusy(" 8179_gray_base_ready");
-  // DTM1 was restored to the preceding page's B/W base after its AA pass.
-  // Only DTM2 changes here, producing the exact (previous,current) pair used by
-  // Factory.bin before FUN_4214eab4.
-  streamPlane(bus, CMD_DTM2, fb);
-  _bwPlanesSynced = false;
-  runGrayscalePrecondition(bus);
-  _redriveAfterGray = false;
-  _needFullClear = false;
-  (void)turnOff;  // the AA activation immediately follows and stock stays powered
+  transitionGrayscaleBase(bus, fb, turnOff);
 }
 
 // Stream a framebuffer into RAM plane `ramCmd`, mirrored vertically via row
@@ -239,9 +265,11 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     _grayBaseValid = true;
   }
   // Full and Half use the clearing OTP GC waveform; only an explicit Fast
-  // request may use the differential DU partial (PTIN/PTOUT). Half is the
-  // reader's periodic ghost/charge cleanup, so mapping it to DU would never
-  // discharge residue accumulated by repeated AA pages.
+  // request may use the differential DU partial (PTIN/PTOUT). Half additionally
+  // forces every pixel into a transition cell by loading DTM1 with the target's
+  // complement. This matters for AA cleanup: a white target paired with a white
+  // OLD plane selects WW and can look clean while leaving old text charge parked
+  // underneath; gray exposes that latent charge later.
   //
   // GHOSTING FIX: the OLD plane (0x10) MUST hold the PREVIOUS displayed frame for
   // a partial, not a flat 0xFF. In KW mode the (old,new) pair selects the per-
@@ -249,28 +277,33 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // KW (black->white) NEVER runs and last page's text is never erased = heavy
   // ghosting. Feeding the previous frame lets KW clear it. (0x10 is synced to the
   // just-displayed frame in displayFinish; a full refresh reseeds it to white.)
-  const bool fast = (mode == RefreshMode::Fast) && !_needFullClear && _oldPlaneValid;
+  // Half is the explicit strong scrub. Post-AA Fast paints are intercepted by
+  // display() and use stock's non-flashing XTF_PRE_BW_MID transition instead.
+  const bool scrub = (mode == RefreshMode::Half);
+  const bool fast = (mode == RefreshMode::Fast) && !scrub && !_needFullClear && _oldPlaneValid;
 
   // NEW plane (0x13) = new frame.
   streamPlane(bus, CMD_DTM2, fb);
   if (!fast) {
-    // Full flash: seed OLD plane white for the absolute GC-from-white waveform.
-    uint8_t whiteRow[128];
-    const uint16_t wb = _wb <= sizeof(whiteRow) ? _wb : sizeof(whiteRow);
-    memset(whiteRow, 0xFF, wb);
-    bus.cmd(CMD_DTM1);
-    for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
-  } else if (_darkBackground || _redriveAfterGray) {
-    // Inverted content, OR the first page after an AA overlay: the KW differential
-    // idles unchanged pixels, so residue (dark-bg light charge, or AA gray edges)
-    // parks on the panel and accumulates. Rewrite the OLD plane as the complement
-    // of the target: every pixel classifies as changed and is re-driven toward its
-    // target — optically invisible on pixels already at their endpoint, but it
-    // scrubs the residue. displayFinish()'s DTM1 sync restores the baseline.
+    if (scrub) {
+      // Charge scrub: target white is driven through BW and target black through
+      // WB. No WW/BB pixel is allowed to idle with charge from an older AA page.
+      streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
+    } else {
+      // Full/forced-first flash retains the known absolute-from-white behavior.
+      uint8_t whiteRow[128];
+      const uint16_t wb = _wb <= sizeof(whiteRow) ? _wb : sizeof(whiteRow);
+      memset(whiteRow, 0xFF, wb);
+      bus.cmd(CMD_DTM1);
+      for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
+    }
+  } else if (_darkBackground) {
+    // Inverted content uses the target complement even with DU so unchanged dark
+    // background pixels do not park residue.
     streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
   }
-  // (Fast: OLD plane already holds the previous frame from the last displayFinish.)
-  // Consumed: the white-seed (!fast) or the re-drive above scrubbed post-AA residue.
+  // (Ordinary Fast: OLD still holds the previous frame from displayFinish.)
+  // A completed ordinary refresh supersedes any pending post-AA transition.
   _redriveAfterGray = false;
 
   // --- Refresh setup (exact OEM order) -----------------------------------------
@@ -526,14 +559,10 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
 
-  // Do NOT reseed the OLD plane (0x10) from `fb` here — on the non-tiled path `fb`
-  // holds the MSB gray plane, not the B/W frame. The caller's
-  // cleanupGrayscaleBuffers(bw) restores the true B/W baseline. What we DO need:
-  // the AA overlay leaves gray edge charge on the panel that a plain B/W fast diff
-  // can't scrub (the B/W baseline records those pixels as white), so under rapid
-  // page turns it accumulates into garble (slow turns settle/clear; fast don't).
-  // Flag the next B/W page to re-drive every pixel to its target (see
-  // displayStart), scrubbing the residue each page with a cheap DU — no GC flash.
+  // `fb` is the MSB mask here, not the B/W frame; the recovered base above was
+  // used for the RAM restore. Physically, AA still leaves intermediate charge
+  // that a plain DU diff does not neutralize. Route the next Fast B/W base through
+  // stock's non-flashing transition; an explicit Half remains the strong purge.
   (void)fb;
   _redriveAfterGray = true;
 }
