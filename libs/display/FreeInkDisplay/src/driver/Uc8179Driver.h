@@ -76,11 +76,11 @@ class Uc8179Driver : public PanelDriver {
   void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
   // --- 4-level grayscale (anti-aliasing) ---
-  // Two full 1bpp planes encode 4 levels: LSB -> DTM 0x10 ("old"), MSB -> DTM
-  // 0x13 ("new"); the OTP gray waveform resolves (old,new) -> {black, 2 mids,
-  // white}. Full-buffer path only (supportsStripGrayscale stays false — the
-  // UC8179 has no RAM-window addressing and our row-reversal orientation can't
-  // span strips; the X4 Pro's PSRAM absorbs the two full planes).
+  // CrossPoint supplies two full 1bpp overlay masks. The driver combines them
+  // with the displayed B/W base to recover Factory.bin's absolute 2-bit planes,
+  // then sends plane0 -> DTM 0x10 and plane1 -> DTM 0x13. Full-buffer path only
+  // (supportsStripGrayscale stays false; conversion needs the complete base).
+  void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
   void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
@@ -93,8 +93,12 @@ class Uc8179Driver : public PanelDriver {
   // SHL for horizontal panel direction, then pad to the addressed gate count.
   // Used for both NEW plane (0x13) and OLD-plane sync (0x10).
   void streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, bool invert = false);
-  // Run the vendor XTF_PRE_BW_MID settle while both RAM planes contain the
-  // displayed B/W frame. It leaves analog power on for the AA pass that follows.
+  // Stream lhs XOR rhs with the same orientation and white gate padding. Used
+  // to translate CrossPoint's MSB transition mask into stock absolute plane1.
+  void streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lhs, const uint8_t* rhs);
+  // Run the vendor XTF_PRE_BW_MID transition with the previous B/W base in
+  // DTM1 and the new base in DTM2. It replaces the ordinary B/W activation and
+  // leaves analog power on for the AA pass that follows.
   void runGrayscalePrecondition(EpdBus& bus);
 
   const Uc8179Config& _cfg;
@@ -105,29 +109,36 @@ class Uc8179Driver : public PanelDriver {
   uint16_t _tresH;    // addressed gate count (600) — DTM padded to this
   uint32_t _bufferSize;
 
+  // Stock Factory.bin uses absolute AA planes and derives its B/W base as
+  // plane0 & plane1. CrossPoint supplies overlay masks after displaying the B/W
+  // base separately, so preserve that base in X4 Pro PSRAM and fold it into the
+  // masks. The resulting (plane0,plane1) selectors are black=(0,0), dark=(1,0),
+  // light=(0,1), white=(1,1). The allocation temporarily holds absolute plane0,
+  // then copyGrayscaleMsb() recovers the clean B/W base for stock's RAM restore.
+  uint8_t* _grayBase = nullptr;
+  bool _grayBaseValid = false;
+  bool _absoluteGrayPlanes = false;
+
   bool _isScreenOn = false;
   bool _darkBackground = false;
   // Force the first refresh after begin() to a full flash, so a partial update
   // never runs against an unknown on-screen state (e.g. a retained boot image).
   bool _needFullClear = true;
   // True once the OLD plane (0x10) holds a valid previous displayed frame, so a
-  // differential partial has a real baseline to diff against (no ghosting).
-  // Cleared after grayscale (which overwrites the planes) so the next B/W is full.
+  // differential partial or stock AA base transition has a real baseline.
   bool _oldPlaneValid = false;
-  // True only after displayFinish() has synchronized DTM1 to DTM2. The AA
-  // precondition is safe only in this equal-plane state.
+  // True when both controller planes have been restored to the displayed B/W
+  // base. False while an ordinary refresh or AA selector upload is in flight.
   bool _bwPlanesSynced = false;
-  // Prevent an explicit preconditionGrayscale() call from being repeated by
-  // copyGrayscaleLsb(), which otherwise applies the settle automatically.
-  bool _grayPreconditioned = false;
   // Set after every grayscale (AA) refresh. The AA overlay leaves gray edge charge
   // the plain B/W fast diff can't scrub (the B/W baseline records those pixels as
   // white), so it accumulates under rapid page turns → garble (slow turns settle).
   // Consumed by the next B/W displayStart to re-drive every pixel to its target
   // (DTM1 = ~newframe) with a cheap DU — no GC flash — scrubbing the residue.
   bool _redriveAfterGray = false;
-  // AA CDI select: the first grayscale refresh after init sends the border-driving
-  // CDI (0x29); later ones the border-holding CDI (0xA9), per the vendor reference.
+  // Tracks whether the first AA page has completed; Factory.bin skips the
+  // XTF_PRE_BW_MID pre-pass only for that first page. AA activation itself uses
+  // CDI 0x29 every time; 0xA9 is restored only after B/W/preconditioning passes.
   bool _grayRefreshedOnce = false;
 
   // Async split state (see Uc8279Driver for the contract).
