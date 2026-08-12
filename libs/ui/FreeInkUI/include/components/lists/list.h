@@ -280,12 +280,50 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       cursorY = static_cast<int16_t>(cursorY + headerH + rowGap);
       continue;
     }
-    if (static_cast<int16_t>(cursorY + rowH) > rowArea.bottom() ||
+    // Per-item height: a label that must wrap (maxLines > 1 and wider than
+    // its slot) grows by exactly its extra text lines, keeping the same
+    // vertical padding a single-line row carries — while every other row
+    // keeps the uniform rowH. Only when the wrapped lines would not already
+    // fit rowH (dense e-ink rows), so touch-sized rows are unaffected.
+    int16_t itemH = rowH;
+    const int16_t wrapLh = frame.target().lineHeight(props.labelText.font);
+    if (item.label && !item.subtitle && props.labelText.maxLines > 1 &&
+        static_cast<int16_t>(wrapLh * props.labelText.maxLines) > rowH) {
+      int16_t labelAvail = static_cast<int16_t>(rowArea.width - sidePad * 2);
+      if (item.icon || item.iconAsset) {
+        const BitmapRef ic = item.icon
+                                 ? item.icon
+                                 : resolveBitmap(frame.assets(), item.iconAsset);
+        const int16_t iconSize = props.iconSize > 0
+                                     ? props.iconSize
+                                     : static_cast<int16_t>(ic.width);
+        labelAvail =
+            static_cast<int16_t>(labelAvail - iconSize - props.textGap);
+      }
+      if (item.toggle) {
+        labelAvail = static_cast<int16_t>(
+            labelAvail - (props.toggleWidth < 18 ? 18 : props.toggleWidth) -
+            props.valueInset - props.textGap);
+      } else if (item.value) {
+        labelAvail = static_cast<int16_t>(
+            labelAvail -
+            frame.target()
+                .measureText(props.valueText.font, item.value, props.valueText)
+                .width -
+            props.valueInset - props.textGap);
+      }
+      if (frame.target()
+              .measureText(props.labelText.font, item.label, props.labelText)
+              .width > labelAvail) {
+        itemH = static_cast<int16_t>(rowH + wrapLh * (props.labelText.maxLines - 1));
+      }
+    }
+    if (static_cast<int16_t>(cursorY + itemH) > rowArea.bottom() ||
         drawnRows >= visible || i >= end)
       break;
     ++drawnRows;
-    Rect row{rowArea.x, cursorY, rowArea.width, rowH};
-    cursorY = static_cast<int16_t>(cursorY + rowH + rowGap);
+    Rect row{rowArea.x, cursorY, rowArea.width, itemH};
+    cursorY = static_cast<int16_t>(cursorY + itemH + rowGap);
     if (props.hugContents && item.label) {
       // Hug-content rows shrink to the label width plus padding so the
       // selection pill wraps the text instead of spanning the rect.
