@@ -1365,12 +1365,16 @@ constexpr BoardProfile M5PAPERS3 = {
     // m5papers3::powerOff() in M5PaperS3Board.h and docs/m5papers3-support.md. PENDING.
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED,
      PIN_UNASSIGNED, false},
-    PIN_UNASSIGNED,  // batteryAdc: PENDING — no ADC pin found in the official source
+    // batteryAdc — CONFIRMED (M5Unified Power_Class.cpp: board_M5PaperS3 sets
+    // _batAdcCh=ADC1_GPIO3_CHANNEL, _pmic=pmic_adc): GPIO3, ADC1.
+    3,
     // batteryChargeStatus — CONFIRMED (M5Unified Power_Class.cpp: M5PaperS3_CHG_STAT_PIN):
     // GPIO4, read LOW while charging. (BatteryMonitor here treats it as a plain digital read;
     // verify polarity handling matches "LOW = charging" when wiring this up.)
     4,
-    2.0f,            // batteryDividerMultiplier: unused while batteryAdc is unassigned
+    // batteryDividerMultiplier — CONFIRMED (M5Unified Power_Class.cpp: board_M5PaperS3's
+    // _adc_ratio = 2.0f, a 2:1 divider — same convention as most other boards here).
+    2.0f,
     PIN_UNASSIGNED,  // usbDetect: not identified
     M5PAPERS3_GT911,
     NO_FRONTLIGHT,  // e-ink, no panel backlight (GPIO0 drives a small status LED, not a frontlight)

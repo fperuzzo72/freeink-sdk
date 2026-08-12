@@ -35,6 +35,14 @@ Each field is marked:
   a sibling board (M5Paper v1.1 / LilyGo T5S3) that this SDK already models.
   Needs on-device validation before you trust it.
 
+Independent corroboration: [bmorcelli/Launcher](https://github.com/bmorcelli/Launcher)
+— a multi-firmware SD-card launcher — ships its own bench-tested M5PaperS3 port
+(`boards/m5stack-paper-s3/`), and its changelog records fixing a real touchscreen
+bug on physical M5PaperS3 units. Its board bring-up calls `M5.begin()` and uses
+`M5Unified`/`M5GFX` directly rather than hand-rolled pins, which is evidence that
+those two libraries are sufficient and accurate for this board — the same
+libraries this profile's CONFIRMED pins are sourced from.
+
 ## Not the same board as Paper Mono
 
 | | `M5PAPERS3` (this doc) | `PAPER_MONO` (existing SDK profile) |
@@ -133,11 +141,10 @@ M5PaperS3 shows no evidence of needing that), so it's a board-support function
 instead: `freeink::m5papers3::powerOff()` in `M5PaperS3Board.h`. Call it from
 the consumer's power-off path instead of releasing a `PowerConfig` latch.
 
-**PENDING — no confirmed battery ADC / fuel gauge.** Only the digital
-charge-status pin above was found; `batteryAdc` and `batteryGauge` are
-unassigned, so `BatteryMonitor` has no voltage/percentage source for this board
-yet. Battery UI will need to fall back to "charging / not charging" only until
-an ADC pin or I²C gauge is identified.
+**CONFIRMED — battery ADC.** `Power_Class.cpp`'s `board_M5PaperS3` case sets
+`_batAdcCh = ADC1_GPIO3_CHANNEL` (`_batAdcUnit = 1`) with `_pmic = pmic_adc` and
+`_adc_ratio = 2.0f` — GPIO3 on ADC1, 2:1 divider (`batteryDividerMultiplier`).
+No I²C fuel gauge; `batteryGauge` stays unassigned.
 
 **PENDING — no confirmed navigation buttons.** No button-read GPIO (beyond the
 write-only power-off pulse pin above) was found in the source read. The device
@@ -160,5 +167,6 @@ read for this port. `ImuType::None` for now; `FREEINK_CAP_IMU` is off.
 4. **Power-off** — confirm `freeink::m5papers3::powerOff()` actually powers the
    board down; the pulse count/timing (5× 50 ms) is copied from the vendor
    library but unverified against real hardware.
-5. **Battery / buttons / IMU** — all PENDING above; expect no battery
-   percentage and no physical-button input until those are identified.
+5. **Buttons / IMU** — still PENDING (see above); expect no physical-button
+   input until a nav-button GPIO is identified, and no IMU readings until its
+   chip/address is confirmed.
