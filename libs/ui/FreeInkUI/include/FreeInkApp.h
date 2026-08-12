@@ -10,6 +10,7 @@
 
 #include <FreeInkUI.h>
 
+#include <atomic>
 #include <memory>
 #include <new>
 
@@ -574,24 +575,38 @@ public:
 
   // Copy mode: the app keeps its own (heap-owned) tokens.
   void setTheme(const ThemeTokens &theme) {
-    sharedTheme_ = nullptr;
+    sharedThemeRef_ = nullptr;
     if (ownedTheme_) {
       *ownedTheme_ = theme;
     } else {
       ownedTheme_.reset(new (std::nothrow) ThemeTokens(theme));
     }
   }
-  // Shared mode: dereference caller-owned tokens (they must outlive the app).
-  // Tokens are usually identical for every screen of an app, so sharing one
-  // instance saves the ~1.5KB per-app copy setTheme() keeps — on small heaps
-  // that copy per live screen is the cost that matters. Passing nullptr
-  // reverts to the owned/default tokens.
-  void setThemeRef(const ThemeTokens *theme) {
-    sharedTheme_ = theme;
-    if (theme) ownedTheme_.reset();
+  // Shared mode: dereference caller-owned tokens through a caller-owned
+  // atomic cell (both must outlive the app). Tokens are usually identical
+  // for every screen of an app, so sharing one instance saves the ~1.5KB
+  // per-app copy setTheme() keeps — on small heaps that copy per live screen
+  // is the cost that matters. Passing nullptr reverts to the owned/default
+  // tokens.
+  //
+  // The indirection (a pointer to an atomic pointer, not a plain pointer) is
+  // deliberate: a caller can atomically swap which ThemeTokens instance the
+  // cell points at (write a new one into a fresh, not-currently-referenced
+  // instance, then one atomic store) so every app sharing that cell picks up
+  // the change on its next theme() call without ever dereferencing an
+  // instance that's mid-overwrite. Overwriting a single shared ThemeTokens
+  // in place instead (the old setThemeRef(const ThemeTokens*) contract) let
+  // a render task reading theme().rowHeight/etc. field-by-field observe a
+  // torn mix of old and new fields if a theme change landed mid-read.
+  void setThemeRef(const std::atomic<const ThemeTokens *> *themeRef) {
+    sharedThemeRef_ = themeRef;
+    if (themeRef) ownedTheme_.reset();
   }
   const ThemeTokens &theme() const {
-    if (sharedTheme_) return *sharedTheme_;
+    if (sharedThemeRef_) {
+      const ThemeTokens *t = sharedThemeRef_->load(std::memory_order_acquire);
+      if (t) return *t;
+    }
     if (ownedTheme_) return *ownedTheme_;
     return FALLBACK_THEME_TOKENS;  // owned-copy allocation failed
   }
@@ -675,12 +690,18 @@ public:
     if (clearBeforePaint_)
       target_.fill(device_.screen(), clearPaint_);
 
+    // Build into whichever interaction-table generation isn't currently
+    // published, so route() below (possibly running on another task right
+    // now) never reads one mid-rebuild — see InteractionBuffer's
+    // beginPublishCycle()/publish().
+    interactions_.beginPublishCycle();
     Frame<MaxInteractions> frame(target_, device_, input, interactions_,
                                  assets_);
     ScreenType screen(frame, theme());
     if (screen_)
       screen_(screen, screenUser_);
     lastEvent_ = frame.finish();
+    interactions_.publish();
     if (lastEvent_) {
       dispatch(lastEvent_);
       invalidate(RefreshHint::Fast);
@@ -706,7 +727,9 @@ public:
   // remaining queued taps route against the old screen — same as taps landing
   // just before a transition).
   ActionEvent route(const InputSnapshot &input) {
-    lastEvent_ = interactions_.route(input);
+    // Reads the last-published table (see render()'s beginPublishCycle()/
+    // publish()), never one a concurrent render is mid-rebuilding.
+    lastEvent_ = interactions_.routePublished(input);
     if (lastEvent_) {
       flashSuppressed_ = false;
       dispatch(lastEvent_);
@@ -756,7 +779,7 @@ private:
   // heap copy (setTheme / the constructor's font-derived default). A pointer
   // pair instead of an inline ThemeTokens member keeps sizeof(FreeInkApp)
   // small — the tokens are ~1.5KB and most apps share one instance.
-  const ThemeTokens *sharedTheme_ = nullptr;
+  const std::atomic<const ThemeTokens *> *sharedThemeRef_ = nullptr;
   std::unique_ptr<ThemeTokens> ownedTheme_;
   AssetResolver *assets_ = nullptr;
   InteractionBuffer<MaxInteractions> interactions_{};

@@ -14,6 +14,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <atomic>
+
 namespace freeink {
 namespace ui {
 
@@ -1002,29 +1004,35 @@ public:
   virtual State stateFor(ActionId action, int16_t value, State base) const = 0;
 };
 
+// Storage for one generation of hit rects: interactions_/count_/overflowed_.
+// InteractionBuffer below keeps TWO of these (see the cross-task note on
+// building_/published_) so a render task can be constructing a new
+// generation while another task safely reads the last-completed one.
 template <size_t MaxInteractions>
 class InteractionBuffer final : public InteractionSink {
 public:
   bool addInteraction(const Interaction &interaction) override {
     if (interaction.action == NO_ACTION)
       return false;
-    if (count_ >= MaxInteractions) {
-      overflowed_ = true;
+    if (count_[building_] >= MaxInteractions) {
+      overflowed_[building_] = true;
       return false;
     }
-    interactions_[count_++] = interaction;
+    interactions_[building_][count_[building_]++] = interaction;
     return true;
   }
 
   State stateFor(ActionId action, int16_t value, State base) const override {
     State state = base;
-    if (focused_ >= 0 && focused_ < static_cast<int16_t>(count_)) {
-      const Interaction &focused = interactions_[focused_];
+    const size_t count = count_[building_];
+    const Interaction *slot = interactions_[building_];
+    if (focused_ >= 0 && focused_ < static_cast<int16_t>(count)) {
+      const Interaction &focused = slot[focused_];
       if (focused.action == action && focused.value == value)
         state |= StateFocused;
     }
-    if (active_ >= 0 && active_ < static_cast<int16_t>(count_)) {
-      const Interaction &active = interactions_[active_];
+    if (active_ >= 0 && active_ < static_cast<int16_t>(count)) {
+      const Interaction &active = slot[active_];
       if (active.action == action && active.value == value)
         state |= StateActive;
     }
@@ -1037,108 +1045,72 @@ public:
   }
 
   void clear() {
-    count_ = 0;
-    overflowed_ = false;
+    count_[building_] = 0;
+    overflowed_[building_] = false;
   }
 
-  size_t count() const { return count_; }
+  size_t count() const { return count_[building_]; }
   // True if a frame registered more interactions than the buffer holds —
   // dropped elements never receive input, so size the template accordingly.
-  bool overflowed() const { return overflowed_; }
-  const Interaction *data() const { return interactions_; }
+  bool overflowed() const { return overflowed_[building_]; }
+  const Interaction *data() const { return interactions_[building_]; }
   int16_t focusedIndex() const { return focused_; }
   void setFocusedIndex(int16_t index) {
-    if (index >= 0 && index < static_cast<int16_t>(count_))
+    if (index >= 0 && index < static_cast<int16_t>(count_[building_]))
       focused_ = index;
     else
       focused_ = -1;
   }
 
   ActionEvent route(const InputSnapshot &input) {
-    ActionEvent event{};
-
-    if (input.touchPressed) {
-      active_ = findTouch(input.touchX, input.touchY, InputTouch);
-    }
-
-    // Grab semantics: a drag stays bound to the element the finger landed on
-    // even when it wanders off the rect, and follows the x position live.
-    if (input.touchHeld && active_ >= 0 &&
-        active_ < static_cast<int16_t>(count_)) {
-      const Interaction &held = interactions_[active_];
-      if (!hasState(held.state, StateDisabled) &&
-          acceptsInput(held.inputMask, InputDrag)) {
-        ActionEvent dragged = eventFor(active_);
-        dragged.dragPermille = dragPermilleFor(held.rect, input.touchX);
-        return dragged;
-      }
-    }
-
-    if (input.touchReleased) {
-      const int16_t idx =
-          findTouch(input.touchX, input.touchY,
-                    input.longPress ? InputLongPress : InputTouch);
-      active_ = -1;
-      if (idx >= 0) {
-        ActionEvent released = eventFor(idx);
-        released.longPress = input.longPress;
-        // A tap on a draggable element is a jump-to-position: carry the spot.
-        if (acceptsInput(interactions_[idx].inputMask, InputDrag)) {
-          released.dragPermille =
-              dragPermilleFor(interactions_[idx].rect, input.touchX);
-        }
-        return released;
-      }
-    }
-
-    if (input.swipeLeft) {
-      const int16_t idx = findFirst(InputSwipeLeft);
-      if (idx >= 0)
-        return eventFor(idx);
-    }
-    if (input.swipeRight) {
-      const int16_t idx = findFirst(InputSwipeRight);
-      if (idx >= 0)
-        return eventFor(idx);
-    }
-    if (input.back) {
-      const int16_t idx = findFirst(InputBack);
-      if (idx >= 0)
-        return eventFor(idx);
-    }
-    if (input.prev) {
-      const int16_t idx = findFirst(InputPrev);
-      if (idx >= 0)
-        return eventFor(idx);
-    }
-    if (input.next) {
-      const int16_t idx = findFirst(InputNext);
-      if (idx >= 0)
-        return eventFor(idx);
-    }
-
-    if (input.focusNext)
-      moveFocus(1);
-    if (input.focusPrev)
-      moveFocus(-1);
-    // Focus indices persist across frames so GPIO navigation survives
-    // re-renders, but a screen change can leave a stale index. Only confirm a
-    // focus target that exists in the current table and accepts confirm input.
-    if (input.confirm && focused_ >= 0 &&
-        focused_ < static_cast<int16_t>(count_)) {
-      const Interaction &focused = interactions_[focused_];
-      if (!hasState(focused.state, StateDisabled) &&
-          acceptsInput(focused.inputMask, InputConfirm)) {
-        return eventFor(focused_);
-      }
-    }
-
-    return event;
+    return routeAgainst(building_, input);
   }
+
+  // Cross-task counterparts of count()/overflowed()/data()/route(): read the
+  // last-published generation (see publish()) instead of building_, which a
+  // concurrent render may be mid-rebuild on another task. A caller that never
+  // opts into publishing (below) never needs these — every method above
+  // keeps behaving exactly as it always has for single-task use.
+  size_t publishedCount() const {
+    return count_[published_.load(std::memory_order_acquire)];
+  }
+  bool publishedOverflowed() const {
+    return overflowed_[published_.load(std::memory_order_acquire)];
+  }
+  const Interaction *publishedData() const {
+    return interactions_[published_.load(std::memory_order_acquire)];
+  }
+  ActionEvent routePublished(const InputSnapshot &input) {
+    return routeAgainst(published_.load(std::memory_order_acquire), input);
+  }
+
+  // Opts a render pass into cross-task double buffering: subsequent
+  // clear()/addInteraction()/route()/etc. build into whichever generation is
+  // NOT currently published, so a concurrent routePublished()/publishedData()
+  // call on another task never sees a half-rebuilt table. Call once, before
+  // constructing the Frame for this pass. Callers that never call this (every
+  // existing single-task use, including the host test suite) keep building_
+  // pinned at generation 0 forever — a no-op, so this is pure opt-in.
+  void beginPublishCycle() {
+    building_ = static_cast<uint8_t>(1 - published_.load(std::memory_order_relaxed));
+  }
+
+  // Atomically publishes the generation just built (building_) so
+  // routePublished()/publishedData()/publishedCount()/publishedOverflowed()
+  // on any task see a complete, stable table — never one mid-rebuild. Call
+  // once the frame's hit() calls are done (after Frame::finish(), or directly
+  // after building for a caller that doesn't need finish()'s same-generation
+  // route()). Release-paired with the acquire loads above: every write this
+  // generation's addInteraction() calls made is visible to whoever observes
+  // the new published_ value.
+  void publish() { published_.store(building_, std::memory_order_release); }
 
   // Index of the interaction currently under a held touch (-1 when none).
   // Lets the render loop repaint for touch-down feedback: the active element
-  // draws with its StateActive style while the finger is down.
+  // draws with its StateActive style while the finger is down. Shared across
+  // both generations by design — it names an action/value pair, not a raw
+  // index into a specific generation's array — same for focusedIndex() and
+  // the flash state below.
   int16_t activeIndex() const { return active_; }
 
   // Tap flash: mark one action/value for the frame(s) that follow a
@@ -1153,13 +1125,25 @@ public:
   void clearFlash() { flashAction_ = NO_ACTION; }
 
 private:
-  Interaction interactions_[MaxInteractions]{};
-  size_t count_ = 0;
+  // Two generations of hit rects; building_ picks which one clear()/
+  // addInteraction()/route()/etc. currently target, published_ picks which
+  // one routePublished()/publishedData()/etc. read. A caller that never calls
+  // beginPublishCycle()/publish() only ever touches generation 0 through
+  // both, so this is behaviourally identical to the single-buffer design
+  // unless a caller opts in.
+  Interaction interactions_[2][MaxInteractions]{};
+  size_t count_[2] = {0, 0};
+  bool overflowed_[2] = {false, false};
+  uint8_t building_ = 0;
+  std::atomic<uint8_t> published_{0};
+  // Persistent interaction-session state: deliberately NOT per-generation.
+  // focused_ in particular must survive re-renders (GPIO focus navigation),
+  // and both fields are single small values, not a multi-step rebuild, so
+  // they don't have the torn-read hazard count_/interactions_ have.
   int16_t focused_ = -1;
   int16_t active_ = -1;
   ActionId flashAction_ = NO_ACTION; // tap-flash target (see setFlash)
   int16_t flashValue_ = 0;
-  bool overflowed_ = false;
 
   static int16_t dragPermilleFor(const Rect &rect, const int16_t x) {
     if (rect.width <= 1)
@@ -1172,14 +1156,16 @@ private:
     return static_cast<int16_t>(p);
   }
 
-  bool focusable(const Interaction &interaction) const {
+  bool focusable(uint8_t slot, int16_t idx) const {
+    const Interaction &interaction = interactions_[slot][idx];
     return !hasState(interaction.state, StateDisabled) &&
            acceptsInput(interaction.inputMask, InputFocus);
   }
 
-  int16_t findTouch(int16_t x, int16_t y, InputMask kind) const {
-    for (int16_t i = static_cast<int16_t>(count_) - 1; i >= 0; --i) {
-      const Interaction &interaction = interactions_[i];
+  int16_t findTouch(uint8_t slot, int16_t x, int16_t y, InputMask kind) const {
+    const Interaction *interactions = interactions_[slot];
+    for (int16_t i = static_cast<int16_t>(count_[slot]) - 1; i >= 0; --i) {
+      const Interaction &interaction = interactions[i];
       if (hasState(interaction.state, StateDisabled))
         continue;
       const bool acceptsKind = acceptsInput(interaction.inputMask, kind);
@@ -1194,9 +1180,10 @@ private:
     return -1;
   }
 
-  int16_t findFirst(InputMask kind) const {
-    for (int16_t i = 0; i < static_cast<int16_t>(count_); ++i) {
-      const Interaction &interaction = interactions_[i];
+  int16_t findFirst(uint8_t slot, InputMask kind) const {
+    const Interaction *interactions = interactions_[slot];
+    for (int16_t i = 0; i < static_cast<int16_t>(count_[slot]); ++i) {
+      const Interaction &interaction = interactions[i];
       if (hasState(interaction.state, StateDisabled))
         continue;
       if (acceptsInput(interaction.inputMask, kind))
@@ -1205,21 +1192,22 @@ private:
     return -1;
   }
 
-  void moveFocus(int8_t delta) {
-    if (count_ == 0) {
+  void moveFocus(uint8_t slot, int8_t delta) {
+    const size_t count = count_[slot];
+    if (count == 0) {
       focused_ = -1;
       return;
     }
     int16_t start = focused_;
-    if (start < 0 || start >= static_cast<int16_t>(count_))
-      start = delta > 0 ? -1 : static_cast<int16_t>(count_);
-    for (size_t step = 0; step < count_; ++step) {
+    if (start < 0 || start >= static_cast<int16_t>(count))
+      start = delta > 0 ? -1 : static_cast<int16_t>(count);
+    for (size_t step = 0; step < count; ++step) {
       int16_t idx = static_cast<int16_t>(start + delta);
       if (idx < 0)
-        idx = static_cast<int16_t>(count_ - 1);
-      if (idx >= static_cast<int16_t>(count_))
+        idx = static_cast<int16_t>(count - 1);
+      if (idx >= static_cast<int16_t>(count))
         idx = 0;
-      if (focusable(interactions_[idx])) {
+      if (focusable(slot, idx)) {
         focused_ = idx;
         return;
       }
@@ -1228,10 +1216,93 @@ private:
     focused_ = -1;
   }
 
-  ActionEvent eventFor(int16_t idx) const {
-    const Interaction &interaction = interactions_[idx];
+  ActionEvent eventFor(uint8_t slot, int16_t idx) const {
+    const Interaction &interaction = interactions_[slot][idx];
     return ActionEvent{interaction.action, interaction.value,
                        interaction.state};
+  }
+
+  ActionEvent routeAgainst(uint8_t slot, const InputSnapshot &input) {
+    ActionEvent event{};
+    const size_t count = count_[slot];
+
+    if (input.touchPressed) {
+      active_ = findTouch(slot, input.touchX, input.touchY, InputTouch);
+    }
+
+    // Grab semantics: a drag stays bound to the element the finger landed on
+    // even when it wanders off the rect, and follows the x position live.
+    if (input.touchHeld && active_ >= 0 &&
+        active_ < static_cast<int16_t>(count)) {
+      const Interaction &held = interactions_[slot][active_];
+      if (!hasState(held.state, StateDisabled) &&
+          acceptsInput(held.inputMask, InputDrag)) {
+        ActionEvent dragged = eventFor(slot, active_);
+        dragged.dragPermille = dragPermilleFor(held.rect, input.touchX);
+        return dragged;
+      }
+    }
+
+    if (input.touchReleased) {
+      const int16_t idx =
+          findTouch(slot, input.touchX, input.touchY,
+                    input.longPress ? InputLongPress : InputTouch);
+      active_ = -1;
+      if (idx >= 0) {
+        ActionEvent released = eventFor(slot, idx);
+        released.longPress = input.longPress;
+        // A tap on a draggable element is a jump-to-position: carry the spot.
+        if (acceptsInput(interactions_[slot][idx].inputMask, InputDrag)) {
+          released.dragPermille =
+              dragPermilleFor(interactions_[slot][idx].rect, input.touchX);
+        }
+        return released;
+      }
+    }
+
+    if (input.swipeLeft) {
+      const int16_t idx = findFirst(slot, InputSwipeLeft);
+      if (idx >= 0)
+        return eventFor(slot, idx);
+    }
+    if (input.swipeRight) {
+      const int16_t idx = findFirst(slot, InputSwipeRight);
+      if (idx >= 0)
+        return eventFor(slot, idx);
+    }
+    if (input.back) {
+      const int16_t idx = findFirst(slot, InputBack);
+      if (idx >= 0)
+        return eventFor(slot, idx);
+    }
+    if (input.prev) {
+      const int16_t idx = findFirst(slot, InputPrev);
+      if (idx >= 0)
+        return eventFor(slot, idx);
+    }
+    if (input.next) {
+      const int16_t idx = findFirst(slot, InputNext);
+      if (idx >= 0)
+        return eventFor(slot, idx);
+    }
+
+    if (input.focusNext)
+      moveFocus(slot, 1);
+    if (input.focusPrev)
+      moveFocus(slot, -1);
+    // Focus indices persist across frames so GPIO navigation survives
+    // re-renders, but a screen change can leave a stale index. Only confirm a
+    // focus target that exists in the current table and accepts confirm input.
+    if (input.confirm && focused_ >= 0 &&
+        focused_ < static_cast<int16_t>(count)) {
+      const Interaction &focused = interactions_[slot][focused_];
+      if (!hasState(focused.state, StateDisabled) &&
+          acceptsInput(focused.inputMask, InputConfirm)) {
+        return eventFor(slot, focused_);
+      }
+    }
+
+    return event;
   }
 };
 

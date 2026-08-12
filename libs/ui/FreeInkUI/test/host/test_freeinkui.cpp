@@ -461,6 +461,59 @@ void testEdgeButtonsAndSwipes() {
   CHECK_EQ(buffer.route(input).action, 5);
 }
 
+// Cross-task double-buffer contract (added for the render-task-vs-loop-task
+// interaction table race): publishedCount()/publishedData()/routePublished()
+// must keep reporting the previous generation for as long as a new one is
+// being built via beginPublishCycle()/clear()/addInteraction(), and only
+// switch over atomically once publish() is called -- never a mix of the two.
+// A caller that never opts in must see the exact single-buffer behavior this
+// whole file's other tests rely on.
+void testPublishCycleIsolatesReaders() {
+  InteractionBuffer<8> buffer;
+
+  // Establish a known "old" generation and publish it.
+  buffer.addInteraction(Interaction{Rect{0, 0, 10, 10}, 1, 0, InputTouch, StateNormal, 0});
+  buffer.publish();
+  CHECK_EQ(buffer.publishedCount(), 1u);
+  CHECK_EQ(buffer.publishedData()[0].action, 1);
+
+  // Start building the next generation. A concurrent reader (publishedCount/
+  // publishedData/routePublished) must still see the OLD generation,
+  // untouched, for as long as this isn't published yet.
+  buffer.beginPublishCycle();
+  buffer.clear();
+  buffer.addInteraction(Interaction{Rect{0, 0, 10, 10}, 2, 0, InputTouch, StateNormal, 0});
+  buffer.addInteraction(Interaction{Rect{10, 0, 10, 10}, 3, 0, InputTouch, StateNormal, 0});
+  CHECK_EQ(buffer.publishedCount(), 1u);
+  CHECK_EQ(buffer.publishedData()[0].action, 1);
+  // The generation being built (what Frame uses during layout) already
+  // reflects the new rects.
+  CHECK_EQ(buffer.count(), 2u);
+  CHECK_EQ(buffer.data()[1].action, 3);
+
+  // Publish: readers now atomically see the complete new generation.
+  buffer.publish();
+  CHECK_EQ(buffer.publishedCount(), 2u);
+  CHECK_EQ(buffer.publishedData()[0].action, 2);
+  CHECK_EQ(buffer.publishedData()[1].action, 3);
+
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 5;
+  tap.touchY = 5;
+  CHECK_EQ(buffer.routePublished(tap).action, 2);
+
+  // A caller that never calls beginPublishCycle()/publish() at all (every
+  // other test in this file, and every existing single-task consumer) keeps
+  // behaving exactly like the pre-double-buffer design.
+  InteractionBuffer<8> plain;
+  plain.addInteraction(Interaction{Rect{0, 0, 10, 10}, 9, 0, InputTouch, StateNormal, 0});
+  plain.clear();
+  plain.addInteraction(Interaction{Rect{0, 0, 10, 10}, 10, 0, InputTouch, StateNormal, 0});
+  CHECK_EQ(plain.count(), 1u);
+  CHECK_EQ(plain.data()[0].action, 10);
+}
+
 void testListHelpers() {
   CHECK_EQ(listVisibleRows(Rect{0, 0, 100, 360}, 36, 0), 10);
   CHECK_EQ(listVisibleRows(Rect{0, 0, 100, 359}, 36, 0), 9);
@@ -2574,6 +2627,38 @@ void testFreeInkAppHandlerOverflowFlag() {
   CHECK(app.handlerOverflowed());
 }
 
+// setThemeRef() takes a pointer to a caller-owned atomic cell (not a raw
+// ThemeTokens*) so a caller can atomically swap which instance it points at
+// -- every app sharing the cell must pick up the change on its very next
+// theme() call, with no re-call to setThemeRef() needed. This is the
+// property the fix (avoiding an in-place struct overwrite a render task
+// could read mid-write) must preserve.
+void testFreeInkAppSharedThemeRefFollowsAtomicSwap() {
+  FakeDrawTarget draw;
+  DeviceContext device{100, 100};
+  FreeInkApp<4, 1> app(draw, device);
+
+  ThemeTokens tokensA;
+  tokensA.rowHeight = 30;
+  ThemeTokens tokensB;
+  tokensB.rowHeight = 60;
+
+  std::atomic<const ThemeTokens *> themeRef{&tokensA};
+  app.setThemeRef(&themeRef);
+  CHECK_EQ(app.theme().rowHeight, 30);
+
+  // Swap which instance the cell points at (as applySharedUiTheme() does:
+  // build the new tokens into a fresh instance, then one atomic store) --
+  // no second setThemeRef() call.
+  themeRef.store(&tokensB, std::memory_order_release);
+  CHECK_EQ(app.theme().rowHeight, 60);
+
+  // nullptr reverts to the owned/default tokens.
+  app.setThemeRef(nullptr);
+  CHECK(&app.theme() != &tokensA);
+  CHECK(&app.theme() != &tokensB);
+}
+
 // Editor canvas: wrapping, caret-line tracking, scroll helpers, and the render
 // window. FakeDrawTarget is monospace (charWidth 6, lineH 12), so widths are
 // exactly 6*strlen — easy to reason about.
@@ -2648,6 +2733,7 @@ int main() {
   testConfirmIgnoresStaleFocus();
   testConfirmRespectsInputMask();
   testEdgeButtonsAndSwipes();
+  testPublishCycleIsolatesReaders();
   testListHelpers();
   testListVirtualization();
   testListClampsBadTopIndex();
@@ -2698,6 +2784,7 @@ int main() {
   testScreenAnchoredLayout();
   testFreeInkAppDispatchesScreenActions();
   testFreeInkAppHandlerOverflowFlag();
+  testFreeInkAppSharedThemeRefFollowsAtomicSwap();
   testTextArea();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
