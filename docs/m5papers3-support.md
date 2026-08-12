@@ -1,0 +1,164 @@
+# M5Stack PaperS3 (official)
+
+ESP32-S3R8 (8 MB octal PSRAM, 16 MB flash) e-reader dev kit sold by M5Stack —
+[shop.m5stack.com/products/m5papers3-esp32s3-development-kit](https://shop.m5stack.com/products/m5papers3-esp32s3-development-kit).
+4.7" 960×540 16-gray e-paper, **GT911** capacitive touch, **BM8563** RTC, gyro,
+buzzer, 1800 mAh battery. `BoardConfig::M5PAPERS3` (`Board::M5PaperS3`).
+
+**Not the same board as this SDK's `PAPER_MONO` profile.** Despite the similar
+naming ("M5Stack Paper Mono / PaperS3" in `BoardConfig.h`'s comments), that
+profile targets different silicon entirely — see the [comparison
+table](#not-the-same-board-as-paper-mono) below. If your physical unit is the one
+`PAPER_MONO` describes (M5PM1 PMIC + M5IOE1 expander, FT6336 touch, RX8130 RTC,
+800×480 SSD1677), use that profile, not this one.
+
+Build: `-DFREEINK_DEVICE_M5PAPERS3=1 -DFREEINK_LGFX_EPD_CONFIG=m5PaperS3LgfxConfig`
+(see `platformio.sample.ini` `[env:m5papers3]`). `FREEINK_DRIVER_LGFX_EPD`,
+`FREEINK_CAP_TOUCH`, `FREEINK_CAP_RTC`, and `FREEINK_CAP_BUZZER` auto-enable.
+Needs octal PSRAM (`board_build.arduino.memory_type = qio_opi` +
+`-DBOARD_HAS_PSRAM`) and `-DUSE_BLOCK_DEVICE_INTERFACE=1` is **not** required
+(SD is plain SPI here, not SDMMC).
+
+## Source and confidence
+
+No physical unit was available for this port — every pin below was read
+directly out of the official, MIT-licensed vendor libraries that M5Stack ships
+for this exact product:
+
+- `m5stack/M5Unified` **v0.2.10** (`src/M5Unified.cpp`, `src/utility/Power_Class.cpp`)
+- `m5stack/M5GFX` **v0.2.15** (`src/M5GFX.cpp`, board autodetect block for `board_M5PaperS3`)
+
+Each field is marked:
+
+- **CONFIRMED** — read directly from the vendor source above.
+- **PENDING** — not found in the source read, or a value inferred by analogy to
+  a sibling board (M5Paper v1.1 / LilyGo T5S3) that this SDK already models.
+  Needs on-device validation before you trust it.
+
+## Not the same board as Paper Mono
+
+| | `M5PAPERS3` (this doc) | `PAPER_MONO` (existing SDK profile) |
+|---|---|---|
+| Display | 960×540, raw-parallel EPD, no on-glass controller | 800×480, SSD1677 (SPI) |
+| Touch | GT911 | FT6336 |
+| RTC | BM8563 | RX8130 |
+| Power/reset | direct ESP32 GPIOs | M5PM1 PMIC + M5IOE1 expander (I²C) |
+| Source | official M5Unified/M5GFX | community bring-up (juicecultus/crosspoint-reader-papers3) |
+
+## Display — raw-parallel EPD, 960×540, 16-gray
+
+**CONFIRMED.** Same driver *class* as LilyGo T5S3's ED047TC1
+(`FREEINK_DRIVER_LGFX_EPD` — a raw parallel bus with no on-glass controller,
+clocked over the ESP32-S3's LCD/i80 peripheral), but a different panel and pin
+set. Wiring lives in `m5PaperS3LgfxConfig()` (`M5PaperS3Board.h`), read from
+`M5GFX.cpp`'s `board_M5PaperS3` autodetect block (`Bus_EPD`/`Panel_EPD` config):
+
+| Signal | GPIO | Confidence |
+|---|---|---|
+| D0..D7 | 6, 14, 7, 12, 9, 11, 8, 10 | CONFIRMED |
+| SPH (start pulse horizontal) | 13 | CONFIRMED |
+| SPV (start pulse vertical) | 17 | CONFIRMED |
+| OE (output enable) | 45 | CONFIRMED |
+| LE (latch enable) | 15 | CONFIRMED |
+| CL (clock) | 16 | CONFIRMED |
+| CKV (clock vertical) | 18 | CONFIRMED |
+| PWR (EPD rail enable) | 46 | CONFIRMED |
+
+Bus speed 16 MHz, line padding 8, both CONFIRMED from `M5GFX.cpp`'s
+`bus_cfg`/`cfg_detail`.
+
+**PENDING — panel rotation.** `LgfxEpdDriver` applies orientation via
+`g_dev.setRotation(cfg.rotation)` (a LovyanGFX `setRotation()` value, 0-3), not
+via the panel's `offset_rotation` field that M5GFX's own board-detect code sets
+to `3`. Those are different knobs in LovyanGFX, so the `offset_rotation=3` value
+is **not** directly portable to `LgfxEpdConfig::rotation`. `M5PaperS3Board.h`
+ships `rotation = 1` as a starting guess (same value LilyGo T5S3 uses for the
+same 540×960-portrait-native-panel-as-960×540-landscape geometry). **On first
+boot, check the image isn't mirrored or 90°/270° off; try 0..3 if it is.**
+
+No PMIC/IO-expander sequencing is needed (unlike LilyGo's PCA9535+TPS65185):
+the EPD rail is a plain GPIO (`PWR`, pin 46) that LovyanGFX's `Bus_EPD` drives
+itself through `pinPwr`.
+
+## Touch — GT911
+
+**CONFIRMED pins** (`M5GFX.cpp`, `Touch_GT911` config for `board_M5PaperS3`):
+SDA=41, SCL=42, INT=48, 400 kHz, no reset pin wired (self-loads on power-up).
+Vendor code probes I²C address `0x14` before `0x5D`.
+
+**CONFIRMED raw range**, in the digitizer's native portrait frame: X 0..539,
+Y 0..959 — matches this profile's `swapXY=true` mapping onto the 960×540
+landscape panel (same geometry LilyGo T5S3 and M5Paper v1.1 already use).
+
+**PENDING — `gt911CoordsAtByte0` and flip direction.** Not found in the vendor
+source read for this specific chip revision. `BoardConfig::M5PAPERS3_GT911`
+inherits M5Paper v1.1's values (`gt911CoordsAtByte0=true`, `flipX=false`,
+`flipY=true`) by analogy — both boards wire GT911 with no reset pin and share
+the same touch-button math in `M5Unified.cpp` (`board_M5Paper`/`board_M5PaperS3`
+share one `case` for the touch-keyboard-row calculation). **Verify with a
+corner-tap test on first boot**; if taps land mirrored, flip `flipX`/`flipY` in
+`BoardConfig::M5PAPERS3_GT911`.
+
+## SD card — SPI
+
+**CONFIRMED** (`M5Unified.cpp` `_pin_table_spi_sd`): CLK=39, MOSI=38, MISO=40,
+CS=47. Plain SdFat-over-SPI — `FREEINK_SD_SDMMC` does **not** auto-enable for
+this device (unlike de-link/X4 Pro/Paper Mono).
+
+## RTC — BM8563
+
+**CONFIRMED present** (M5Stack's product page lists "internal RTC (BM8563)").
+BM8563 is register/address-compatible with the NXP PCF8563 (same command set,
+address `0x51`), so the profile uses `RtcType::Pcf8563` — the same mapping the
+Sticky and X4 Pro profiles use for their own BM8563 chips. Shares the touch I²C
+bus (SDA=41, SCL=42).
+
+## Buzzer
+
+**CONFIRMED** (`M5Unified.cpp`, `spk_cfg` for `board_M5PaperS3`): plain LEDC
+tone pin on GPIO21, no output codec.
+
+## Power
+
+**CONFIRMED — charge status**: GPIO4, read LOW while charging
+(`Power_Class.cpp`, `M5PaperS3_CHG_STAT_PIN`).
+
+**CONFIRMED — power-off is a pulse train, not a level.** `Power_Class.cpp`'s
+`_powerOff()` pulses GPIO44 (`PWROFF_PULSE_PIN`) LOW→HIGH five times, 50 ms per
+edge, before the board's power circuit actually lets go — a simple
+`digitalWrite(LOW)` does **not** turn the board off. This doesn't fit
+`BoardConfig::PowerConfig`'s hold-latch model (which is for boards that need a
+pin driven HIGH at boot to survive USB unplug, e.g. Sticky/M5Paper v1.1/LilyGo —
+M5PaperS3 shows no evidence of needing that), so it's a board-support function
+instead: `freeink::m5papers3::powerOff()` in `M5PaperS3Board.h`. Call it from
+the consumer's power-off path instead of releasing a `PowerConfig` latch.
+
+**PENDING — no confirmed battery ADC / fuel gauge.** Only the digital
+charge-status pin above was found; `batteryAdc` and `batteryGauge` are
+unassigned, so `BatteryMonitor` has no voltage/percentage source for this board
+yet. Battery UI will need to fall back to "charging / not charging" only until
+an ADC pin or I²C gauge is identified.
+
+**PENDING — no confirmed navigation buttons.** No button-read GPIO (beyond the
+write-only power-off pulse pin above) was found in the source read. The device
+is modeled as touch-only (`InputStyle::DigitalButtons` with every `InputPins`
+field unassigned) — all navigation is expected to come through the GT911 touch
+panel. If your unit has a physical button that responds to input, it needs its
+GPIO identified and added to the profile.
+
+**PENDING — IMU.** M5Stack's product page advertises a gyroscope sensor,
+but the exact chip and I²C address weren't identified in the source areas
+read for this port. `ImuType::None` for now; `FREEINK_CAP_IMU` is off.
+
+## What to check on first boot
+
+1. **Display orientation** — confirm the image isn't mirrored or rotated; adjust
+   `LgfxEpdConfig::rotation` in `M5PaperS3Board.h` (try 0..3) if it is.
+2. **Touch mapping** — tap each corner; if the mapping is off, flip
+   `flipX`/`flipY` in `BoardConfig::M5PAPERS3_GT911`.
+3. **RTC** — confirm the BM8563 responds at 0x51 on SDA41/SCL42 as a PCF8563.
+4. **Power-off** — confirm `freeink::m5papers3::powerOff()` actually powers the
+   board down; the pulse count/timing (5× 50 ms) is copied from the vendor
+   library but unverified against real hardware.
+5. **Battery / buttons / IMU** — all PENDING above; expect no battery
+   percentage and no physical-button input until those are identified.
