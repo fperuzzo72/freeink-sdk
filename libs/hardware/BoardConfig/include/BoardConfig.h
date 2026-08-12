@@ -86,9 +86,9 @@
 // Sticky reuses SSD1677: its 800x480 panel rides a 24-pin FPC whose GDR/RESE/BS1
 // + dual VSH1/VSH2 + external VGH/VGL/VSL/VCOM charge pump is the SSD1677
 // application circuit (same controller + resolution as X4 / de-link).
-// X4 Pro is a distinct ESP32-S3 device (NOT the C3 X4): same SSD1677 controller and
-// 800x480 panel as X4/de-link/Sticky, recovered from its OEM firmware dump — see
-// docs/xteink-x4pro-support.md.
+// X4 Pro is a distinct ESP32-S3 device (NOT the C3 X4): its 800x480 panel may
+// use SSD1677, UC8179, or UC8279, recovered from OEM firmware and hardware
+// references — see docs/xteink-x4pro-support.md.
 #if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO
 #define FREEINK_DRIVER_SSD1677 1
 #else
@@ -156,9 +156,9 @@
 #define FREEINK_DRIVER_IT8951 0
 #endif
 #if FREEINK_DEVICE_PAPERMONO
-#define FREEINK_DRIVER_SSD1683 1
+#define FREEINK_DRIVER_PAPER_MONO 1
 #else
-#define FREEINK_DRIVER_SSD1683 0
+#define FREEINK_DRIVER_PAPER_MONO 0
 #endif
 
 // --- 4) Derive default capabilities (override with -DFREEINK_CAP_*=0/1) -------
@@ -360,8 +360,17 @@ enum class InputStyle : uint8_t {
 // 0x71 FLG read, which SSD1677 lacks; VER byte2 LUT_VER tells UC8179 from
 // UC8279). NVS hw_calib/screenType is read for diagnostics only. See
 // XteinkDetect::applyXteinkDisplayController.
-// SSD1683 drives the Paper Mono's 800x480 panel.
-enum class DisplayController : uint8_t { SSD1677, SSD1683, UC8253, ED2208, LgfxEpd, IT8951, UC8279, UC8179 };
+// Paper Mono uses SSD1677 silicon with a board-specific driver and host-authored
+// waveforms, so its profile reports the actual controller here.
+enum class DisplayController : uint8_t {
+  SSD1677 = 0,
+  UC8253 = 2,
+  ED2208 = 3,
+  LgfxEpd = 4,
+  IT8951 = 5,
+  UC8279 = 6,
+  UC8179 = 7
+};
 
 // Optional capacitive touch controller.
 enum class TouchController : uint8_t { None, Chsc6x, Gt911, Ft5x06 };
@@ -869,7 +878,7 @@ constexpr BoardProfile M5STACK_PAPER_COLOR = {Board::M5StackPaperColor,
                                               NO_SDMMC,
                                               NO_GAUGE};
 
-// --- M5Stack Paper Mono / PaperS3 — ESP32-S3, 800x480 SSD1683 --------------
+// --- M5Stack Paper Mono / PaperS3 — ESP32-S3, 800x480 SSD1677 --------------
 // EPD power/reset and the microSD rail are switched by the on-board M5IOE1;
 // their direct GPIO fields stay unassigned and the consumer board-support
 // library supplies the corresponding hooks (see M5Ioe1.h for the pin map).
@@ -898,7 +907,7 @@ constexpr BoardProfile PAPER_MONO = {
     Board::PaperMono,
     "m5stack_paper_mono",
     InputStyle::DigitalTwoButton,
-    DisplayController::SSD1683,
+    DisplayController::SSD1677,
     800,
     480,
     {15, 14, 16, 17, PIN_UNASSIGNED, 18, PIN_UNASSIGNED},
@@ -1172,10 +1181,10 @@ constexpr BoardProfile STICKY = {
     // boot (the vendor demo's first init step) — see holdPowerRails().
     {45, 46}};
 
-// --- Xteink X4 Pro — ESP32-S3, SSD1677 (800x480) + GT911 touch + warm/cold frontlight ---
+// --- Xteink X4 Pro — ESP32-S3, 800x480 EPD + GT911 touch + warm/cold frontlight ---
 // Recovered from the OEM flash dump (x4pro_flash_dump.bin); full evidence and confidence
 // levels in docs/xteink-x4pro-support.md. This is a DISTINCT device from the C3
-// `XTEINK_X4` above: same panel controller/size, but an ESP32-S3 with 8 MB PSRAM, a
+// `XTEINK_X4` above: the same display size, but an ESP32-S3 with 8 MB PSRAM, a
 // GT911 capacitive digitizer, and a dual warm/cold color-temperature frontlight.
 //
 // Confidence summary:

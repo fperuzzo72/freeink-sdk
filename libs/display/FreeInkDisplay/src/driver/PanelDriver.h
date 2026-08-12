@@ -102,7 +102,7 @@ class PanelDriver {
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual bool supportsStripGrayscale() const { return false; }
   // True when displayGrayscaleBase() DEFERS the base activation so the gray
-  // planes join it in a single waveform (SSD1683). Hosts should then route the
+  // planes join it in a single waveform (Paper Mono). Hosts should then route the
   // grayscale base through displayGrayscaleBase() instead of display(): a
   // separate B/W refresh first makes the gray pass re-drive the whole text
   // body through the custom LUT's kick phases (a visible flash).

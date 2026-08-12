@@ -15,8 +15,8 @@ API: switching to FreeInk is a matter of repointing the library path.
 
 ## What's included
 
-- **Display facade and panel drivers** for SSD1677, SSD1683, UC8253, ED2208,
-  IT8951, and external-library-backed panels.
+- **Display facade and panel drivers** for SSD1677, UC8179, UC8253, UC8279,
+  ED2208, IT8951, and external-library-backed panels.
 - **Board profiles and capability gates** for display, input, touch, SD,
   frontlight, audio, microphone, RTC, sensors, buzzer, LEDs, and TLS networking.
 - **Device managers** that keep firmware code stable across different boards:
@@ -43,6 +43,9 @@ register sequences and waveform LUTs for the SSD1677 and UC8253 panels are
 reverse-engineered independently — so the community's panel tuning is preserved.
 Attribution is in `NOTICE`. Huge thanks to everyone who reverse-engineered and
 tuned those panels.
+
+See [display driver reference coverage](docs/display-driver-references.md) for
+the source hierarchy and the limits of matching GxEPD2 implementations.
 
 What FreeInk changes is the **structure**, not the panel work: where the upstream
 interleaves every device in one monolithic driver, FreeInk splits each controller
@@ -125,8 +128,8 @@ so the SD manager itself stays device-agnostic.
 | **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | LovyanGFX EPD driver with 16-gray, GT911 touch, PWM backlight, BQ27220/BQ25896 I²C battery |
 | **M5Paper v1.1** | ESP32 (classic) | IT8951E | 540×960 16-gray ED047TC1 | hand-rolled IT8951 driver (own SPI, 1bpp→4bpp load, GC16/DU/A2 modes, auto rotation onto the portrait panel), GT911 touch, GPIO35 ADC battery |
 | **Sticky** (Upcoming Device) | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver (X4-class), GT911 touch, PDM microphone (Microphone lib), BQ27220 I²C battery gauge, PCF8563 RTC + SHT40 temp/humidity + LSM6DS3TR-C IMU (Rtc / EnvironmentSensor / Imu libs), SPI MicroSD (shares the display bus), LEDC buzzer (Buzzer lib); orientation/SD-sharing pending hardware validation |
-| **Xteink X4 Pro** | ESP32-S3 | SSD1677 **or** UC8179 (per batch) | 800×480 B/W | GT911 touch, dual warm/cold frontlight, native 1-bit SDMMC, BM8563 RTC, CW2017 battery gauge; controller auto-detected at boot |
-| **M5Stack Paper Mono** | ESP32-S3 | SSD1683 | 800×480 B/W | non-flashing fast refresh + 3-level grayscale (host-authored LUTs), FT6336 touch, PMIC-PWM frontlight (AW9967), RX8130 RTC, PDM microphone, LEDC buzzer, discrete RGB LED, native 1-bit SDMMC, M5PM1 battery/charging telemetry; power/reset rails sequenced through the on-board M5PM1 PMIC + M5IOE1 expander |
+| **Xteink X4 Pro** | ESP32-S3 | SSD1677, UC8179, **or UC8279** (per batch) | 800×480 B/W | GT911 touch, dual warm/cold frontlight, native 1-bit SDMMC, BM8563 RTC, CW2017 battery gauge; controller auto-detected at boot |
+| **M5Stack Paper Mono** | ESP32-S3 | SSD1677 | 800×480 B/W | non-flashing fast refresh + 3-level grayscale (host-authored LUTs), FT6336 touch, PMIC-PWM frontlight (AW9967), RX8130 RTC, PDM microphone, LEDC buzzer, discrete RGB LED, native 1-bit SDMMC, M5PM1 battery/charging telemetry; power/reset rails sequenced through the on-board M5PM1 PMIC + M5IOE1 expander |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
@@ -148,8 +151,8 @@ ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono), or classic
 
 Several Xteink panels ship a **different display controller depending on the
 production batch**, on the same board and pinout: the X3 moved from **UC8253** to
-**UC8279d**, and the X4 / X4 Pro from **SSD1677** to **UC8179** (both UltraChip
-parts). A binary hardcoded to one controller shows a blank screen on the other
+**UC8279d**, while X4-family units may carry **SSD1677**, **UC8179**, or
+**UC8279**. A binary hardcoded to one controller shows a blank screen on another
 batch. `XteinkDetect` resolves which silicon a unit carries at boot:
 
 ```cpp
@@ -248,7 +251,7 @@ bring-up before recording.
 
 Notable behaviors on this board:
 
-- **Refresh model.** Binary UI paints use the SSD1683's internal non-flashing
+- **Refresh model.** Binary UI paints use the Paper Mono SSD1677's internal non-flashing
   waveform; grayscale paints run host-authored LUTs whose 3-level target is
   batched in host RAM before the waveform starts. The facade's
   `displayCommitted()` / `runMaintenance()` / `controllerIdle()` hooks let
@@ -292,8 +295,8 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_MURPHY` | Murphy M3 (S3, UC8253 + touch + frontlight) |
 | `-DFREEINK_DEVICE_LILYGO` | LilyGo T5 S3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX) |
 | `-DFREEINK_DEVICE_STICKY` | Sticky (S3, SSD1677 800×480 + GT911 touch + PDM mic) |
-| `-DFREEINK_DEVICE_X4PRO` | Xteink X4 Pro (S3, SSD1677/UC8179 auto-detect + GT911 touch + SDMMC) |
-| `-DFREEINK_DEVICE_PAPERMONO` | M5Stack Paper Mono (S3, SSD1683 + FT6336 touch + PMIC frontlight) |
+| `-DFREEINK_DEVICE_X4PRO` | Xteink X4 Pro (S3, SSD1677/UC8179/UC8279 auto-detect + GT911 touch + SDMMC) |
+| `-DFREEINK_DEVICE_PAPERMONO` | M5Stack Paper Mono (S3, SSD1677 + FT6336 touch + PMIC frontlight) |
 | *(none)* | **compile error** — a build must select at least one device |
 
 Multiple **different-pinout** devices on one MCU are runtime-selected: `ACTIVE`
@@ -340,7 +343,7 @@ The facade's framebuffer(s) sit in static DRAM `.bss` by default — fastest, an
 panel sizes fit comfortably on the C3/S3 parts (the largest, 960×540, is ~63 KB).
 M5Paper v1.1 is the exception: the classic ESP32 shares ~300 KB of DRAM with the
 IDF/WiFi stacks and the firmware's own buffers, so that 63 KB framebuffer in `.bss`
-overflows internal RAM. For M5Paper (and the Paper Mono, whose SSD1683 driver
+overflows internal RAM. For M5Paper (and the Paper Mono, whose display driver
 additionally batches full grayscale target planes in host RAM),
 `FREEINK_FB_PSRAM` defaults on and the framebuffer is heap-allocated in PSRAM (`heap_caps_malloc(MALLOC_CAP_SPIRAM)`, once,
 in `begin()`, with a DRAM `malloc` fallback). DRAM is faster than cache-backed PSRAM

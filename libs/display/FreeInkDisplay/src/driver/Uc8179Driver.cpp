@@ -29,6 +29,7 @@ constexpr uint8_t CMD_RESOLUTION = 0x61;          // TRES
 constexpr uint8_t CMD_GATE_SOURCE_START = 0x65;   // GSST (4 data bytes)
 constexpr uint8_t CMD_CCSET = 0xE0;               // CCSET (cascade/output enable)
 constexpr uint8_t CMD_GATE_SCAN = 0xE1;           // gate-scan selection
+constexpr uint8_t CMD_POWER_SAVE = 0xE3;          // PWS (VCOM/source line periods)
 constexpr uint8_t CMD_TSSET = 0xE5;               // TSSET (forced temperature; frame-rate lever)
 
 constexpr uint8_t CDI_INTERVAL = 0x07;  // CDI byte1, constant
@@ -83,6 +84,7 @@ const Uc8179Config& uc8179DefaultConfig() {
       0x29,                      // cdiActive (0x50, during refresh)
       0xA9,                      // cdiIdle (0x50, restored after)
       600,                       // tresHeight — panel addressed 800x600 (480 visible)
+      0x22,                      // powerSave (0xE3): VCOM 2 lines, source 2 * 660 ns
   };
   return cfg;
 }
@@ -138,6 +140,14 @@ void Uc8179Driver::initController(EpdBus& bus) {
 
   bus.cmd(CMD_GATE_SCAN);
   bus.data(_cfg.gateScan);
+
+  // GxEPD2 added this UC8179 setting specifically for dithered-bitmap
+  // stability. Keep it configurable because the X4 Pro uses different glass
+  // and a 600-gate scan; zero lets a board preserve its OTP/default behavior.
+  if (_cfg.powerSave != 0) {
+    bus.cmd(CMD_POWER_SAVE);
+    bus.data(_cfg.powerSave);
+  }
 
   _isScreenOn = false;
   _grayRefreshedOnce = false;

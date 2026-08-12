@@ -50,8 +50,8 @@
 #if FREEINK_DRIVER_IT8951
 #include "driver/It8951Driver.h"
 #endif
-#if FREEINK_DRIVER_SSD1683
-#include "driver/Ssd1683Driver.h"
+#if FREEINK_DRIVER_PAPER_MONO
+#include "driver/PaperMonoDriver.h"
 #endif
 
 namespace freeink {
@@ -160,8 +160,8 @@ void FreeInkDisplay::selectDriver() {
 #endif
 #if FREEINK_DRIVER_SSD1677
       _driver = &ssd1677Driver();
-#elif FREEINK_DRIVER_SSD1683
-      _driver = &ssd1683Driver();
+#elif FREEINK_DRIVER_PAPER_MONO
+      _driver = &paperMonoDriver();
 #elif FREEINK_DRIVER_UC8253_MURPHY
       _driver = &uc8253MurphyDriver();
 #elif FREEINK_DRIVER_M5_OFFICIAL
@@ -837,7 +837,7 @@ void FreeInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
 void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                               uint16_t numRows) {
   if (_inverted) return;
-  // SSD1683 retains these bytes in PSRAM and performs no bus access here, so
+  // Paper Mono retains these bytes in PSRAM and performs no bus access here, so
   // staging can overlap the B/W waveform. Other drivers may write controller
   // RAM and must drain the pending refresh first.
   if (!_driver->supportsBusyGrayscaleStaging()) syncPendingAsync();

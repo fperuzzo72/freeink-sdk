@@ -198,7 +198,7 @@ bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
       // complement of the target: every pixel classifies as changed and is
       // re-driven toward its target — optically invisible on pixels already at
       // their endpoint. displayFinish()'s DTM1 resync restores the true
-      // baseline afterwards. Same mechanism as the SSD1677/SSD1683 drivers'
+      // baseline afterwards. Same mechanism as the SSD1677/Paper Mono drivers'
       // dark-background paths.
       bus.sendPlaneFlippedInverted(CMD_DTM1, fb, _h, _wb);
       bus.cmd(CMD_DATA_STOP);

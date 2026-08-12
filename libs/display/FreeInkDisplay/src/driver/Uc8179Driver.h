@@ -48,6 +48,10 @@ struct Uc8179Config {
   // scan, so the DTM transfer is padded to this height. (Visible height comes
   // from the board profile.)
   uint16_t tresHeight;
+  // Power Save (cmd 0xE3). 0 disables the write; 0x22 is the UC8179 value used
+  // by GxEPD2 to prevent artifacts with dithered images. Appended to preserve
+  // the field order of existing aggregate board configurations.
+  uint8_t powerSave;
 };
 
 const Uc8179Config& uc8179DefaultConfig();
