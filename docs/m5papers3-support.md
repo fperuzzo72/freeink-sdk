@@ -75,14 +75,18 @@ set. Wiring lives in `m5PaperS3LgfxConfig()` (`M5PaperS3Board.h`), read from
 Bus speed 16 MHz, line padding 8, both CONFIRMED from `M5GFX.cpp`'s
 `bus_cfg`/`cfg_detail`.
 
-**PENDING — panel rotation.** `LgfxEpdDriver` applies orientation via
-`g_dev.setRotation(cfg.rotation)` (a LovyanGFX `setRotation()` value, 0-3), not
-via the panel's `offset_rotation` field that M5GFX's own board-detect code sets
-to `3`. Those are different knobs in LovyanGFX, so the `offset_rotation=3` value
-is **not** directly portable to `LgfxEpdConfig::rotation`. `M5PaperS3Board.h`
-ships `rotation = 1` as a starting guess (same value LilyGo T5S3 uses for the
-same 540×960-portrait-native-panel-as-960×540-landscape geometry). **On first
-boot, check the image isn't mirrored or 90°/270° off; try 0..3 if it is.**
+**CONFIRMED on real hardware — panel rotation = 3.** `LgfxEpdDriver` applies
+orientation via `g_dev.setRotation(cfg.rotation)`, not via the panel's
+`offset_rotation` field that M5GFX's own board-detect code sets to `3` for this
+panel — different knobs in LovyanGFX at first glance, but
+`Panel_FrameBufferBase.cpp`/`Panel_HasBuffer.cpp` compute
+`_internal_rotation = ((r + offset_rotation) & 3) | ((r & 4) ^ (offset_rotation & 4))`,
+which is additive: with `LgfxEpdDriver`'s fixed `offset_rotation=0`,
+`setRotation(3)` produces the exact same `_internal_rotation` as M5GFX's
+`offset_rotation=3` + `setRotation(0)`. An initial guess of `rotation=1`
+(borrowed from LilyGo T5S3) was bench-tested and came out 90° off with part of
+the screen clipped; `rotation=3` is now confirmed correct on a physical
+M5PaperS3 unit.
 
 No PMIC/IO-expander sequencing is needed (unlike LilyGo's PCA9535+TPS65185):
 the EPD rail is a plain GPIO (`PWR`, pin 46) that LovyanGFX's `Bus_EPD` drives
@@ -157,12 +161,18 @@ GPIO identified and added to the profile.
 but the exact chip and I²C address weren't identified in the source areas
 read for this port. `ImuType::None` for now; `FREEINK_CAP_IMU` is off.
 
+## Confirmed working on real hardware
+
+- **Display orientation** (`rotation=3`) — correct, image fills the panel.
+- **Touch navigation** — functional (tested: swipe-up-from-bottom opens the
+  menu, general navigation works) with the inferred `swapXY`/`flipX`/`flipY`
+  values still in place; no corner-tap recalibration has been needed so far.
+
 ## What to check on first boot
 
-1. **Display orientation** — confirm the image isn't mirrored or rotated; adjust
-   `LgfxEpdConfig::rotation` in `M5PaperS3Board.h` (try 0..3) if it is.
-2. **Touch mapping** — tap each corner; if the mapping is off, flip
-   `flipX`/`flipY` in `BoardConfig::M5PAPERS3_GT911`.
+1. **Touch corner accuracy** — the swipe-based navigation above works, but a
+   precise corner-tap test hasn't been done; if a specific UI element is
+   consistently mis-hit, flip `flipX`/`flipY` in `BoardConfig::M5PAPERS3_GT911`.
 3. **RTC** — confirm the BM8563 responds at 0x51 on SDA41/SCL42 as a PCF8563.
 4. **Power-off** — confirm `freeink::m5papers3::powerOff()` actually powers the
    board down; the pulse count/timing (5× 50 ms) is copied from the vendor
