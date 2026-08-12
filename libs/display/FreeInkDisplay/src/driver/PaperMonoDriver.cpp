@@ -391,7 +391,7 @@ uint16_t PaperMonoDriver::makePostCleanLut(uint8_t out[111]) const {
 // frames / 320 ms total, every class exactly DC balanced, and the middle tone
 // lands at ~40% of the weak-rail swing -- clearly separated from both
 // endpoints instead of the previous near-black.
-uint16_t PaperMonoDriver::makeTriLut(uint8_t out[111]) const {
+uint16_t PaperMonoDriver::makeTriLut(uint8_t out[111], bool bgTopUp) const {
   WaveLut lut;
   lut.clear();
 
@@ -416,7 +416,10 @@ uint16_t PaperMonoDriver::makeTriLut(uint8_t out[111]) const {
       lut.setVs(2, group, phase, VS_BLACK);
       lut.setVs(3, group, phase, VS_WHITE);
     }
-    if (topUp) {
+    // Overlay passes leave entry 0 fully idle: there, entry 0 holds every
+    // undriven pixel — including unchanged BLACK text, not just background —
+    // and the white-biased top-up would visibly bleach it each page.
+    if (topUp && bgTopUp) {
       lut.setVs(0, group, 0, VS_BLACK);
       lut.setVs(0, group, 1, VS_WHITE);
     }
@@ -565,7 +568,8 @@ bool PaperMonoDriver::runOtpUpdate(EpdBus& bus, const uint8_t* bwTarget, bool fo
   return true;
 }
 
-bool PaperMonoDriver::runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray, bool corrective) {
+bool PaperMonoDriver::runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray, bool corrective,
+                                bool overlayOnly) {
   if (!useGray) {
     const bool otpRan = runOtpUpdate(bus, bwTarget, corrective);
     if (otpRan) _displayCommitted = true;
@@ -600,7 +604,14 @@ bool PaperMonoDriver::runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGr
     const uint8_t old24 = _glassNonWhite[i];
     const uint8_t old26 = _glassBlack[i];
     const uint8_t changedMask = static_cast<uint8_t>((old24 ^ q24) | (old26 ^ q26));
-    const uint8_t driveMask = corrective ? 0xFFu : static_cast<uint8_t>(changedMask | q24);
+    // Overlay: the B/W base already reached the glass through its own OTP
+    // activation (the host displayed it before staging gray planes), so only
+    // the pixels whose class actually changes — the AA grays — may be driven.
+    // Re-driving the whole non-white body here is what reads as a full-screen
+    // flash. The combined single-activation path keeps `| q24` because there
+    // the tri waveform is the only drive the page gets.
+    const uint8_t driveMask =
+        corrective ? 0xFFu : (overlayOnly ? changedMask : static_cast<uint8_t>(changedMask | q24));
     changedBits |= corrective ? 0xFFu : changedMask;
 #ifdef ENABLE_SERIAL_LOG
     changed += corrective ? 8u
@@ -614,7 +625,7 @@ bool PaperMonoDriver::runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGr
 
   const unsigned long started = millis();
   uint8_t lut[111];
-  const uint16_t firstFrames = makeTriLut(lut);
+  const uint16_t firstFrames = makeTriLut(lut, /*bgTopUp=*/!overlayOnly);
   uint16_t cleanFrames = 0;
   uint8_t stages = 1;
   uint32_t cleanedPixels = 0;
@@ -624,7 +635,12 @@ bool PaperMonoDriver::runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGr
   loadCustomLut(bus, lut);
   activate(bus, _controllerPowered ? CTRL_DISPLAY_HOLD_WARM : CTRL_CUSTOM_HOLD_COLD);
   _controllerPowered = true;
-  runBootCleanPass(bus, _sel24, _sel26);
+  // No boot-clean pass here: re-running the tri LUT is not direction-safe the
+  // way the OTP B/W waveform is. Its activation kick charges driven pixels
+  // toward the anti-target rail and entry 0 hits the whole white background
+  // with the +15 V top-up, so an extra pass reads as a full-screen flash on
+  // every AA page inside the boot budget. Residue cleanup stays on the OTP
+  // path only (runOtpUpdate), which the boot paints go through anyway.
 
   // Retired in production (postCleanCycles is forced to 0): background deghost
   // now rides inside the tri activation's kick group, and the right-aligned
@@ -864,7 +880,11 @@ void PaperMonoDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, 
     clearGrayStaging();
     return;
   }
-  runUpdate(bus, _lastBw, true, false);
+  // The base page is already on the glass (the host displayed it without
+  // displayGrayscaleBase(), so commitPending consumed the stash above). Develop
+  // the AA grays as a changed-pixels-only overlay: driving the full non-white
+  // body a second time through the kick phases reads as a page-wide flash.
+  runUpdate(bus, _lastBw, true, false, /*overlayOnly=*/true);
   clearGrayStaging();
 }
 

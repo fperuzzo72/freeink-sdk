@@ -108,13 +108,17 @@ class PaperMonoDriver final : public PanelDriver {
   void activateOtp(EpdBus& bus);
   void powerOffController(EpdBus& bus);
   void loadCustomLut(EpdBus& bus, const uint8_t lut[111]);
-  uint16_t makeTriLut(uint8_t out[111]) const;
+  // bgTopUp=false leaves LUT entry 0 completely idle (no background top-up)
+  // for overlay passes, where entry 0 also holds undriven black text.
+  uint16_t makeTriLut(uint8_t out[111], bool bgTopUp = true) const;
   uint16_t makePostCleanLut(uint8_t out[111]) const;
   bool runOtpUpdate(EpdBus& bus, const uint8_t* bwTarget, bool forceAll);
   // Encodes the source-to-target transition against the recorded glass state,
   // runs its required activations plus optional endpoint post-clean, and waits
-  // them out. Returns true when a waveform actually ran.
-  bool runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray, bool corrective);
+  // them out. Returns true when a waveform actually ran. overlayOnly restricts
+  // the drive set to changed pixels (the AA grays) for the follow-up pass after
+  // a separately displayed B/W base — see displayGray().
+  bool runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray, bool corrective, bool overlayOnly = false);
   void stashTarget(const uint8_t* fb, RefreshMode mode);
   bool commitPending(EpdBus& bus, bool useGray);
   void clearGrayStaging();
