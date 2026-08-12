@@ -75,18 +75,29 @@ set. Wiring lives in `m5PaperS3LgfxConfig()` (`M5PaperS3Board.h`), read from
 Bus speed 16 MHz, line padding 8, both CONFIRMED from `M5GFX.cpp`'s
 `bus_cfg`/`cfg_detail`.
 
-**CONFIRMED on real hardware — panel rotation = 3.** `LgfxEpdDriver` applies
+**CONFIRMED on real hardware — panel rotation = 0.** `LgfxEpdDriver` applies
 orientation via `g_dev.setRotation(cfg.rotation)`, not via the panel's
 `offset_rotation` field that M5GFX's own board-detect code sets to `3` for this
-panel — different knobs in LovyanGFX at first glance, but
-`Panel_FrameBufferBase.cpp`/`Panel_HasBuffer.cpp` compute
-`_internal_rotation = ((r + offset_rotation) & 3) | ((r & 4) ^ (offset_rotation & 4))`,
-which is additive: with `LgfxEpdDriver`'s fixed `offset_rotation=0`,
-`setRotation(3)` produces the exact same `_internal_rotation` as M5GFX's
-`offset_rotation=3` + `setRotation(0)`. An initial guess of `rotation=1`
-(borrowed from LilyGo T5S3) was bench-tested and came out 90° off with part of
-the screen clipped; `rotation=3` is now confirmed correct on a physical
-M5PaperS3 unit.
+panel. `Panel_HasBuffer.cpp`'s `setRotation()`:
+
+```cpp
+_internal_rotation = ((r + offset_rotation) & 3) | ((r & 4) ^ (offset_rotation & 4));
+_width = panel_width; _height = panel_height;
+if (_internal_rotation & 1) std::swap(_width, _height);
+```
+
+Two earlier guesses (`rotation=1`, borrowed from LilyGo T5S3, then `3`, derived
+from the additive formula alone) were bench-tested and both came out with the
+image filling only about half the panel — because 1 and 3 are both **odd**,
+and any odd `_internal_rotation` swaps width/height (960×540 becomes an
+effective 540×960 drawn into a 960-wide panel). The fix: the official M5Stack
+demo (`m5stack/M5PaperS3-UserDemo`, `main/hal/hal.cpp`) calls
+`M5.begin(); M5.Display.setRotation(1);` — `setRotation(1)` **on top of** the
+board's baked-in `offset_rotation=3`, giving `((1+3)&3)|((1&4)^(3&4)) = 0`, an
+**even** result (no swap). Since `LgfxEpdDriver` fixes `offset_rotation=0`, the
+`r` that reproduces that same `_internal_rotation=0` is `r=0`. `rotation=0` is
+now confirmed correct (full-screen, right-side-up) on a physical M5PaperS3
+unit.
 
 No PMIC/IO-expander sequencing is needed (unlike LilyGo's PCA9535+TPS65185):
 the EPD rail is a plain GPIO (`PWR`, pin 46) that LovyanGFX's `Bus_EPD` drives
