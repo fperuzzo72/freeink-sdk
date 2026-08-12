@@ -75,7 +75,7 @@ set. Wiring lives in `m5PaperS3LgfxConfig()` (`M5PaperS3Board.h`), read from
 Bus speed 16 MHz, line padding 8, both CONFIRMED from `M5GFX.cpp`'s
 `bus_cfg`/`cfg_detail`.
 
-**CONFIRMED on real hardware — panel rotation = 0.** `LgfxEpdDriver` applies
+**PENDING (derived, not yet bench-tested) — panel rotation = 0.** `LgfxEpdDriver` applies
 orientation via `g_dev.setRotation(cfg.rotation)`, not via the panel's
 `offset_rotation` field that M5GFX's own board-detect code sets to `3` for this
 panel. `Panel_HasBuffer.cpp`'s `setRotation()`:
@@ -96,8 +96,10 @@ demo (`m5stack/M5PaperS3-UserDemo`, `main/hal/hal.cpp`) calls
 board's baked-in `offset_rotation=3`, giving `((1+3)&3)|((1&4)^(3&4)) = 0`, an
 **even** result (no swap). Since `LgfxEpdDriver` fixes `offset_rotation=0`, the
 `r` that reproduces that same `_internal_rotation=0` is `r=0`. `rotation=0` is
-now confirmed correct (full-screen, right-side-up) on a physical M5PaperS3
-unit.
+derived from the official demo's approach above, but **not yet re-tested on
+hardware** — the two prior guesses (1, 3) were both wrong despite each seeming
+plausible at the time, so treat 0 as the best current candidate, not a
+certainty, until it's actually flashed and checked.
 
 No PMIC/IO-expander sequencing is needed (unlike LilyGo's PCA9535+TPS65185):
 the EPD rail is a plain GPIO (`PWR`, pin 46) that LovyanGFX's `Bus_EPD` drives
