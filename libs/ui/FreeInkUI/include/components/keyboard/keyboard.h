@@ -317,6 +317,14 @@ class TouchHoldRouter {
     explicit operator bool() const { return static_cast<bool>(event); }
   };
 
+  // Reads via routePublished()/publishedData() rather than route()/data():
+  // for a caller that never opts into InteractionBuffer's publish cycle
+  // (beginPublishCycle()/publish()), published_ stays pinned at the same
+  // generation building_ does, so this is behaviourally identical to the
+  // plain route()/data() calls it replaces. For a caller that does opt in
+  // (a render task rebuilding the table on one task while this update() runs
+  // on another), it reads the last complete, published generation instead
+  // of one that may be mid-rebuild.
   template <size_t MaxInteractions>
   Result update(InteractionBuffer<MaxInteractions>& interactions, const bool pressedDown, const int16_t px,
                 const int16_t py, const bool tapped, const int16_t tx, const int16_t ty, const bool inContact,
@@ -335,13 +343,13 @@ class TouchHoldRouter {
         release.touchReleased = true;
         release.touchX = tx;
         release.touchY = ty;
-        result.event = interactions.route(release);
+        result.event = interactions.routePublished(release);
         // Tap slop means the release can land off the pressed key (fingers
         // occlude and slide low on e-paper). A tap is bounded by the slop
         // radius, so dispatching the key the press landed on is what the
         // user meant — a >slop drag is a swipe and never reaches here.
         if (!result.event && heldActive >= 0) {
-          const Interaction& held = interactions.data()[heldActive];
+          const Interaction& held = interactions.publishedData()[heldActive];
           if (!hasState(held.state, StateDisabled) && acceptsInput(held.inputMask, InputTouch)) {
             result.event = ActionEvent{held.action, held.value, held.state};
           }
@@ -361,7 +369,7 @@ class TouchHoldRouter {
       press.touchPressed = true;
       press.touchX = px;
       press.touchY = py;
-      interactions.route(press);
+      interactions.routePublished(press);
       const int16_t active = interactions.activeIndex();
 
       // New contact, or the finger slid onto a different key: restart the
@@ -373,7 +381,8 @@ class TouchHoldRouter {
       }
 
       if (active >= 0) {
-        const uint32_t threshold = interactions.data()[active].value == overrideValue ? overrideHoldMs : holdMs;
+        const uint32_t threshold =
+            interactions.publishedData()[active].value == overrideValue ? overrideHoldMs : holdMs;
         if (nowMs - startMs_ >= threshold) {
           longFired_ = true;
           InputSnapshot release{};
@@ -381,7 +390,7 @@ class TouchHoldRouter {
           release.longPress = true;
           release.touchX = px;
           release.touchY = py;
-          result.event = interactions.route(release);
+          result.event = interactions.routePublished(release);
         }
       }
       return result;
@@ -396,7 +405,7 @@ class TouchHoldRouter {
       longFired_ = false;
       InputSnapshot cancel{};
       cancel.touchReleased = true;
-      interactions.route(cancel);
+      interactions.routePublished(cancel);
       result.activeChanged = true;
     }
     return result;
