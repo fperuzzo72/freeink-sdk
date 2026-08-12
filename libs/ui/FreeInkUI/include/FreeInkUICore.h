@@ -1024,14 +1024,14 @@ public:
 
   State stateFor(ActionId action, int16_t value, State base) const override {
     State state = base;
-    const size_t count = count_[building_];
+    const size_t slotCount = count_[building_];
     const Interaction *slot = interactions_[building_];
-    if (focused_ >= 0 && focused_ < static_cast<int16_t>(count)) {
+    if (focused_ >= 0 && focused_ < static_cast<int16_t>(slotCount)) {
       const Interaction &focused = slot[focused_];
       if (focused.action == action && focused.value == value)
         state |= StateFocused;
     }
-    if (active_ >= 0 && active_ < static_cast<int16_t>(count)) {
+    if (active_ >= 0 && active_ < static_cast<int16_t>(slotCount)) {
       const Interaction &active = slot[active_];
       if (active.action == action && active.value == value)
         state |= StateActive;
@@ -1193,19 +1193,19 @@ private:
   }
 
   void moveFocus(uint8_t slot, int8_t delta) {
-    const size_t count = count_[slot];
-    if (count == 0) {
+    const size_t slotCount = count_[slot];
+    if (slotCount == 0) {
       focused_ = -1;
       return;
     }
     int16_t start = focused_;
-    if (start < 0 || start >= static_cast<int16_t>(count))
-      start = delta > 0 ? -1 : static_cast<int16_t>(count);
-    for (size_t step = 0; step < count; ++step) {
+    if (start < 0 || start >= static_cast<int16_t>(slotCount))
+      start = delta > 0 ? -1 : static_cast<int16_t>(slotCount);
+    for (size_t step = 0; step < slotCount; ++step) {
       int16_t idx = static_cast<int16_t>(start + delta);
       if (idx < 0)
-        idx = static_cast<int16_t>(count - 1);
-      if (idx >= static_cast<int16_t>(count))
+        idx = static_cast<int16_t>(slotCount - 1);
+      if (idx >= static_cast<int16_t>(slotCount))
         idx = 0;
       if (focusable(slot, idx)) {
         focused_ = idx;
@@ -1224,7 +1224,7 @@ private:
 
   ActionEvent routeAgainst(uint8_t slot, const InputSnapshot &input) {
     ActionEvent event{};
-    const size_t count = count_[slot];
+    const size_t slotCount = count_[slot];
 
     if (input.touchPressed) {
       active_ = findTouch(slot, input.touchX, input.touchY, InputTouch);
@@ -1233,7 +1233,7 @@ private:
     // Grab semantics: a drag stays bound to the element the finger landed on
     // even when it wanders off the rect, and follows the x position live.
     if (input.touchHeld && active_ >= 0 &&
-        active_ < static_cast<int16_t>(count)) {
+        active_ < static_cast<int16_t>(slotCount)) {
       const Interaction &held = interactions_[slot][active_];
       if (!hasState(held.state, StateDisabled) &&
           acceptsInput(held.inputMask, InputDrag)) {
@@ -1294,7 +1294,7 @@ private:
     // re-renders, but a screen change can leave a stale index. Only confirm a
     // focus target that exists in the current table and accepts confirm input.
     if (input.confirm && focused_ >= 0 &&
-        focused_ < static_cast<int16_t>(count)) {
+        focused_ < static_cast<int16_t>(slotCount)) {
       const Interaction &focused = interactions_[slot][focused_];
       if (!hasState(focused.state, StateDisabled) &&
           acceptsInput(focused.inputMask, InputConfirm)) {
