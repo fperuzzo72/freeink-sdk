@@ -2202,6 +2202,20 @@ void testTouchHoldRouter() {
   CHECK_EQ(r.event.value, 'q');
   CHECK(!r.event.longPress);
 
+  // A touch-down repaint can start rebuilding the next frame before the
+  // finger releases. The release must continue routing against the complete
+  // published table while that rebuild is in progress; callers should not
+  // disable input between beginPublishCycle() and publish().
+  interactions.publish();
+  r = router.update(interactions, true, 20, 20, false, 0, 0, true, 1200);
+  CHECK(r.activeChanged);
+  interactions.beginPublishCycle();
+  rebuild();
+  r = router.update(interactions, false, 0, 0, true, 20, 20, false, 1300);
+  CHECK_EQ(r.event.value, 'q');
+  CHECK(!r.event.longPress);
+  interactions.publish();
+
   // Hold past the threshold: long-press fires exactly once at threshold and
   // the timer must NOT re-arm on later frames (the repeat bug), and the real
   // release is swallowed.
