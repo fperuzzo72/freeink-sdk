@@ -33,10 +33,9 @@ void pm1FrontlightWrite(uint32_t pct) {
 constexpr uint8_t LEDC_CH_COOL = 0;
 constexpr uint8_t LEDC_CH_WARM = 1;
 
-// Turn a 0-100 percentage into a duty, honoring active level. `pct` is pre-clamped.
-uint32_t dutyFor(uint32_t pct, uint32_t full, bool activeHigh) {
-  uint32_t duty = (pct * full) / 100u;
-  return activeHigh ? duty : full - duty;
+// Apply the board's output polarity to a logical 0..full LED duty.
+uint32_t physicalDuty(uint32_t logicalDuty, uint32_t full, bool activeHigh) {
+  return activeHigh ? logicalDuty : full - logicalDuty;
 }
 
 #if defined(ARDUINO) && ESP_ARDUINO_VERSION_MAJOR >= 3
@@ -87,16 +86,21 @@ void FrontlightManager::apply() {
   const uint32_t full = maxDuty(fl.pwmResolutionBits);
   const bool dual = fl.gpioWarm != BoardConfig::PIN_UNASSIGNED;
 
-  // Single channel: the primary carries the whole brightness. Warm/cool pair: split the
-  // total brightness between cool and warm by the color-temperature mix, so overall
-  // brightness stays ~constant as the color shifts (warm 0 = all cool, 100 = all warm).
-  const uint32_t coolPct = dual ? (static_cast<uint32_t>(_brightness) * (100u - _warmPercent)) / 100u
-                                : _brightness;
-  writeChannel(fl.gpio, LEDC_CH_COOL, dutyFor(coolPct, full, fl.activeHigh));
+  // Convert brightness to PWM precision BEFORE splitting it between channels.
+  // Splitting integer percentages first loses both fractional parts at low
+  // levels: brightness=1, warmth=50 previously became cool=0% + warm=0%.
+  // Splitting the total duty also keeps cool+warm equal to the requested total.
+  const uint32_t totalDuty = (static_cast<uint32_t>(_brightness) * full + 50u) / 100u;
+  uint32_t warmDuty = 0;
+  uint32_t coolDuty = totalDuty;
+  if (dual) {
+    warmDuty = (totalDuty * _warmPercent + 50u) / 100u;
+    coolDuty = totalDuty - warmDuty;
+  }
+  writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(coolDuty, full, fl.activeHigh));
 
   if (dual) {
-    const uint32_t warmPct = (static_cast<uint32_t>(_brightness) * _warmPercent) / 100u;
-    writeChannel(fl.gpioWarm, LEDC_CH_WARM, dutyFor(warmPct, full, fl.activeHigh));
+    writeChannel(fl.gpioWarm, LEDC_CH_WARM, physicalDuty(warmDuty, full, fl.activeHigh));
   }
 }
 #endif
