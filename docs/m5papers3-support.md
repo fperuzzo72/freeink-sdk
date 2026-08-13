@@ -21,9 +21,11 @@ Needs octal PSRAM (`board_build.arduino.memory_type = qio_opi` +
 
 ## Source and confidence
 
-No physical unit was available for this port — every pin below was read
-directly out of the official, MIT-licensed vendor libraries that M5Stack ships
-for this exact product:
+No physical unit was available when this port was first written — every pin
+below was read directly out of the official, MIT-licensed vendor libraries
+that M5Stack ships for this exact product. It has since been bench-tested on a
+real M5PaperS3 (see [Confirmed working on real hardware](#confirmed-working-on-real-hardware)
+below); a handful of items are still open as testing continues:
 
 - `m5stack/M5Unified` **v0.2.10** (`src/M5Unified.cpp`, `src/utility/Power_Class.cpp`)
 - `m5stack/M5GFX` **v0.2.15** (`src/M5GFX.cpp`, board autodetect block for `board_M5PaperS3`)
@@ -75,7 +77,7 @@ set. Wiring lives in `m5PaperS3LgfxConfig()` (`M5PaperS3Board.h`), read from
 Bus speed 16 MHz, line padding 8, both CONFIRMED from `M5GFX.cpp`'s
 `bus_cfg`/`cfg_detail`.
 
-**PENDING (derived, not yet bench-tested) — panel rotation = 0.** `LgfxEpdDriver` applies
+**CONFIRMED on real hardware — panel rotation = 0.** `LgfxEpdDriver` applies
 orientation via `g_dev.setRotation(cfg.rotation)`, not via the panel's
 `offset_rotation` field that M5GFX's own board-detect code sets to `3` for this
 panel. `Panel_HasBuffer.cpp`'s `setRotation()`:
@@ -96,10 +98,9 @@ demo (`m5stack/M5PaperS3-UserDemo`, `main/hal/hal.cpp`) calls
 board's baked-in `offset_rotation=3`, giving `((1+3)&3)|((1&4)^(3&4)) = 0`, an
 **even** result (no swap). Since `LgfxEpdDriver` fixes `offset_rotation=0`, the
 `r` that reproduces that same `_internal_rotation=0` is `r=0`. `rotation=0` is
-derived from the official demo's approach above, but **not yet re-tested on
-hardware** — the two prior guesses (1, 3) were both wrong despite each seeming
-plausible at the time, so treat 0 as the best current candidate, not a
-certainty, until it's actually flashed and checked.
+derived from the official demo's approach above, and bench-confirmed on a
+physical M5PaperS3: full screen, right-side-up. (Two prior guesses, 1 and 3,
+were each plausible-looking but wrong — see the derivation above for why.)
 
 No PMIC/IO-expander sequencing is needed (unlike LilyGo's PCA9535+TPS65185):
 the EPD rail is a plain GPIO (`PWR`, pin 46) that LovyanGFX's `Bus_EPD` drives
@@ -176,20 +177,27 @@ read for this port. `ImuType::None` for now; `FREEINK_CAP_IMU` is off.
 
 ## Confirmed working on real hardware
 
-- **Display orientation** (`rotation=3`) — correct, image fills the panel.
-- **Touch navigation** — functional (tested: swipe-up-from-bottom opens the
-  menu, general navigation works) with the inferred `swapXY`/`flipX`/`flipY`
-  values still in place; no corner-tap recalibration has been needed so far.
+- **Display orientation** (`rotation=0`) — correct, full screen, right-side-up.
+- **Touch navigation** — functional (swipe-up-from-bottom opens the menu,
+  general navigation works) with the inferred `swapXY`/`flipX`/`flipY` values
+  still in place; no corner-tap recalibration has been needed so far.
+- **General firmware operation** — reported working end-to-end by the owner on
+  their physical unit as of this update. Testing is ongoing over the following
+  days, so treat this as "no known-broken items found yet," not an exhaustive
+  per-subsystem sign-off — the items below are still specifically unverified.
 
-## What to check on first boot
+## Still to verify
 
 1. **Touch corner accuracy** — the swipe-based navigation above works, but a
    precise corner-tap test hasn't been done; if a specific UI element is
    consistently mis-hit, flip `flipX`/`flipY` in `BoardConfig::M5PAPERS3_GT911`.
-3. **RTC** — confirm the BM8563 responds at 0x51 on SDA41/SCL42 as a PCF8563.
+2. **RTC** — confirm the BM8563 responds at 0x51 on SDA41/SCL42 as a PCF8563
+   and keeps time correctly across reboots.
+3. **Battery** — confirm the GPIO3 ADC reading tracks real battery voltage
+   sensibly (not just that it compiles).
 4. **Power-off** — confirm `freeink::m5papers3::powerOff()` actually powers the
    board down; the pulse count/timing (5× 50 ms) is copied from the vendor
-   library but unverified against real hardware.
+   library.
 5. **Buttons / IMU** — still PENDING (see above); expect no physical-button
    input until a nav-button GPIO is identified, and no IMU readings until its
    chip/address is confirmed.
