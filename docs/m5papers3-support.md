@@ -116,14 +116,15 @@ Vendor code probes I²C address `0x14` before `0x5D`.
 Y 0..959 — matches this profile's `swapXY=true` mapping onto the 960×540
 landscape panel (same geometry LilyGo T5S3 and M5Paper v1.1 already use).
 
-**PENDING — `gt911CoordsAtByte0` and flip direction.** Not found in the vendor
-source read for this specific chip revision. `BoardConfig::M5PAPERS3_GT911`
-inherits M5Paper v1.1's values (`gt911CoordsAtByte0=true`, `flipX=false`,
-`flipY=true`) by analogy — both boards wire GT911 with no reset pin and share
-the same touch-button math in `M5Unified.cpp` (`board_M5Paper`/`board_M5PaperS3`
-share one `case` for the touch-keyboard-row calculation). **Verify with a
-corner-tap test on first boot**; if taps land mirrored, flip `flipX`/`flipY` in
-`BoardConfig::M5PAPERS3_GT911`.
+**CONFIRMED on real hardware — `gt911CoordsAtByte0=true`, `flipX=false`,
+`flipY=true` are correct as inherited from M5Paper v1.1.** Verified 2026-08-21
+with a 4-corner-tap test (MicroBASIC-PaperS3's bring-up program: four crosshair
+targets at the panel's extreme corners, tap position echoed back both as raw
+normalized coordinates over serial and as a crosshair redrawn at
+`tapToLogical()`'s computed position). All four taps produced distinct, stable,
+repeatable logical positions at the correct corresponding corners, and the
+crosshair visibly landed under the finger for all four — no mirroring, no swap
+needed. No flip change required.
 
 ## SD card — SPI
 
@@ -188,16 +189,13 @@ read for this port. `ImuType::None` for now; `FREEINK_CAP_IMU` is off.
 
 ## Still to verify
 
-1. **Touch corner accuracy** — the swipe-based navigation above works, but a
-   precise corner-tap test hasn't been done; if a specific UI element is
-   consistently mis-hit, flip `flipX`/`flipY` in `BoardConfig::M5PAPERS3_GT911`.
-2. **RTC** — confirm the BM8563 responds at 0x51 on SDA41/SCL42 as a PCF8563
+1. **RTC** — confirm the BM8563 responds at 0x51 on SDA41/SCL42 as a PCF8563
    and keeps time correctly across reboots.
-3. **Battery** — confirm the GPIO3 ADC reading tracks real battery voltage
+2. **Battery** — confirm the GPIO3 ADC reading tracks real battery voltage
    sensibly (not just that it compiles).
-4. **Power-off** — confirm `freeink::m5papers3::powerOff()` actually powers the
+3. **Power-off** — confirm `freeink::m5papers3::powerOff()` actually powers the
    board down; the pulse count/timing (5× 50 ms) is copied from the vendor
    library.
-5. **Buttons / IMU** — still PENDING (see above); expect no physical-button
+4. **Buttons / IMU** — still PENDING (see above); expect no physical-button
    input until a nav-button GPIO is identified, and no IMU readings until its
    chip/address is confirmed.

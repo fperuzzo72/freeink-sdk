@@ -204,7 +204,16 @@ void LgfxEpdDriver::begin(EpdBus& bus) {
 #if FREEINK_DRIVER_LGFX_EPD
   g_hooks = &_cfg.power;
   g_dev.setup(_cfg, BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
-  g_dev.init();
+  // init()'s bool return was previously discarded: a failed bus/panel init left
+  // every later call (setRotation/pushCanvas/waitDisplay) running against a
+  // half-configured LovyanGFX device -- no crash, no hang, just silence on the
+  // glass while the panel drive is timed open-loop (fixed waveform duration,
+  // no ready/ack pin to poll), so callers still see realistic multi-second
+  // "successful" refresh timings. Surfaced here since debugging that blind
+  // was expensive.
+  if (!g_dev.init()) {
+    Serial.println("[LgfxEpdDriver] g_dev.init() FAILED -- panel will not draw");
+  }
   g_dev.setRotation(_cfg.rotation);
   g_dev.setEpdMode(lgfx::epd_mode::epd_fast);
   allocCanvas(BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
