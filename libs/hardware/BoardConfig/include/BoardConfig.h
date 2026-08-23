@@ -200,6 +200,19 @@
 #ifndef FREEINK_CAP_USB_MSC
 #define FREEINK_CAP_USB_MSC 0
 #endif
+// USB HID Host for a wired keyboard over a USB-OTG adapter. OPT-IN (default
+// off), NOT board-derived, same reasoning as FREEINK_CAP_USB_MSC above: it
+// claims the same shared native-USB PHY the board's CDC console uses (there
+// is exactly one USB-C port), so a board enabling this should also turn off
+// the native CDC's auto-begin (-DARDUINO_USB_CDC_ON_BOOT=0) to leave the PHY
+// free for usb_host_install(). Unlike USB-MSC this does NOT need
+// ARDUINO_USB_MODE=0/TinyUSB -- it talks to ESP-IDF's usb_host driver
+// directly, a separate lower-level API. Native-USB (ESP32-S2/S3 OTG) targets
+// only. When 0, UsbHidKeyboardHost links stub bodies and pulls in no USB
+// Host code.
+#ifndef FREEINK_CAP_USB_HID_KBD_HOST
+#define FREEINK_CAP_USB_HID_KBD_HOST 0
+#endif
 // BLE HID host. The BleKeyboardHost lib pairs/connects to Bluetooth Low Energy
 // HID peripherals such as keyboards and page turners and emits translated key
 // events; it compiles its NimBLE central code only when this is set, otherwise

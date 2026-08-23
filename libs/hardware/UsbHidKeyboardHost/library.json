@@ -1,0 +1,10 @@
+{
+  "name": "UsbHidKeyboardHost",
+  "version": "1.0.0",
+  "description": "USB HID Host for wired keyboards over a USB-OTG adapter — talks directly to ESP-IDF's usb_host driver, enumerates the HID Boot Keyboard interface, and emits raw [keyCode, modifiers, pressed] events. Opt-in per board (FREEINK_CAP_USB_HID_KBD_HOST); links a no-op stub and pulls in no USB Host code when disabled.",
+  "keywords": "usb, hid, otg, host, keyboard, boot protocol",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}
