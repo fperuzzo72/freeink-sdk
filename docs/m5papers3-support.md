@@ -106,6 +106,45 @@ No PMIC/IO-expander sequencing is needed (unlike LilyGo's PCA9535+TPS65185):
 the EPD rail is a plain GPIO (`PWR`, pin 46) that LovyanGFX's `Bus_EPD` drives
 itself through `pinPwr`.
 
+**FIXED 2026-08-24 — that delegation was broken, and it kept this panel dark.**
+`LgfxEpdDriver`'s `FreeInkBusEPD::powerControl()` overrode
+`lgfx::Bus_EPD::powerControl()` and never called the base implementation: it
+ran the board's power hook and returned. That is correct for LilyGo T5S3,
+whose rails live behind an I²C PMIC (the hook *is* the power-up, and whose
+`pin_pwr`/`pin_oe` are parked on a placeholder GPIO the base class must not
+drive). It is wrong for this board, whose hooks are all `nullptr` — there was
+nothing to replace the base sequence *with*, so:
+
+```cpp
+lgfx::gpio_hi(_config.pin_oe);    // GPIO45  } the entire
+lgfx::gpio_hi(_config.pin_pwr);   // GPIO46  } power-up,
+lgfx::gpio_hi(_config.pin_spv);   // GPIO17  } never ran
+```
+
+`Bus_EPD::init()` *does* configure all three as outputs, so they sat as
+outputs driving LOW: the EPD rail never came up. The failure is silent and
+extremely misleading — the SoC is fine, so the firmware boots, mounts SD,
+joins WiFi, pairs BLE, and every draw call returns success with plausible
+timings (`displayBuffer()` reporting ~29 ms, `[paint] returned after 461 ms`)
+while the glass never changes. Same family as the discarded `init()` return
+value fixed just above this in the log: on this panel the drive is timed
+open-loop, with no ready/ack line to poll, so nothing downstream can tell
+that the electronics never woke up.
+
+It also produced a red herring that cost most of a day: the panel *did* work
+if M5Stack's own Launcher had run first, because Launcher's `M5GFX` drove
+those same pins on its way past. That looked like "this port needs Launcher's
+bootloader", and an early A/B (freshly-compiled bootloader → dark panel;
+Launcher's bootloader → working panel) seemed to confirm it. Both halves of
+that A/B ran the same buggy `powerControl()`, so the bootloader was never the
+variable. Fixed by delegating to the base class whenever no power hooks are
+supplied; verified on hardware by booting this firmware as the only app on
+the device, with no Launcher present at all.
+
+Watch for the same shape elsewhere: an override that *replaces* a vendor
+base-class method rather than wrapping it, on a board that supplied nothing
+to replace it with.
+
 ## Touch — GT911
 
 **CONFIRMED pins** (`M5GFX.cpp`, `Touch_GT911` config for `board_M5PaperS3`):

@@ -32,14 +32,36 @@ class FreeInkBusEPD : public lgfx::Bus_EPD {
   }
 
   bool powerControl(const bool powerOn) override {
+    // Two power topologies, and the difference is load-bearing:
+    //
+    //  * Board WITH hooks (LilyGo T5S3: PCA9535 expander + TPS65185 PMIC) --
+    //    the rails live behind I2C, not GPIOs, so the hook REPLACES the base
+    //    class's GPIO sequence entirely. That board also parks pin_pwr/pin_oe
+    //    on a placeholder GPIO (its LoRa CS), which the base class must not
+    //    be left to drive.
+    //
+    //  * Board WITHOUT hooks (M5PaperS3: pin_pwr=46, pin_oe=45, pin_spv=17 are
+    //    plain GPIOs) -- there is nothing to replace it WITH, so the base
+    //    class's own sequence is the whole power-up. Skipping it leaves those
+    //    three pins as outputs sitting at LOW (Bus_EPD::init() does configure
+    //    them, it just never drives them), i.e. the panel's rail never comes
+    //    up: the app runs perfectly, every draw call "succeeds", and the glass
+    //    never changes. That was this port's long-standing "EPD only works
+    //    after M5Stack's Launcher has run" symptom -- Launcher's own M5GFX
+    //    drove these pins on its way past. See docs/m5papers3-support.md and
+    //    LgfxEpdConfig::pinPwr, which documents this exact delegation
+    //    ("driven by LovyanGFX's own Bus_EPD::powerControl") as the contract.
+    const bool hasPowerHooks = g_hooks && (g_hooks->powerOn || g_hooks->powerOff);
+    if (!hasPowerHooks) return lgfx::Bus_EPD::powerControl(powerOn);
+
     if (_pwr_on == powerOn) return true;
     wait();
     if (powerOn) {
-      if (g_hooks && g_hooks->powerOn && !g_hooks->powerOn()) return false;
+      if (g_hooks->powerOn && !g_hooks->powerOn()) return false;
       _pwr_on = true;
       return true;
     }
-    if (g_hooks && g_hooks->powerOff) g_hooks->powerOff();
+    if (g_hooks->powerOff) g_hooks->powerOff();
     _pwr_on = false;
     return true;
   }
