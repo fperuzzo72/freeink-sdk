@@ -77,16 +77,40 @@ uint8_t g_preferredByteIndex = 0xFF;  // byte the report map suggests holds the 
 uint8_t g_lastGenericCode = 0;        // last non-zero code seen on the generic path
 volatile uint32_t g_lastReportMs = 0;  // millis() of the last HID notification (stale-release)
 
+// Report ID (from the descriptor's own Report ID items, not a guess) whose
+// collection carries the Keyboard usage page, or 0xFF if the descriptor
+// never set one (single-report devices, or one that doesn't use Report IDs
+// at all) or didn't parse cleanly. Set once per connection by
+// parseReportMapHints(); setupHid() uses it to subscribe only to the GATT
+// Report characteristic that actually carries keyboard data. See that
+// function's own comment for why this matters: composite HID-over-GATT
+// keyboards commonly expose several *other* Report characteristics
+// alongside it (consumer control, vendor, etc.) under the same service,
+// and nothing about their GATT-level Report Reference (Input, no
+// content type) rules them out on its own.
+uint8_t g_keyboardReportId = 0xFF;
+
 BleKeyboardHost& self() { return BleKeyboardHost::getInstance(); }
 
 // Scan a HID Report Map descriptor for Usage Page (0x05 nn) items and note whether
 // a keyboard (0x07) or consumer (0x0C) page is present, plus a heuristic byte index
 // where the active code tends to live (keyboard reports: byte[2]; compact consumer
-// reports: byte[1]). This is a hint, not a full descriptor parse.
+// reports: byte[1]). This is a hint, not a full descriptor parse -- EXCEPT for
+// g_keyboardReportId, which needs a real (if minimal) short-item walk: Report ID
+// (tag 0x85) is a Global item that applies to every Usage Page under it until the
+// next Report ID, so naively scanning for "0x05 0x07 anywhere in the bytes" (as the
+// hasKeyboardPage/hasConsumerPage hints above do) can't say *which* report that
+// usage page belongs to on a composite descriptor with more than one collection.
+// Short items are `(bTag<<4 | bType<<2 | bSize)` followed by bSize bytes of data,
+// bSize code 3 meaning 4 bytes (HID 1.11 6.2.2.2) -- this walk applies that framing
+// to skip every item correctly rather than just the two tags it cares about,
+// otherwise it would drift out of alignment the first time it met an item of a
+// size it didn't expect.
 void parseReportMapHints(const uint8_t* map, size_t len) {
   g_hasKeyboardPage = false;
   g_hasConsumerPage = false;
   g_preferredByteIndex = 0xFF;
+  g_keyboardReportId = 0xFF;
   if (!map || len < 2) return;
   for (size_t i = 0; i + 1 < len; ++i) {
     if (map[i] == 0x05) {  // Usage Page (1-byte value follows)
@@ -96,6 +120,30 @@ void parseReportMapHints(const uint8_t* map, size_t len) {
   }
   if (g_hasKeyboardPage) g_preferredByteIndex = 2;
   else if (g_hasConsumerPage) g_preferredByteIndex = 1;
+
+  uint8_t currentReportId = 0;
+  size_t i = 0;
+  while (i < len) {
+    const uint8_t item = map[i];
+    if (item == 0xFE) break;  // long item (vanishingly rare); not framed the same way, stop rather than misparse
+    uint8_t size = item & 0x03;
+    if (size == 3) size = 4;
+    const uint8_t tag = item & 0xFC;
+    i++;
+    if (i + size > len) break;
+    uint32_t data = 0;
+    for (uint8_t b = 0; b < size; ++b) data |= (uint32_t)map[i + b] << (8 * b);
+    if (tag == 0x84 && size >= 1) {  // Report ID (Global)
+      currentReportId = (uint8_t)data;
+    } else if (tag == 0x04 && size >= 1 && data == 0x07 && g_keyboardReportId == 0xFF) {
+      // Usage Page == Keyboard/Keypad (Global). First one wins -- a
+      // descriptor legitimately declaring keyboard usage under two
+      // different Report IDs would be unusual enough that guessing further
+      // isn't worth it.
+      g_keyboardReportId = currentReportId;
+    }
+    i += size;
+  }
 }
 
 // Pick a representative "primary" code from a report that the standard keyboard
@@ -148,7 +196,11 @@ void printPayloadHex(const NimBLEAdvertisedDevice* dev) {
 }
 #endif
 
-void onHidNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
+void onHidNotify(NimBLERemoteCharacteristic* chr, uint8_t* data, size_t len, bool) {
+#if FREEINK_BLE_HID_REPORT_DEBUG
+  Serial.printf("[BleHid] notify from handle=%u\n", chr ? chr->getHandle() : 0);
+#endif
+  (void)chr;
   self().onReportIngest(data, len);
 }
 
@@ -168,32 +220,65 @@ bool setupHid(NimBLEClient* client) {
   g_hasKeyboardPage = false;
   g_hasConsumerPage = false;
   g_preferredByteIndex = 0xFF;
+  g_keyboardReportId = 0xFF;
   g_lastGenericCode = 0;
   if (NimBLERemoteCharacteristic* rmap = hid->getCharacteristic(NimBLEUUID(kCharReportMap))) {
     if (rmap->canRead()) {
       NimBLEAttValue v = rmap->readValue();
       parseReportMapHints(v.data(), v.size());
 #if FREEINK_BLE_HID_REPORT_DEBUG
-      Serial.printf("[BleHid] report map: kbd=%d consumer=%d preferredByte=%d len=%u\n", g_hasKeyboardPage,
-                    g_hasConsumerPage, (int)g_preferredByteIndex, (unsigned)v.size());
+      Serial.printf("[BleHid] report map: kbd=%d consumer=%d preferredByte=%d kbdReportId=%d len=%u\n",
+                    g_hasKeyboardPage, g_hasConsumerPage, (int)g_preferredByteIndex, (int)g_keyboardReportId,
+                    (unsigned)v.size());
 #endif
     }
   }
 
   bool subscribed = false;
+  int subscribedCount = 0;
   const std::vector<NimBLERemoteCharacteristic*>& chars = hid->getCharacteristics(true);
   for (NimBLERemoteCharacteristic* c : chars) {
     if (!c) continue;
     if (c->getUUID() != NimBLEUUID(kCharReport) || !c->canNotify()) continue;
-    // Report Reference descriptor (0x2908) byte[1] is the report type: 1=Input.
+    // Report Reference descriptor (0x2908): byte[0] is this characteristic's own
+    // Report ID, byte[1] the report type (1=Input).
     bool isInput = true;
+    int reportId = -1;
     NimBLERemoteDescriptor* ref = c->getDescriptor(NimBLEUUID(kDescReportReference));
     if (ref) {
       NimBLEAttValue v = ref->readValue();
       if (v.size() >= 2 && v[1] != 0x01) isInput = false;
+      if (v.size() >= 1) reportId = v[0];
     }
-    if (isInput && c->subscribe(true, onHidNotify)) subscribed = true;
+    // A composite HID-over-GATT device commonly exposes more than one Input
+    // Report characteristic under the same service -- consumer control,
+    // vendor-specific, etc. -- alongside the keyboard's own. Being
+    // "Input"-typed doesn't mean "keyboard": onReportIngest()'s
+    // keyboardShaped check is just a byte-length heuristic (7 or 8 bytes),
+    // so subscribing to all of them risked feeding an unrelated 7/8-byte
+    // report from a different collection into the same keyboard diff state
+    // (prevKeys_) the real keyboard reports use -- confirmed on a real
+    // keyboard that exposes 4 separate Report characteristics (report IDs
+    // 1, 2, 4, 16) under one HID service. When the descriptor walk in
+    // parseReportMapHints() identified a specific keyboard Report ID,
+    // subscribe only to the characteristic matching it; a characteristic
+    // with no Report Reference at all (reportId == -1) can't be compared,
+    // so it's left subscribed as before rather than guessed about.
+    const bool reportIdKnownMismatch =
+        g_keyboardReportId != 0xFF && reportId >= 0 && reportId != g_keyboardReportId;
+#if FREEINK_BLE_HID_REPORT_DEBUG
+    Serial.printf("[BleHid] Report char handle=%u isInput=%d reportId=%d hasRef=%d kbdReportId=%d skip=%d\n",
+                  c->getHandle(), (int)isInput, reportId, ref != nullptr, (int)g_keyboardReportId,
+                  (int)reportIdKnownMismatch);
+#endif
+    if (isInput && !reportIdKnownMismatch && c->subscribe(true, onHidNotify)) {
+      subscribed = true;
+      subscribedCount++;
+    }
   }
+#if FREEINK_BLE_HID_REPORT_DEBUG
+  Serial.printf("[BleHid] subscribed to %d Report characteristic(s)\n", subscribedCount);
+#endif
 
   if (!subscribed) {  // fallback: boot keyboard input report
     NimBLERemoteCharacteristic* boot = hid->getCharacteristic(NimBLEUUID(kCharBootKbdInput));
@@ -508,8 +593,8 @@ void BleKeyboardHost::poll() {
   if ((held != 0 || g_lastGenericCode != 0) && (millis() - g_lastReportMs) > kReleaseTimeoutMs) {
     portENTER_CRITICAL(&g_mux);
     heldUsage_ = 0;
-    portEXIT_CRITICAL(&g_mux);
     memset(prevKeys_, 0, sizeof(prevKeys_));
+    portEXIT_CRITICAL(&g_mux);
     g_lastGenericCode = 0;
   }
 
@@ -718,14 +803,32 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   }
 
   bool emittedKb = false;
+  bool anyKeyPresent = false;  // this report holds >=1 real keyboard-page key, new or still held
   if (keyboardShaped) {
+    // prevKeys_ is written from this task (below, and via memcpy at the end)
+    // but also cleared by poll()'s stale-release timeout, which runs on the
+    // Arduino main task -- two tasks touching the same 6 bytes with no lock
+    // between them. A torn read here (poll()'s memset landing mid-loop) can
+    // make a key that's still actually held read as absent for one or two
+    // of its bytes, which re-triggers the "newly pressed" branch below for
+    // a key that never left the report -- confirmed as the cause of an
+    // occasional doubled character on fast typing (e.g. "print" ->
+    // "priinnt"), traced by comparing this diff's decisions against the
+    // raw report log, where every transition was clean. Snapshotting under
+    // the lock once, and diffing against the snapshot, removes the window.
+    uint8_t prevSnapshot[6];
+    portENTER_CRITICAL(&g_mux);
+    memcpy(prevSnapshot, prevKeys_, sizeof(prevSnapshot));
+    portEXIT_CRITICAL(&g_mux);
+
     // Emit a press for every key newly present versus the previous report.
     for (int i = 0; i < 6; ++i) {
       const uint8_t k = keys[i];
       if (k == 0 || k == 0x01 /*ErrorRollOver*/) continue;
+      anyKeyPresent = true;
       bool wasDown = false;
       for (int j = 0; j < 6; ++j) {
-        if (prevKeys_[j] == k) {
+        if (prevSnapshot[j] == k) {
           wasDown = true;
           break;
         }
@@ -750,9 +853,8 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
       heldSince_ = millis();
       lastRepeat_ = millis();
     }
-    portEXIT_CRITICAL(&g_mux);
-
     memcpy(prevKeys_, keys, sizeof(prevKeys_));
+    portEXIT_CRITICAL(&g_mux);
   }
 
   // --- Generic fallback for non-keyboard remotes -----------------------------
@@ -760,7 +862,23 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   // page or place the code at a non-standard byte. When the keyboard slots produced
   // nothing and the device doesn't look like a pure keyboard, scan the report for a
   // representative code and surface it (edge-detected so one press == one event).
-  const bool tryGeneric = !emittedKb && (g_hasConsumerPage || !g_hasKeyboardPage || n < 7);
+  //
+  // Gated on !anyKeyPresent, not !emittedKb: a report can be genuinely
+  // keyboard-shaped and hold a real key without anything being newly
+  // pressed this round -- e.g. a second key released while a first stays
+  // held sends a report equal to "just the first key," which correctly
+  // emits nothing (it was already down). Gating on !emittedKb treated that
+  // completely normal case as "the keyboard slots produced nothing," which
+  // re-ran this fallback over the SAME bytes for any composite device that
+  // also has a consumer page (g_hasConsumerPage) -- extractPrimaryCode()
+  // found that still-held key again and, since g_lastGenericCode didn't
+  // carry any state from the real keyboard path, it read as a fresh press
+  // and emitted a second, spurious event for it. This is what produced the
+  // doubled character, deterministically, on every two-key overlap: fixed
+  // here, confirmed against captured report logs where the "still held, no
+  // new press" report was exactly the one that (incorrectly) re-triggered
+  // this block.
+  const bool tryGeneric = !anyKeyPresent && (g_hasConsumerPage || !g_hasKeyboardPage || n < 7);
   if (tryGeneric) {
     size_t codeIdx = 0;
     const uint8_t code = extractPrimaryCode(p, n, &codeIdx);

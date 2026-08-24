@@ -178,7 +178,12 @@ class BleKeyboardHost {
   volatile uint8_t heldMods_ = 0;
   volatile uint32_t heldSince_ = 0;
   volatile uint32_t lastRepeat_ = 0;
-  uint8_t prevKeys_[6] = {0};  // backend-task only
+  // Read/written from both the BLE backend task (onReportIngest()) and the
+  // Arduino main task (poll()'s stale-release timeout) -- every access goes
+  // through g_mux (see the .cpp), not plain volatile, since these are
+  // multi-byte snapshot/diff/memcpy operations that need to be atomic as a
+  // whole, not just per-byte.
+  uint8_t prevKeys_[6] = {0};
 };
 
 }  // namespace freeink
