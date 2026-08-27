@@ -157,7 +157,7 @@ landscape panel (same geometry LilyGo T5S3 and M5Paper v1.1 already use).
 
 **CONFIRMED on real hardware — `gt911CoordsAtByte0=true`, `flipX=false`,
 `flipY=true` are correct as inherited from M5Paper v1.1.** Verified 2026-08-21
-with a 4-corner-tap test (MicroBASIC-PaperS3's bring-up program: four crosshair
+with a 4-corner-tap test (MicroWriter-BASIC-PaperS3's bring-up program: four crosshair
 targets at the panel's extreme corners, tap position echoed back both as raw
 normalized coordinates over serial and as a crosshair redrawn at
 `tapToLogical()`'s computed position). All four taps produced distinct, stable,
