@@ -32,6 +32,13 @@ void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
 #elif SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
   // RISC-V (C3/C6/H2): the deep-sleep "gpio" wakeup source.
   esp_deep_sleep_enable_gpio_wakeup(gpioMask, wakeLow ? ESP_GPIO_WAKEUP_GPIO_LOW : ESP_GPIO_WAKEUP_GPIO_HIGH);
+#elif FREEINK_MCU_HOSTED
+  // Hosted targets (Kindle): the kernel owns suspend and resume, and a reader
+  // process has no say in either. There is no wakeup source to arm, and the
+  // call sites are left in place rather than guarded so the ESP32 paths stay
+  // untouched.
+  (void)gpioMask;
+  (void)wakeLow;
 #else
 #error "FreeInk PowerManager: target has no supported deep-sleep GPIO wakeup source"
 #endif
