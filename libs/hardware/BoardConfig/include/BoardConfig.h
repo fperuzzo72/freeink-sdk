@@ -206,6 +206,14 @@
 #endif
 
 // --- 4) Derive default capabilities (override with -DFREEINK_CAP_*=0/1) -------
+// True where the panel's physical orientation is portrait. The Xteink panels
+// are physically landscape and the renderer's Orientation enum is written from
+// their point of view, so this tells it to shift the whole mapping a quarter
+// turn. A Kindle's 600x800 panel is portrait.
+#ifndef FREEINK_PANEL_NATIVE_PORTRAIT
+#define FREEINK_PANEL_NATIVE_PORTRAIT (FREEINK_DEVICE_KINDLE)
+#endif
+
 #ifndef FREEINK_CAP_TOUCH
 #define FREEINK_CAP_TOUCH                                                                               \
   (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY || \
